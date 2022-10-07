@@ -1,0 +1,50 @@
+quinoa:
+  alignment_resolution: 12  # Resolution, in Angstrom, at which to perform the alignment.
+
+  # Stack files.
+  # If the directory is entered, the program tries to look for the other input files
+  # using the basename as the name of the directory. Otherwise, each file should be entered.
+  # If the mdoc file is found, the tlt and exposure files are not used. The exposure file
+  # is entirely optional.
+  stack_directory: "/home/thomas/Projects/data/ribo/tilt1/"
+  stack_file:
+  stack_mdoc:
+  stack_tlt:
+  stack_exposure:
+
+  # Output directory. By default, it is set to the stack directory.
+  output_directory: "/home/thomas/Projects/quinoa/tests/qn_tilt1"
+
+  # Initial (global) CW rotation angle, in degrees.
+  # This is the in-plane rotation angle of the images. A value of zero indicates
+  # that the tilt-axis is parallel to the Y (i.e. vertical) axis. If left empty,
+  # the program will try to compute it. This is ignored if the mdoc file is specified.
+  rotation_angle: 176
+
+  # Slice order.
+  # If the mdoc file is found, or if the tlt and exposure files are found,
+  # the order_* entries are not used. Otherwise, every "order" entry below should be specified.
+  # Note: The "order_group" entry refers to the group for dose-symmetric schemes.
+  #       For unidirectional schemes, this should correspond to the number of views.
+  #       For bidirectional schemes, this should correspond to the number of views in the first direction.
+  order_starting_angle: 0  # Angle, in degrees, of the first collected image.
+  order_starting_direction: +1  # Direction (>0 or <0) after collecting the first image.
+  order_angle_increment: 3  # Angle increment, in degrees, between images.
+  order_group: 3  # Number of images that are collected before switching to the opposite side.
+  order_exclude_start: false  # Exclude the first image from the first group.
+  order_per_view_exposure: 3  # Per view exposure, in e-/A^2. If empty, the program ignores the exposure weighting.
+
+  # Exclude views.
+  # If views should be excluded from the alignment, one should either:
+  #   - Specify the "exclude_views_id" entry and provide the original input files (.mrc, .mdoc, .tlt, etc.)
+  #   - Or, use the "exclude_blank_views" option. This uses a simple mass-normalization to identify blank views.
+  #   - Or, remove the views from the stack. The tlt file, and if an exposure file is used, should be updated as well.
+  #     This last option is not compatible with the mdoc file or the "order" entries, since the program cannot know
+  #     which view was removed from the stack.
+  exclude_views_idx: 0 # Slice(s) index [0, n). A single value or a sequence, e.g. [0, 41].
+  exclude_blank_views: true
+
+  compute_cpu_threads: 8
+  compute_device: gpu
+
+  logging: verbose  # Should be: debug, verbose, info, quiet. Default to "info".
