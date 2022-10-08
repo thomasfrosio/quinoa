@@ -14,12 +14,12 @@ namespace qn {
         float angle1 = angle0;
         float exposure = per_view_exposure;
 
-        slices.push_back({0, float3_t{rotation_angle, angle0, 0}, float2_t{}, 0});
+        slices.push_back({float3_t{rotation_angle, angle0, 0}, float2_t{}, 0.f, 0, false});
         int group_count = !exclude_start;
 
         for (int32_t i = 1; i < count; ++i) {
             angle0 += direction * angle_increment;
-            slices.push_back({0, float3_t{rotation_angle, angle0, 0}, float2_t{}, exposure});
+            slices.push_back({float3_t{rotation_angle, angle0, 0}, float2_t{}, exposure, 0, false});
 
             if (group_count == group - 1) {
                 direction *= -1;
@@ -112,10 +112,10 @@ namespace qn {
 
         // Create the slices.
         for (size_t i = 0; i < tlt_file.size(); ++i) {
-            m_slices.push_back({static_cast<int32_t>(i),
-                                float3_t{rotation_angle, tlt_file[i], 0},
+            m_slices.push_back({float3_t{rotation_angle, tlt_file[i], 0},
                                 float2_t{},
-                                exposure_file[i]});
+                                exposure_file[i],
+                                static_cast<int32_t>(i)});
         }
     }
 
@@ -127,7 +127,7 @@ namespace qn {
         for (int32_t index_to_exclude: indexes_to_exclude)
             for (auto& slice: m_slices)
                 if (slice.index == index_to_exclude)
-                    slice.index = MetadataSlice::EXCLUDED_INDEX;
+                    slice.excluded = true;
         return *this;
     }
 
@@ -135,14 +135,13 @@ namespace qn {
         for (auto& slice: m_slices)
             for (int32_t index_to_keep: indexes_to_keep)
                 if (slice.index != index_to_keep)
-                    slice.index = MetadataSlice::EXCLUDED_INDEX;
+                    slice.excluded = true;
         return *this;
     }
 
     MetadataStack& MetadataStack::squeeze() {
         m_slices.erase(
-                std::remove_if(m_slices.begin(), m_slices.end(),
-                               [](const auto& slice) { return slice.index == MetadataSlice::EXCLUDED_INDEX; }),
+                std::remove_if(m_slices.begin(), m_slices.end(), [](const auto& slice) { return slice.excluded; }),
                 m_slices.end());
         return *this;
     }
@@ -160,41 +159,31 @@ namespace qn {
         return *this;
     }
 
-    MetadataStack& MetadataStack::centerShifts() {
-        float2_t mean{0};
-        for (auto& slice: m_slices)
-            mean += slice.shifts;
-        mean /= static_cast<float>(m_slices.size());
-        for (auto& slice: m_slices)
-            slice.shifts -= mean;
-        return *this;
-    }
-
     void MetadataStack::sortBasedOnIndexes_(bool ascending) {
-        std::sort(m_slices.begin(), m_slices.end(),
-                  [ascending](const auto& lhs, const auto& rhs) {
-                      return ascending ?
-                             lhs.index < rhs.index :
-                             lhs.index > rhs.index;
-                  });
+        std::stable_sort(m_slices.begin(), m_slices.end(),
+                         [ascending](const auto& lhs, const auto& rhs) {
+                             return ascending ?
+                                    lhs.index < rhs.index :
+                                    lhs.index > rhs.index;
+                         });
     }
 
     void MetadataStack::sortBasedOnTilt_(bool ascending) {
-        std::sort(m_slices.begin(), m_slices.end(),
-                  [ascending](const auto& lhs, const auto& rhs) {
-                      return ascending ?
-                             lhs.angles[1] < rhs.angles[1] :
-                             lhs.angles[1] > rhs.angles[1];
-                  });
+        std::stable_sort(m_slices.begin(), m_slices.end(),
+                         [ascending](const auto& lhs, const auto& rhs) {
+                             return ascending ?
+                                    lhs.angles[1] < rhs.angles[1] :
+                                    lhs.angles[1] > rhs.angles[1];
+                         });
     }
 
     void MetadataStack::sortBasedOnExposure_(bool ascending) {
-        std::sort(m_slices.begin(), m_slices.end(),
-                  [ascending](const auto& lhs, const auto& rhs) {
-                      return ascending ?
-                             lhs.exposure < rhs.exposure :
-                             lhs.exposure > rhs.exposure;
-                  });
+        std::stable_sort(m_slices.begin(), m_slices.end(),
+                         [ascending](const auto& lhs, const auto& rhs) {
+                             return ascending ?
+                                    lhs.exposure < rhs.exposure :
+                                    lhs.exposure > rhs.exposure;
+                         });
     }
 
     size_t MetadataStack::lowestTilt() const {
@@ -203,6 +192,6 @@ namespace qn {
                 [](const auto& lhs, const auto& rhs) {
                     return std::abs(lhs.angles[1]) < std::abs(rhs.angles[1]);
                 });
-        return static_cast<size_t>(m_slices.begin() - iter);
+        return static_cast<size_t>(iter - m_slices.begin());
     }
 }
