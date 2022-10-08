@@ -10,6 +10,7 @@
 #include "quinoa/io/Options.h"
 
 #include "quinoa/core/Alignment.h"
+#include "quinoa/core/Geometry.h"
 #include "quinoa/core/Signal.h"
 #include "quinoa/core/Metadata.h"
 
@@ -36,11 +37,11 @@ namespace qn {
         // Fourier crop to target resolution.
         const auto target_resolution = options["alignment_resolution"].as<float>(16.f);
         float2_t target_pixel_size(target_resolution / 2);
-        const path_t output_filename =
+        path_t output_filename =
                 options["output_directory"].as<path_t>() /
                 string::format("{}_cropped{}", stack_file.stem().string(), stack_file.extension().string());
         qn::signal::fourierCrop(stack_file, output_filename, target_pixel_size, device);
-        stack_file = output_filename;
+        stack_file = std::move(output_filename);
 
         // Exclude bad images.
         const auto exclude_blank_views = options["exclude_blank_views"].as<bool>(false);
@@ -51,13 +52,20 @@ namespace qn {
         // Preprocess images.
         // Exposure, Remove gradient, center and standardize.
 
-
         // TODO Find the initial rotation angle.
 
         // Initial translation alignment using cosine stretched as input.
-        const Array<float> stack = io::load<float>(stack_file);
-        std::vector<float2_t> shifts = qn::align::shiftPairwiseCosine(stack, stack_metadata, device, {});
-        stack_metadata.shifts(shifts).centerShifts();
+        io::ImageFile file(stack_file, io::READ);
+        const Array<float> stack = file.read<float>();
+        const float2_t pixe_size(file.pixelSize().get(1));
+        file.close();
+
+        qn::align::shiftPairwiseCosine(stack, stack_metadata, device, {});
+
+        output_filename =
+                options["output_directory"].as<path_t>() /
+                string::format("{}_coarse{}", stack_file.stem().string(), stack_file.extension().string());
+        qn::geometry::transform(stack, stack_metadata.squeeze().sort("tilt"), pixe_size, output_filename, device);
 
 
         // see AreTomo...

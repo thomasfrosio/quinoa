@@ -11,6 +11,7 @@ set(QUINOA_SOURCES
         src/quinoa/io/YAML.h
 
         src/quinoa/core/Alignment.h
+        src/quinoa/core/Geometry.h
         src/quinoa/core/Signal.h
         src/quinoa/core/Metadata.h
         src/quinoa/core/Metadata.cpp
