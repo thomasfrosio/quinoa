@@ -5,7 +5,7 @@
 #include "quinoa/io/YAML.h"
 
 namespace {
-    constexpr std::array<std::string_view, 19> QN_OPTIONS_ = {
+    constexpr std::array<std::string_view, 20> QN_OPTIONS_ = {
             "alignment_resolution",
             "rotation_angle",
             "output_directory",
@@ -25,6 +25,7 @@ namespace {
 
             "exclude_views_idx",
             "exclude_blank_views",
+            "exclude_views_from_stack",
 
             "compute_cpu_threads",
             "compute_device",

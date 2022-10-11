@@ -66,7 +66,7 @@ namespace qn {
         MetadataStack& squeeze();
 
         /// (Stable) sorts the slices based on a given key.
-        /// Valid keys: "index", "tilt", "exposure".
+        /// Valid keys: "index", "tilt", "absolute_tilt", "exposure".
         MetadataStack& sort(std::string_view key, bool ascending = true);
 
     public: // Getters
@@ -92,9 +92,13 @@ namespace qn {
         /// of the slice with the lowest absolute tilt angle.
         [[nodiscard]] size_t lowestTilt() const;
 
+    public:
+        static void logUpdate(const MetadataStack& origin, const MetadataStack& current);
+
     private:
         void sortBasedOnIndexes_(bool ascending = true);
         void sortBasedOnTilt_(bool ascending = true);
+        void sortBasedOnAbsoluteTilt_(bool ascending = true);
         void sortBasedOnExposure_(bool ascending = true);
 
     private:

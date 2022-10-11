@@ -1,5 +1,5 @@
 quinoa:
-  alignment_resolution: 12  # Resolution, in Angstrom, at which to perform the alignment.
+  alignment_resolution: 16  # Resolution, in Angstrom, at which to perform the alignment.
 
   # Stack files.
   # If the directory is entered, the program tries to look for the other input files
@@ -43,8 +43,9 @@ quinoa:
   #     which view was removed from the stack.
   exclude_views_idx: 0 # Slice(s) index [0, n). A single value or a sequence, e.g. [0, 41].
   exclude_blank_views: true
+  exclude_views_from_stack: # Whether the excluded views should be removed from the output stacks. Defaults to false.
 
-  compute_cpu_threads: 8
+  compute_cpu_threads: 4
   compute_device: gpu
 
-  logging: verbose  # Should be: debug, verbose, info, quiet. Default to "info".
+  logging: debug  # Should be: debug, verbose, info, quiet. Default to "info".

@@ -18,7 +18,7 @@ namespace qn {
     void tiltSeriesAlignment(const qn::Options& options) {
         // Number of (OpenMP) threads:
         const auto threads = options["compute_cpu_threads"].as<size_t>(size_t{0});
-        Stream::current(Device{}).cpu().threads(threads);
+        noa::Session::threads(threads);
 
         // Array options. Use the "most free" device if the ID is not specified.
         const auto device_name = options["compute_device"].as<std::string>("gpu");
@@ -31,7 +31,8 @@ namespace qn {
             Stream::current(stream);
         }
 
-        MetadataStack stack_metadata(options);
+        // Parses options early, to quickly throw if there's an invalid option.
+        MetadataStack metadata(options);
         auto stack_file = options["stack_file"].as<path_t>();
 
         // Fourier crop to target resolution.
@@ -60,21 +61,51 @@ namespace qn {
         const float2_t pixe_size(file.pixelSize().get(1));
         file.close();
 
-        qn::align::shiftPairwiseCosine(stack, stack_metadata, device, {});
+        metadata.sort("tilt");
+        if (options["exclude_views_from_stack"].as<bool>(false))
+            metadata.squeeze();
+        MetadataStack new_metadata = metadata;
+
+        // TODO From this point, we could iterate for multiple resolutions.
+        //      Start very low res and increase up to resolution target.
+
+        qn::align::shiftPairwiseCosine(stack, new_metadata, device);
+        MetadataStack::logUpdate(metadata, new_metadata);
 
         output_filename =
                 options["output_directory"].as<path_t>() /
                 string::format("{}_coarse{}", stack_file.stem().string(), stack_file.extension().string());
-        qn::geometry::transform(stack, stack_metadata.squeeze().sort("tilt"), pixe_size, output_filename, device);
+        qn::geometry::transform(stack, new_metadata, pixe_size, output_filename, device);
 
+        // TODO Check GPU memory to see if we push the entire stack there.
+        //      It prevents having to copy the slices to the GPU every time.
 
-        // see AreTomo...
+        // Preprocess for projection matching:
+        qn::align::preprocessProjectionMatching(stack, new_metadata, device);
+
+        const size_t max_iterations = 1;
+        for (size_t i = 0; i < max_iterations; ++i) {
+            qn::align::shiftProjectionMatching(stack, new_metadata, device);
+            // qn::align::rotationProjectionMatching(stack, new_metadata, device);
+
+            // Log results.
+            MetadataStack::logUpdate(metadata, new_metadata);
+            metadata = new_metadata;
+
+            output_filename =
+                    options["output_directory"].as<path_t>() /
+                    string::format("{}_iter{:0<1}{}", stack_file.stem().string(), i, stack_file.extension().string());
+            qn::geometry::transform(stack, metadata, pixe_size, output_filename, device);
+        }
+
+        // TODO Reconstruction
+        // TODO Once reconstructed, molecular mask and backproject to remove noise, then start alignment again?
     }
 }
 
 int main(int argc, char* argv[]) {
     // Initialize everything that needs to be initialized.
-    noa::Session session("quinoa", "quinoa.log"); // TODO set verbosity
+    noa::Session session("quinoa", "quinoa.log", Logger::VERBOSE); // TODO set verbosity
 
     try {
         qn::Options options(argc, argv);

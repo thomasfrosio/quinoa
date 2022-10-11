@@ -58,4 +58,90 @@ namespace qn::geometry {
             file.writeSlice(buffer_io, i, false);
         }
     }
+
+    /// Computes the padding factor for an image
+    void paddingFactor() {
+
+    }
+
+    /// Backward and forward projection, accounting for the multiplicity, a slice at a time.
+    /// \note The input and output slices are non-redundant, non-centered.
+    class Projector {
+    public:
+        /// Creates a projector.
+        /// \details Temporary arrays are created. Once constructed, the projector doesn't allocate any memory.
+        /// \param grid_shape   The shape of the grid, i.e. the 3D region that is to be reconstructed.
+        /// \param slice_shape  The shape of a single slice.
+        /// \param target_shape The shape of the actual 3D Fourier volume. If empty, defaults to \p grid_shape.
+        /// \param options      Array options for the temporary arrays. The device is the compute device.
+        Projector(dim4_t grid_shape,
+                  dim4_t slice_shape,
+                  dim4_t target_shape = {},
+                  ArrayOption options = {})
+                : m_grid_data_fft(memory::zeros<cfloat_t>(grid_shape.fft(), options)),
+                  m_grid_weights_fft(memory::zeros<float>(grid_shape.fft(), options)),
+                  m_weights_ones_fft(memory::ones<float>(slice_shape.fft(), options)),
+                  m_weights_extract_fft(memory::empty<float>(slice_shape.fft(), options)),
+                  m_grid_shape(grid_shape),
+                  m_slice_shape(slice_shape),
+                  m_target_shape(target_shape),
+                  m_slice_center(float2_t(m_slice_shape.get(2)) / 2) {}
+
+        /// Backward project a slice into the 3D Fourier volume.
+        /// \param[in] slice_fft    Slice to insert.
+        /// \param rotation         3x3 DHW forward rotation matrices.
+        /// \param shift            Extra shift to apply before any other transformation.
+        ///                         Note that the slices are already phase shifted to their rotation center.
+        /// \param scale            2x2 HW \e inverse real-space scaling to apply to the slices before the rotation.
+        void backward(const Array<cfloat_t>& slice_fft,
+                      float33_t rotation,
+                      float2_t shift = {},
+                      float22_t scaling = {},
+                      float cutoff = 0.5f) {
+            noa::signal::fft::shift2D<fft::H2H>(
+                    slice_fft, slice_fft, m_slice_shape, -m_slice_center + shift);
+            noa::geometry::fft::insert3D<fft::H2HC>(
+                    slice_fft, m_slice_shape,
+                    m_grid_data_fft, m_grid_shape,
+                    scaling, rotation, cutoff, m_target_shape);
+            noa::geometry::fft::insert3D<fft::H2HC>(
+                    m_weights_ones_fft, m_slice_shape,
+                    m_grid_weights_fft, m_grid_shape,
+                    scaling, rotation, cutoff, m_target_shape);
+        }
+
+        /// Forward project a slice from the 3D Fourier volume.
+        /// \param[out] slice_fft   Slice to insert.
+        /// \param rotation         3x3 DHW forward rotation matrices.
+        /// \param shift            Extra shift to apply after any other transformation.
+        ///                         Note that the slices are already phase shifted from their rotation center.
+        /// \param scale            2x2 HW \e inverse real-space scaling to apply to the slices before the rotation.
+        void forward(Array<cfloat_t>& slice_fft,
+                     float33_t rotation,
+                     float2_t shift = {},
+                     float22_t scaling = {},
+                     float cutoff = 0.5f) {
+            noa::geometry::fft::extract3D<fft::HC2H>(
+                    m_grid_data_fft, m_grid_shape,
+                    slice_fft, m_slice_shape,
+                    scaling, rotation, cutoff, m_target_shape);
+            noa::geometry::fft::extract3D<fft::HC2H>(
+                    m_grid_weights_fft, m_grid_shape,
+                    m_weights_extract_fft, m_slice_shape,
+                    scaling, rotation, cutoff, m_target_shape);
+            signal::fft::shift2D<fft::H2H>(slice_fft, slice_fft, m_slice_shape, m_slice_center + shift);
+            math::ewise(slice_fft, m_weights_extract_fft, 1e-3f, slice_fft,
+                        math::divide_epsilon_t{});
+        }
+
+    private:
+        Array<cfloat_t> m_grid_data_fft;
+        Array<float> m_grid_weights_fft;
+        Array<float> m_weights_ones_fft;
+        Array<float> m_weights_extract_fft;
+        dim4_t m_grid_shape;
+        dim4_t m_slice_shape;
+        dim4_t m_target_shape;
+        float2_t m_slice_center;
+    };
 }

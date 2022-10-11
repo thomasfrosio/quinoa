@@ -9,9 +9,12 @@
 #include <noa/Geometry.h>
 #include <noa/FFT.h>
 #include <noa/Signal.h>
+#include <noa/Utils.h>
 
 #include "quinoa/Types.h"
 #include "quinoa/core/Metadata.h"
+#include "quinoa/core/Geometry.h"
+#include "quinoa/io/Logging.h"
 
 const path_t OUTPUT_PATH = "/home/thomas/Projects/quinoa/tests/qn_tilt1/";
 
@@ -33,7 +36,11 @@ namespace qn::align {
     void shiftPairwiseCosine(const Array<float>& stack,
                              MetadataStack& stack_meta,
                              Device compute_device,
-                             float2_t max_shift) {
+                             float2_t max_shift = {}) {
+        qn::Logger::trace("Pairwise alignment using cosine-stretching...");
+        Timer timer0;
+        timer0.start();
+
         const size4_t slice_shape{1, 1, stack.shape()[2], stack.shape()[3]};
         const float2_t slice_center = float2_t(slice_shape.get(2)) / 2;
         const ArrayOption options{compute_device, Allocator::DEFAULT_ASYNC};
@@ -43,7 +50,9 @@ namespace qn::align {
         auto [target, target_fft] = fft::empty<float>(slice_shape, options);
 
         // Since we need to transform the target to "overlap" with the reference, use a GPU texture
-        // if possible since we need to copy the target to a new array anyway.
+        // if possible since we need to copy the target to a new array anyway. Use BORDER_MIRROR assuming
+        // the edges of the stack are not tapered. Stretching/shrinking can introduce very small edges, which is
+        // completely mitigated by this border mode.
         Texture<float> target_texture(slice_shape, compute_device, INTERP_LINEAR_FAST, BORDER_MIRROR);
 
         // The cross-correlation map. This is reused for every iteration.
@@ -74,29 +83,24 @@ namespace qn::align {
             // These angles are flipped, since the scaling is perpendicular to the axis of rotation.
             const float2_t cos_factor{math::cos(reference_angles[2]) / math::cos(target_angles[2]),
                                       math::cos(reference_angles[1]) / math::cos(target_angles[1])};
-            // FIXME If both axis are < 1, flip target and reference.
-            //       If only one is < 1, taper the edge?
 
             // Apply the scaling for the tilt and pitch difference,
             // and cancel the difference (if any) in yaw and shift as well.
             const float33_t stretch_target_to_reference{
-                    geometry::translate(slice_center + reference_slice.shifts) *
-                    float33_t{geometry::rotate(reference_angles[0])} *
-                    float33_t{geometry::scale(cos_factor)} *
-                    float33_t{geometry::rotate(-target_angles[0])} *
-                    geometry::translate(-slice_center - target_slice.shifts)
+                    noa::geometry::translate(slice_center + reference_slice.shifts) *
+                    float33_t{noa::geometry::rotate(reference_angles[0])} *
+                    float33_t{noa::geometry::scale(cos_factor)} *
+                    float33_t{noa::geometry::rotate(-target_angles[0])} *
+                    noa::geometry::translate(-slice_center - target_slice.shifts)
             };
 
             // After this point, the target should "overlap" with the reference.
-            geometry::transform2D(target_texture, target, math::inverse(stretch_target_to_reference));
-//            io::save(target, OUTPUT_PATH / "target_after.mrc");
-//            io::save(reference, OUTPUT_PATH / "reference.mrc");
+            noa::geometry::transform2D(target_texture, target, math::inverse(stretch_target_to_reference));
 
-            // Find and apply shift:
+            // Phase cross-correlation:
             fft::r2c(reference, reference_fft);
             fft::r2c(target, target_fft);
             signal::fft::xmap<fft::H2F>(target_fft, reference_fft, xmap);
-//            io::save(xmap, OUTPUT_PATH / "xmap.mrc");
 
             // Computes the YX shift of the target. To shift-align the stretched target onto the reference,
             // we would then need to subtract this shift to the stretched target.
@@ -111,9 +115,9 @@ namespace qn::align {
             // the end. Here, this common reference frame is the untilted and unpitched specimen.
             const float2_t reference_pivot_tilt{reference_angles[2], reference_angles[1]};
             const double22_t stretch_to_0deg{
-                    geometry::rotate(target_angles[0]) *
-                    geometry::scale(1 / math::cos(reference_pivot_tilt)) * // 1 = cos(0deg)
-                    geometry::rotate(-target_angles[0])
+                    noa::geometry::rotate(target_angles[0]) *
+                    noa::geometry::scale(1 / math::cos(reference_pivot_tilt)) * // 1 = cos(0deg)
+                    noa::geometry::rotate(-target_angles[0])
             };
             const double2_t shift_stretched_to_0deg = stretch_to_0deg * shift_stretched_reference;
             return shift_stretched_to_0deg;
@@ -136,6 +140,8 @@ namespace qn::align {
                 slice_to_slice_shifts.emplace_back(0);
                 continue;
             }
+            Timer timer1;
+            timer1.start();
 
             // If ith target has:
             //  - negative tilt angle, then reference is at i + 1.
@@ -143,18 +149,18 @@ namespace qn::align {
             const bool is_negative = idx_target < idx_lowest_tilt;
             const size_t idx_reference = idx_target + 1 * is_negative - 1 * !is_negative;
 
-//            io::save(stack.subregion(metadata[idx_target].index), OUTPUT_PATH / "target_before.mrc");
-
             // Compute the shifts.
             target_texture.update(stack.subregion(metadata[idx_target].index));
             memory::copy(stack.subregion(metadata[idx_reference].index), reference);
             slice_to_slice_shifts.emplace_back(find_shift_yx(metadata[idx_reference], metadata[idx_target]));
+
+            qn::Logger::trace("Slice {:0>2} took {}ms", metadata[idx_target].index, timer1.elapsed());
         }
 
         // Compute the global shifts, i.e. the shifts to apply to a slice so that it becomes aligned with the
         // lowest slice. At this point, we have the slice-to-slice shifts at the 0deg reference frame, so we
-        // need to accumulate the shifts of the lower slices. At the same time, we can center the average
-        // global shift to minimize the overall movement of the slices.
+        // need to accumulate the shifts of the lower slices. At the same time, we can center the global shifts
+        // to minimize the overall movement of the slices.
         // This is the main drawback of this method; the high tilt slices accumulate the errors of the lower tilts.
         std::vector<double2_t> global_shifts(slice_count);
         const auto idx_pivot = static_cast<int64_t>(idx_lowest_tilt);
@@ -180,9 +186,9 @@ namespace qn::align {
         for (size_t i = 0; i < slice_count; ++i) {
             const double3_t angles(math::deg2rad(metadata[i].angles));
             const double22_t shrink_matrix{
-                    geometry::rotate(angles[0]) *
-                    geometry::scale(math::cos(double2_t(angles[2], angles[1]))) *
-                    geometry::rotate(-angles[0])
+                    noa::geometry::rotate(angles[0]) *
+                    noa::geometry::scale(math::cos(double2_t(angles[2], angles[1]))) *
+                    noa::geometry::rotate(-angles[0])
             };
             global_shifts[i] = shrink_matrix * (global_shifts[i] - mean);
         }
@@ -192,6 +198,154 @@ namespace qn::align {
             for (auto& original_slice: stack_meta.slices()) {
                 if (original_slice.index == metadata[i].index)
                     original_slice.shifts += static_cast<float2_t>(global_shifts[i]);
+            }
+        }
+
+        qn::Logger::trace("Pairwise alignment using cosine-stretching... took {}ms", timer0.elapsed());
+    }
+
+    /// Preprocess the stack for project matching.
+    /// \details Projection matching needs the slices to be tapered to 0, highpass filtered
+    ///          (preferably with a very smooth edge) and standardize.
+    /// \param[in,out] stack    Stack to preprocess.
+    /// \param[in] stack_meta   Metadata of \p stack. This is just to keep track of the excluded slices.
+    /// \param compute_device   Device where to do the computation.
+    /// \param highpass_cutoff  Frequency cutoff, in cycle/pix, usually from 0 (DC) to 0.5 (Nyquist).
+    ///                         At this frequency, the pass is fully recovered.
+    /// \param highpass_edge    Width of the Hann window, in cycle/pix, usually from 0 to 0.5.
+    /// \param smooth_edge_size Size of the (real space) taper, in pixels.
+    ///                         If negative, it becomes the size, in percent of the largest dimension.
+    /// \param standardize      Whether the slices should be centered and standardized. Note that this
+    ///                         is applied before the taper, so the output mean and variance might be slightly off.
+    void preprocessProjectionMatching(const Array<float>& stack,
+                                      MetadataStack& stack_meta,
+                                      Device compute_device,
+                                      float highpass_cutoff = 0.05f,
+                                      float highpass_edge = 0.05f,
+                                      float smooth_edge_size = -0.05f,
+                                      bool standardize = true) {
+        const ArrayOption options{compute_device, Allocator::DEFAULT_ASYNC};
+        const size4_t slice_shape{1, 1, stack.shape()[2], stack.shape()[3]};
+        const float2_t slice_center = float2_t(slice_shape.get(2)) / 2;
+
+        highpass_cutoff = std::max(highpass_cutoff, 0.f);
+        if (smooth_edge_size < 0)
+            smooth_edge_size = static_cast<float>(std::max(stack.shape()[2], stack.shape()[3])) * -smooth_edge_size;
+
+        const bool copy_to_compute_device = compute_device != stack.device();
+        Array slice = copy_to_compute_device ? Array<float>(slice_shape, options) : Array<float>();
+        Array slice_fft = noa::memory::empty<cfloat_t>(slice_shape.fft(), options);
+
+        for (dim_t i = 0; i < stack_meta.size(); ++i) {
+            if (stack_meta[i].excluded)
+                continue;
+
+            if (copy_to_compute_device)
+                noa::memory::copy(stack.subregion(stack_meta[i].index), slice);
+            else
+                slice = stack.subregion(stack_meta[i].index);
+
+            noa::fft::r2c(slice, slice_fft);
+            noa::signal::fft::highpass<fft::H2H>(slice_fft, slice_fft, slice_shape, highpass_cutoff, highpass_edge);
+            if (standardize)
+                noa::signal::fft::standardize<fft::H2H>(slice_fft, slice_fft, slice_shape);
+            noa::fft::c2r(slice_fft, slice);
+
+            noa::signal::rectangle(slice, slice, slice_center, slice_center - smooth_edge_size, smooth_edge_size);
+
+            if (copy_to_compute_device)
+                noa::memory::copy(slice, stack.subregion(stack_meta[i].index));
+        }
+    }
+
+    void shiftProjectionMatching(const Array<float>& stack,
+                                 MetadataStack& stack_meta,
+                                 Device compute_device,
+                                 float2_t max_shift = {}) {
+        // Slices can be zero-padded before transformation. It's best
+        const dim_t size_pad = std::max(stack.shape()[2], stack.shape()[3]) * 2; // FIXME
+
+        // The projector needs the following: 1) The target shape is the shape of the 3D Fourier volume.
+        // Here, we'll use a
+        const dim4_t target_shape{1, size_pad, size_pad, size_pad};
+        const dim4_t slice_shape{1, 1, size_pad, size_pad};
+        const float2_t slice_center = float2_t(slice_shape.get(2)) / 2;
+
+        // We only
+        const float frequency_cutoff_zx = 0.2f; // FIXME
+        const auto trunk_size = static_cast<dim_t>(static_cast<float>(size_pad) * frequency_cutoff_zx);
+        const dim4_t grid_shape{1, trunk_size, size_pad, trunk_size};
+
+        //
+        MetadataStack metadata = stack_meta;
+        metadata.squeeze().sort("absolute_tilt");
+
+        // Allocating buffers.
+        const ArrayOption options{compute_device, Allocator::DEFAULT_ASYNC};
+        auto [reference_pad, reference_pad_fft] = noa::fft::empty<float>(slice_shape, options);
+        auto [target_pad, target_pad_fft] = noa::fft::empty<float>(slice_shape, options);
+        Array xmap = noa::memory::empty<float>(slice_shape, options);
+
+        // If the stack is not on the compute device, we need to allocate a buffer
+        // and copy the slice to that buffer. If it is on the compute device, just have
+        // buffer pointing to that original slice.
+        const bool copy_to_compute_device = compute_device != stack.device();
+        Array buffer = copy_to_compute_device ? Array<float>(slice_shape, options) : Array<float>();
+        auto transfer2buffer = [copy_to_compute_device, &buffer](const Array<float>& slice) {
+            if (copy_to_compute_device)
+                noa::memory::copy(slice, buffer);
+            else
+                buffer = slice;
+        };
+
+        //
+        qn::geometry::Projector projector(grid_shape, slice_shape, target_shape, options);
+        auto euler2matrix = [](const float3_t& euler_angles) -> float33_t {
+            return noa::geometry::euler2matrix(noa::math::deg2rad(euler_angles), "ZYX", false);
+        };
+
+        // Prepare reference slice.
+        transfer2buffer(stack.subregion(metadata[0].index));
+        noa::memory::resize(buffer, reference_pad);
+        noa::fft::r2c(reference_pad, reference_pad_fft);
+        projector.backward(reference_pad_fft, euler2matrix(metadata[0].angles), metadata[0].shifts);
+
+        // Projection matching:
+        for (size_t i = 1; i < metadata.size(); ++i) {
+            MetadataSlice& slice = metadata[i];
+            const float33_t rotation = euler2matrix(slice.angles);
+
+            // Get the target:
+            transfer2buffer(stack.subregion(slice.index));
+            noa::memory::resize(buffer, target_pad);
+            noa::fft::r2c(target_pad, target_pad_fft);
+
+            // Get the reference by forward projecting at the target rotation.
+            // We also need to shift the projected reference, to where the target is.
+            projector.forward(reference_pad_fft, rotation, slice.shifts);
+
+            // Find and apply shift:
+            noa::signal::fft::xmap<fft::H2F>(target_pad_fft, reference_pad_fft, xmap);
+            const float2_t peak = noa::signal::fft::xpeak2D<fft::F2F>(xmap, max_shift);
+            const float2_t shift = peak - slice_center;
+            slice.shifts += shift;
+
+            // Add the rotation-and-shift-corrected target in the Fourier volume.
+            projector.backward(target_pad_fft, rotation, -slice.shifts);
+        }
+
+        // Update the metadata with the new centered shifts.
+        // Use the slice index to find the math between slices.
+        const auto mean_scale = static_cast<float>(metadata.size());
+        const float2_t mean = std::accumulate(
+                metadata.slices().begin(), metadata.slices().end(), float2_t{0},
+                [mean_scale](const float2_t& init, const MetadataSlice& slice) {
+                    return (init + slice.shifts) / mean_scale;
+                });
+        for (size_t i = 0; i < metadata.size(); ++i) {
+            for (auto& original_slice: stack_meta.slices()) {
+                if (original_slice.index == metadata[i].index)
+                    original_slice.shifts = metadata[i].shifts - mean;
             }
         }
     }

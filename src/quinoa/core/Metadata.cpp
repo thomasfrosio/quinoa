@@ -2,6 +2,7 @@
 
 #include "quinoa/core/Metadata.h"
 #include "quinoa/io/Options.h"
+#include "quinoa/io/Logging.h"
 #include "quinoa/Exception.h"
 
 namespace qn {
@@ -152,10 +153,12 @@ namespace qn {
             sortBasedOnIndexes_(ascending);
         else if (key == "tilt")
             sortBasedOnTilt_(ascending);
+        else if (key == "absolute_tilt")
+            sortBasedOnAbsoluteTilt_(ascending);
         else if (key == "exposure")
             sortBasedOnExposure_(ascending);
         else
-            QN_THROW("The key should be \"index\", \"tilt\", or \"exposure\", but got \"{}\"", key);
+            QN_THROW("The key should be \"index\", \"tilt\",  \"absolute_tilt\" or \"exposure\", but got \"{}\"", key);
         return *this;
     }
 
@@ -177,6 +180,15 @@ namespace qn {
                          });
     }
 
+    void MetadataStack::sortBasedOnAbsoluteTilt_(bool ascending) {
+        std::stable_sort(m_slices.begin(), m_slices.end(),
+                         [ascending](const auto& lhs, const auto& rhs) {
+                             return ascending ?
+                                    std::abs(lhs.angles[1]) < std::abs(rhs.angles[1]) :
+                                    std::abs(lhs.angles[1]) > std::abs(rhs.angles[1]);
+                         });
+    }
+
     void MetadataStack::sortBasedOnExposure_(bool ascending) {
         std::stable_sort(m_slices.begin(), m_slices.end(),
                          [ascending](const auto& lhs, const auto& rhs) {
@@ -193,5 +205,49 @@ namespace qn {
                     return std::abs(lhs.angles[1]) < std::abs(rhs.angles[1]);
                 });
         return static_cast<size_t>(iter - m_slices.begin());
+    }
+
+    static void logUpdate(const MetadataStack& origin, const MetadataStack& current) {
+        const size_t size = current.size();
+        QN_CHECK(origin.size() == size,
+                 "The two metadata should have the same number of slices, but got {} and {}",
+                 origin.size(), size);
+        if (size == 0)
+            return;
+
+        // TODO Improve formatting.
+        qn::Logger::info("index, yaw, tilt, pitch, y-shift, x-shift");
+
+        for (size_t i = 0; i < size; ++i) {
+            const MetadataSlice& current_slice = current[i];
+            if (current_slice.excluded)
+                continue;
+
+            const MetadataSlice* origin_slice = &origin[i];
+            if (current_slice.index != origin_slice->index) {
+                // They are not sorted in the same order, so retrieve corresponding slice.
+                size_t count{0};
+                for (const auto& slice: origin.slices()) {
+                    if (slice.index == current_slice.index) {
+                        origin_slice = &slice;
+                        break;
+                    }
+                    ++count;
+                }
+                if (count == size - 1)
+                    QN_THROW("Missing slice in the original metadata");
+            }
+
+            // Log:
+            const float3_t angle_difference = current_slice.angles - origin_slice->angles;
+            const float2_t shift_difference = current_slice.shifts - origin_slice->shifts;
+            qn::Logger::info("{}, {}, {}, {}, {}, {}",
+                             current_slice.index,
+                             current_slice.angles[0], angle_difference[0],
+                             current_slice.angles[1], angle_difference[1],
+                             current_slice.angles[2], angle_difference[2],
+                             current_slice.shifts[0], shift_difference[0],
+                             current_slice.shifts[1], shift_difference[1]);
+        }
     }
 }
