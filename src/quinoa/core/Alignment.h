@@ -262,19 +262,20 @@ namespace qn::align {
                                  MetadataStack& stack_meta,
                                  Device compute_device,
                                  float2_t max_shift = {}) {
-        // Slices can be zero-padded before transformation. It's best
-        const dim_t size_pad = std::max(stack.shape()[2], stack.shape()[3]) * 2; // FIXME
+        const dim_t size_z_pad = std::min(stack.shape()[2], stack.shape()[3]) * 2;
+        const dim_t size_y_pad = stack.shape()[2] * 2;
+        const dim_t size_x_pad = stack.shape()[3] * 2;
 
         // The projector needs the following: 1) The target shape is the shape of the 3D Fourier volume.
         // Here, we'll use a
-        const dim4_t target_shape{1, size_pad, size_pad, size_pad};
-        const dim4_t slice_shape{1, 1, size_pad, size_pad};
+        const dim4_t slice_shape{1, 1, stack.shape()[2], stack.shape()[3]};
+        const dim4_t slice_shape_padded{1, 1, size_y_pad, size_x_pad};
         const float2_t slice_center = float2_t(slice_shape.get(2)) / 2;
-
-        // We only
-        const float frequency_cutoff_zx = 0.2f; // FIXME
-        const auto trunk_size = static_cast<dim_t>(static_cast<float>(size_pad) * frequency_cutoff_zx);
-        const dim4_t grid_shape{1, trunk_size, size_pad, trunk_size};
+        const dim4_t target_shape_padded{1, size_z_pad, size_y_pad, size_x_pad};
+        const dim4_t grid_shape_padded{1,
+                                       static_cast<float>(size_z_pad) * 0.15f,
+                                       size_y_pad,
+                                       static_cast<float>(size_x_pad) * 0.5f};
 
         //
         MetadataStack metadata = stack_meta;
@@ -282,57 +283,75 @@ namespace qn::align {
 
         // Allocating buffers.
         const ArrayOption options{compute_device, Allocator::DEFAULT_ASYNC};
-        auto [reference_pad, reference_pad_fft] = noa::fft::empty<float>(slice_shape, options);
-        auto [target_pad, target_pad_fft] = noa::fft::empty<float>(slice_shape, options);
+        auto [reference_pad, reference_pad_fft] = noa::fft::empty<float>(slice_shape_padded, options);
+        auto [target_pad, target_pad_fft] = noa::fft::empty<float>(slice_shape_padded, options);
+        auto [reference, reference_fft] = noa::fft::empty<float>(slice_shape, options);
+        Array target = noa::memory::empty<float>(slice_shape, options);
+        Array target_fft = noa::memory::empty<cfloat_t>(slice_shape.fft(), options);
         Array xmap = noa::memory::empty<float>(slice_shape, options);
+        qn::geometry::Projector projector(grid_shape_padded, slice_shape_padded, target_shape_padded, options);
 
-        // If the stack is not on the compute device, we need to allocate a buffer
-        // and copy the slice to that buffer. If it is on the compute device, just have
-        // buffer pointing to that original slice.
-        const bool copy_to_compute_device = compute_device != stack.device();
-        Array buffer = copy_to_compute_device ? Array<float>(slice_shape, options) : Array<float>();
-        auto transfer2buffer = [copy_to_compute_device, &buffer](const Array<float>& slice) {
-            if (copy_to_compute_device)
-                noa::memory::copy(slice, buffer);
-            else
-                buffer = slice;
-        };
-
-        //
-        qn::geometry::Projector projector(grid_shape, slice_shape, target_shape, options);
+        // The yaw is the CCW angle where the tilt-axis is in the slice. We want to transform this axis back to
+        // the Y axis of the 3D Fourier volume of the projector, so take negative. Then, apply the tilt and pitch.
+        // For backward projection, we'll also need to cancel any remaining shift before the insertion.
         auto euler2matrix = [](const float3_t& euler_angles) -> float33_t {
-            return noa::geometry::euler2matrix(noa::math::deg2rad(euler_angles), "ZYX", false);
+            const float3_t euler_angles_radians =
+                    noa::math::deg2rad(float3_t{-euler_angles[0], euler_angles[1], euler_angles[2]});
+            return noa::geometry::euler2matrix(euler_angles_radians, "ZYX", false);
         };
 
-        // Prepare reference slice.
-        transfer2buffer(stack.subregion(metadata[0].index));
-        noa::memory::resize(buffer, reference_pad);
+        // Prepare the original reference slice.
+        memory::copy(stack.subregion(metadata[0].index), reference);
+        noa::memory::resize(reference, reference_pad);
         noa::fft::r2c(reference_pad, reference_pad_fft);
-        projector.backward(reference_pad_fft, euler2matrix(metadata[0].angles), metadata[0].shifts);
+        projector.backward(reference_pad_fft,
+                           euler2matrix(metadata[0].angles),
+                           -metadata[0].shifts);
 
         // Projection matching:
+        Array<float> tmp(slice_shape.fft(), options);
         for (size_t i = 1; i < metadata.size(); ++i) {
             MetadataSlice& slice = metadata[i];
             const float33_t rotation = euler2matrix(slice.angles);
 
             // Get the target:
-            transfer2buffer(stack.subregion(slice.index));
-            noa::memory::resize(buffer, target_pad);
-            noa::fft::r2c(target_pad, target_pad_fft);
+            noa::memory::copy(stack.subregion(slice.index), target);
+            noa::fft::r2c(target, target_fft);
+            {
+                io::save(target, OUTPUT_PATH / "target.mrc");
+                math::ewise(target_fft, tmp, math::abs_one_log_t{});
+                io::save(tmp, OUTPUT_PATH / "target_fft.mrc");
+            }
 
             // Get the reference by forward projecting at the target rotation.
             // We also need to shift the projected reference, to where the target is.
+            // TODO Forward project every aligned slice with appropriate weighting based on tilt difference.
+
+            // Forward project with the transformation of the target.
             projector.forward(reference_pad_fft, rotation, slice.shifts);
+            noa::fft::c2r(reference_pad_fft, reference_pad);
+            noa::memory::resize(reference_pad, reference);
+            io::save(reference, OUTPUT_PATH / "reference.mrc");
+            noa::fft::r2c(reference, reference_fft);
+            {
+                math::ewise(reference_fft, tmp, math::abs_one_log_t{});
+                io::save(tmp, OUTPUT_PATH / "reference_fft.mrc");
+            }
 
             // Find and apply shift:
-            noa::signal::fft::xmap<fft::H2F>(target_pad_fft, reference_pad_fft, xmap);
-            const float2_t peak = noa::signal::fft::xpeak2D<fft::F2F>(xmap, max_shift);
+            noa::signal::fft::xmap<fft::H2FC>(target_fft, reference_fft, xmap);
+            io::save(xmap, OUTPUT_PATH / "xmap.mrc");
+            const float2_t peak = noa::signal::fft::xpeak2D<fft::FC2FC>(xmap, max_shift);
             const float2_t shift = peak - slice_center;
             slice.shifts += shift;
 
             // Add the rotation-and-shift-corrected target in the Fourier volume.
+            noa::memory::resize(target, target_pad);
+            noa::fft::r2c(target_pad, target_pad_fft);
             projector.backward(target_pad_fft, rotation, -slice.shifts);
         }
+
+        io::save(projector.m_grid_weights_fft, OUTPUT_PATH / "final_weights.mrc");
 
         // Update the metadata with the new centered shifts.
         // Use the slice index to find the math between slices.

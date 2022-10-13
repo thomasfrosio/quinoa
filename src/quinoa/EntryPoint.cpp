@@ -41,7 +41,7 @@ namespace qn {
         path_t output_filename =
                 options["output_directory"].as<path_t>() /
                 string::format("{}_cropped{}", stack_file.stem().string(), stack_file.extension().string());
-        qn::signal::fourierCrop(stack_file, output_filename, target_pixel_size, device);
+//        qn::signal::fourierCrop(stack_file, output_filename, target_pixel_size, device);
         stack_file = std::move(output_filename);
 
         // Exclude bad images.
@@ -81,21 +81,22 @@ namespace qn {
         //      It prevents having to copy the slices to the GPU every time.
 
         // Preprocess for projection matching:
-        qn::align::preprocessProjectionMatching(stack, new_metadata, device);
+        qn::align::preprocessProjectionMatching(stack, new_metadata, device, 0.1f, 0.1f);
 
-        const size_t max_iterations = 1;
+        const size_t max_iterations = 5;
         for (size_t i = 0; i < max_iterations; ++i) {
+            metadata = new_metadata;
+
             qn::align::shiftProjectionMatching(stack, new_metadata, device);
             // qn::align::rotationProjectionMatching(stack, new_metadata, device);
 
             // Log results.
             MetadataStack::logUpdate(metadata, new_metadata);
-            metadata = new_metadata;
 
             output_filename =
                     options["output_directory"].as<path_t>() /
                     string::format("{}_iter{:0<1}{}", stack_file.stem().string(), i, stack_file.extension().string());
-            qn::geometry::transform(stack, metadata, pixe_size, output_filename, device);
+            qn::geometry::transform(stack, new_metadata, pixe_size, output_filename, device);
         }
 
         // TODO Reconstruction

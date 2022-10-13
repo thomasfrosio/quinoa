@@ -134,7 +134,7 @@ namespace qn::geometry {
                         math::divide_epsilon_t{});
         }
 
-    private:
+    public:
         Array<cfloat_t> m_grid_data_fft;
         Array<float> m_grid_weights_fft;
         Array<float> m_weights_ones_fft;

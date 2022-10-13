@@ -207,7 +207,7 @@ namespace qn {
         return static_cast<size_t>(iter - m_slices.begin());
     }
 
-    static void logUpdate(const MetadataStack& origin, const MetadataStack& current) {
+    void MetadataStack::logUpdate(const MetadataStack& origin, const MetadataStack& current) {
         const size_t size = current.size();
         QN_CHECK(origin.size() == size,
                  "The two metadata should have the same number of slices, but got {} and {}",
@@ -241,7 +241,7 @@ namespace qn {
             // Log:
             const float3_t angle_difference = current_slice.angles - origin_slice->angles;
             const float2_t shift_difference = current_slice.shifts - origin_slice->shifts;
-            qn::Logger::info("{}, {}, {}, {}, {}, {}",
+            qn::Logger::info("{}, {}, ({:+f}), {}, ({:+f}), {}, ({:+f}), {}, ({:+f}), {}, ({:+f})",
                              current_slice.index,
                              current_slice.angles[0], angle_difference[0],
                              current_slice.angles[1], angle_difference[1],
