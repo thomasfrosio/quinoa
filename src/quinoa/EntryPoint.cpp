@@ -80,10 +80,12 @@ namespace qn {
         // TODO Check GPU memory to see if we push the entire stack there.
         //      It prevents having to copy the slices to the GPU every time.
 
-        // Preprocess for projection matching:
-        qn::align::preprocessProjectionMatching(stack, new_metadata, device, 0.1f, 0.1f);
+        Array original_stack = stack.copy();
 
-        const size_t max_iterations = 5;
+        // Preprocess for projection matching:
+        qn::align::preprocessProjectionMatching(stack, new_metadata, device, 0.05f, 0.05f);
+
+        const size_t max_iterations = 3;
         for (size_t i = 0; i < max_iterations; ++i) {
             metadata = new_metadata;
 
@@ -96,11 +98,12 @@ namespace qn {
             output_filename =
                     options["output_directory"].as<path_t>() /
                     string::format("{}_iter{:0<1}{}", stack_file.stem().string(), i, stack_file.extension().string());
-            qn::geometry::transform(stack, new_metadata, pixe_size, output_filename, device);
+            qn::geometry::transform(original_stack, new_metadata, pixe_size, output_filename, device);
         }
 
         // TODO Reconstruction
         // TODO Once reconstructed, molecular mask and backproject to remove noise, then start alignment again?
+        // TODO CTF (maybe one day...)
     }
 }
 

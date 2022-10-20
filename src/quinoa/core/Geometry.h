@@ -27,7 +27,7 @@ namespace qn::geometry {
                    InterpMode interpolation_mode = InterpMode::INTERP_LINEAR,
                    BorderMode border_mode = BorderMode::BORDER_ZERO) {
         const size4_t slice_shape{1, 1, stack.shape()[2], stack.shape()[3]};
-        const float2_t slice_center = float2_t(slice_shape.get(2)) / 2;
+        const float2_t slice_center = float2_t(size2_t(slice_shape.get(2)) / 2);
 
         io::ImageFile file(output_filename, io::WRITE);
         file.shape(size4_t{metadata.size(), 1, slice_shape[2], slice_shape[3]});
@@ -59,11 +59,6 @@ namespace qn::geometry {
         }
     }
 
-    /// Computes the padding factor for an image
-    void paddingFactor() {
-
-    }
-
     /// Backward and forward projection, accounting for the multiplicity, a slice at a time.
     /// \note The input and output slices are non-redundant, non-centered.
     class Projector {
@@ -85,7 +80,7 @@ namespace qn::geometry {
                   m_grid_shape(grid_shape),
                   m_slice_shape(slice_shape),
                   m_target_shape(target_shape),
-                  m_slice_center(float2_t(m_slice_shape.get(2)) / 2) {}
+                  m_slice_center(float2_t(size2_t(m_slice_shape.get(2)) / 2)) {}
 
         /// Backward project a slice into the 3D Fourier volume.
         /// \param[in] slice_fft    Slice to insert.
@@ -97,7 +92,7 @@ namespace qn::geometry {
                       float33_t rotation,
                       float2_t shift = {},
                       float22_t scaling = {},
-                      float cutoff = 0.5f) {
+                      float cutoff = 0.5f) const {
             noa::signal::fft::shift2D<fft::H2H>(
                     slice_fft, slice_fft, m_slice_shape, -m_slice_center + shift);
             noa::geometry::fft::insert3D<fft::H2HC>(
@@ -120,7 +115,7 @@ namespace qn::geometry {
                      float33_t rotation,
                      float2_t shift = {},
                      float22_t scaling = {},
-                     float cutoff = 0.5f) {
+                     float cutoff = 0.5f) const {
             noa::geometry::fft::extract3D<fft::HC2H>(
                     m_grid_data_fft, m_grid_shape,
                     slice_fft, m_slice_shape,
@@ -132,6 +127,12 @@ namespace qn::geometry {
             signal::fft::shift2D<fft::H2H>(slice_fft, slice_fft, m_slice_shape, m_slice_center + shift);
             math::ewise(slice_fft, m_weights_extract_fft, 1e-3f, slice_fft,
                         math::divide_epsilon_t{});
+        }
+
+        /// Resetting the buffer to the initial state.
+        void reset() const {
+            noa::memory::fill(m_grid_data_fft, cfloat_t{0});
+            noa::memory::fill(m_grid_weights_fft, float{0});
         }
 
     public:
