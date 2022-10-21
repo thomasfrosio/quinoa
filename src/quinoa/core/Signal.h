@@ -24,23 +24,30 @@ namespace qn::signal {
                 bool fit_to_fast_shape = true) {
 
         constexpr bool IS_3D = floatX_t::COUNT == 3;
-        const floatX_t shape_(shape.get(2 - IS_3D));
-        const floatX_t frequency_cutoff = current_pixel_size / (2 * target_pixel_size);
-        const floatX_t sample_cutoff = frequency_cutoff * shape_;
-        const floatX_t ceil_sample_cutoff = noa::math::ceil(sample_cutoff);
-        const floatX_t ceil_frequency_cutoff = ceil_sample_cutoff / shape_;
-        const floatX_t actual_pixel_size = current_pixel_size / ceil_frequency_cutoff;
+        const floatX_t current_shape(shape.get(2 - IS_3D));
+        floatX_t target_nyquist = current_pixel_size * 0.5f / target_pixel_size;
+        floatX_t target_shape = target_nyquist * current_shape / 0.5f;
+
+        target_shape = noa::math::floor(target_shape);
+        if (fit_to_fast_shape) {
+            for (size_t i = 0; i < floatX_t::COUNT; ++i) {
+                const auto size = clamp_cast<size_t>(target_shape[i]);
+                if (size > 1)
+                    target_shape[i] = static_cast<float>(noa::fft::nextFastSize(size));
+            }
+        }
+
+        target_nyquist = target_shape * 0.5 / current_shape;
+        target_pixel_size = current_pixel_size / (2 * target_nyquist);
 
         int4_t new_shape{
                 shape[0],
-                IS_3D ? sample_cutoff[0] * 2 : 1,
-                sample_cutoff[0 + IS_3D] * 2,
-                sample_cutoff[1 + IS_3D] * 2
+                IS_3D ? target_shape[0] : 1,
+                target_shape[0 + IS_3D],
+                target_shape[1 + IS_3D]
         };
-        if (fit_to_fast_shape)
-            new_shape = noa::fft::nextFastShape(new_shape);
 
-        return std::pair<size4_t, floatX_t>(new_shape, actual_pixel_size);
+        return std::pair<size4_t, floatX_t>(new_shape, target_pixel_size);
     }
 
     template<typename real_t = float, typename = std::enable_if_t<traits::is_any_v<real_t, float, double>>>
