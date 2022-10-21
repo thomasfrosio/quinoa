@@ -16,7 +16,7 @@
 #include "quinoa/core/Geometry.h"
 #include "quinoa/io/Logging.h"
 
-const path_t OUTPUT_PATH = "/home/thomas/Projects/quinoa/tests/qn_tilt1/";
+const path_t OUTPUT_PATH = "/home/thomas/Projects/quinoa/tests/debug_data/";
 
 namespace qn::align {
     /// 2D XY shifts alignment using cosine stretching on the reference images.
@@ -33,10 +33,12 @@ namespace qn::align {
     /// \param compute_device       Device where to do the computation. If it is a GPU, \p stack can be on any device,
     ///                             including the CPU. If it is a CPU, \p stack must be on the CPU as well.
     /// \param max_shift            Maximum YX shift a slice is allowed to have. If <= 0, it is ignored.
+    /// \param center               Whether the average shift (in the microscope reference frame) should be centered.
     void shiftPairwiseCosine(const Array<float>& stack,
                              MetadataStack& stack_meta,
                              Device compute_device,
-                             float2_t max_shift = {}) {
+                             float2_t max_shift = {},
+                             bool center = true) {
         qn::Logger::trace("Pairwise alignment using cosine-stretching...");
         Timer timer0;
         timer0.start();
@@ -180,6 +182,8 @@ namespace qn::align {
                             slice_to_slice_shifts.rend(),
                             global_shifts.rbegin() + idx_rpivot,
                             scan_op);
+        if (!center)
+            mean = 0;
 
         // We have the global shifts, so center them and scale them back to the original reference frame
         // of the slices, i.e. shrink the shifts to account for the slice's tilt and pitch.
