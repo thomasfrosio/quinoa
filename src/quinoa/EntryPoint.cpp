@@ -33,21 +33,23 @@ namespace qn {
 
         // Parses options early, to quickly throw if there's an invalid option.
         MetadataStack metadata(options);
-        auto stack_file = options["stack_file"].as<path_t>();
 
         // Fourier crop to target resolution.
-        const auto target_resolution = options["alignment_resolution"].as<float>(16.f);
-        float2_t target_pixel_size(target_resolution / 2);
-        path_t output_filename =
+        auto original_stack_filename = options["stack_file"].as<path_t>();
+        auto cropped_stack_filename =
                 options["output_directory"].as<path_t>() /
-                string::format("{}_cropped{}", stack_file.stem().string(), stack_file.extension().string());
-//        qn::signal::fourierCrop(stack_file, output_filename, target_pixel_size, device);
-        stack_file = std::move(output_filename);
+                string::format("{}_cropped{}",
+                               original_stack_filename.stem().string(),
+                               original_stack_filename.extension().string());
+        const auto target_resolution = options["alignment_resolution"].as<float>(16.f);
+        const auto [original_pixel_size, cropped_pixel_size] =
+                qn::signal::fourierCrop(original_stack_filename, cropped_stack_filename,
+                                        float2_t(target_resolution / 2), device);
 
         // Exclude bad images.
         const auto exclude_blank_views = options["exclude_blank_views"].as<bool>(false);
         if (exclude_blank_views) {
-            // TODO Implement, with ability to update tilt-scheme as well
+            // TODO
         }
 
         // Preprocess images.
@@ -56,10 +58,6 @@ namespace qn {
         // TODO Find the initial rotation angle.
 
         // Initial translation alignment using cosine stretched as input.
-        io::ImageFile file(stack_file, io::READ);
-        const Array<float> stack = file.read<float>();
-        const float2_t pixe_size(file.pixelSize().get(1));
-        file.close();
 
         metadata.sort("tilt");
         if (options["exclude_views_from_stack"].as<bool>(false))
@@ -69,40 +67,48 @@ namespace qn {
         // TODO From this point, we could iterate for multiple resolutions.
         //      Start very low res and increase up to resolution target.
 
-        qn::align::shiftPairwiseCosine(stack, new_metadata, device);
-        MetadataStack::logUpdate(metadata, new_metadata);
+        const Array<float> cropped_stack = noa::io::load<float>(cropped_stack_filename);
+        qn::align::shiftPairwiseCosine(cropped_stack, new_metadata, device, {}, true);
 
-        output_filename =
-                options["output_directory"].as<path_t>() /
-                string::format("{}_coarse{}", stack_file.stem().string(), stack_file.extension().string());
-        qn::geometry::transform(stack, new_metadata, pixe_size, output_filename, device);
+        { // Logging
+            MetadataStack::logUpdate(metadata, new_metadata, cropped_pixel_size / original_pixel_size);
+            auto cropped_coarse_stack_filename =
+                    options["output_directory"].as<path_t>() /
+                    string::format("{}_coarse{}",
+                                   cropped_stack_filename.stem().string(),
+                                   cropped_stack_filename.extension().string());
+            qn::geometry::transform(cropped_stack, new_metadata, cropped_pixel_size,
+                                    cropped_coarse_stack_filename, device);
+        }
+
 
         // TODO Check GPU memory to see if we push the entire stack there.
         //      It prevents having to copy the slices to the GPU every time.
 
-        Array original_stack = stack.copy();
-
         // Preprocess for projection matching:
-        qn::align::preprocessProjectionMatching(stack, new_metadata, device, 0.05f, 0.05f);
+        qn::align::preprocessProjectionMatching(cropped_stack, new_metadata, device, 0.08f, 0.05f);
 
         const size_t max_iterations = 3;
         for (size_t i = 0; i < max_iterations; ++i) {
             metadata = new_metadata;
 
-            qn::align::shiftProjectionMatching(stack, new_metadata, device);
+            qn::align::shiftProjectionMatching(cropped_stack, new_metadata, device);
             // qn::align::rotationProjectionMatching(stack, new_metadata, device);
 
-            // Log results.
-            MetadataStack::logUpdate(metadata, new_metadata);
-
-            output_filename =
-                    options["output_directory"].as<path_t>() /
-                    string::format("{}_iter{:0<1}{}", stack_file.stem().string(), i, stack_file.extension().string());
-            qn::geometry::transform(original_stack, new_metadata, pixe_size, output_filename, device);
+            { // Logging
+                MetadataStack::logUpdate(metadata, new_metadata, cropped_pixel_size / original_pixel_size);
+                auto cropped_coarse_stack_filename =
+                        options["output_directory"].as<path_t>() /
+                        string::format("{}_pm{:0>2}{}",
+                                       cropped_stack_filename.stem().string(), i,
+                                       cropped_stack_filename.extension().string());
+                qn::geometry::transform(cropped_stack, new_metadata, cropped_pixel_size,
+                                        cropped_coarse_stack_filename, device);
+            }
         }
 
         // TODO Reconstruction
-        // TODO Once reconstructed, molecular mask and backproject to remove noise, then start alignment again?
+        // TODO Once reconstructed, molecular mask and forward project to remove noise, then start alignment again?
         // TODO CTF (maybe one day...)
     }
 }

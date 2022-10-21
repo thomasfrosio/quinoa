@@ -207,7 +207,9 @@ namespace qn {
         return static_cast<size_t>(iter - m_slices.begin());
     }
 
-    void MetadataStack::logUpdate(const MetadataStack& origin, const MetadataStack& current) {
+    void MetadataStack::logUpdate(const MetadataStack& origin,
+                                  const MetadataStack& current,
+                                  float2_t shift_scaling_factor) {
         const size_t size = current.size();
         QN_CHECK(origin.size() == size,
                  "The two metadata should have the same number of slices, but got {} and {}",
@@ -239,15 +241,17 @@ namespace qn {
             }
 
             // Log:
+            const float2_t current_shifts_scaled = current_slice.shifts * shift_scaling_factor;
+            const float2_t origin_shifts_scaled = origin_slice->shifts * shift_scaling_factor;
             const float3_t angle_difference = current_slice.angles - origin_slice->angles;
-            const float2_t shift_difference = current_slice.shifts - origin_slice->shifts;
+            const float2_t shift_difference = current_shifts_scaled - origin_shifts_scaled;
             qn::Logger::info("{}, {}, ({:+f}), {}, ({:+f}), {}, ({:+f}), {}, ({:+f}), {}, ({:+f})",
                              current_slice.index,
                              current_slice.angles[0], angle_difference[0],
                              current_slice.angles[1], angle_difference[1],
                              current_slice.angles[2], angle_difference[2],
-                             current_slice.shifts[0], shift_difference[0],
-                             current_slice.shifts[1], shift_difference[1]);
+                             current_shifts_scaled[0], shift_difference[0],
+                             current_shifts_scaled[1], shift_difference[1]);
         }
     }
 }

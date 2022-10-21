@@ -93,7 +93,9 @@ namespace qn {
         [[nodiscard]] size_t lowestTilt() const;
 
     public:
-        static void logUpdate(const MetadataStack& origin, const MetadataStack& current);
+        ///
+        static void logUpdate(const MetadataStack& origin, const MetadataStack& current,
+                              float2_t shift_scaling_factor = float2_t{1});
 
     private:
         void sortBasedOnIndexes_(bool ascending = true);

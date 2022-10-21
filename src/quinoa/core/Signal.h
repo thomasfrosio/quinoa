@@ -51,7 +51,7 @@ namespace qn::signal {
     }
 
     template<typename real_t = float, typename = std::enable_if_t<traits::is_any_v<real_t, float, double>>>
-    void fourierCrop(const path_t& input_filename, const path_t& output_filename,
+    auto fourierCrop(const path_t& input_filename, const path_t& output_filename,
                      float2_t target_pixel_size, Device compute_device,
                      bool fit_to_fast_shape = true, bool standardize = true, float lowpass_cutoff = 0.5f) {
         using namespace ::noa;
@@ -66,13 +66,16 @@ namespace qn::signal {
 
         const float2_t current_pixel_size(input_file.pixelSize().get(1));
         auto[new_shape, new_pixel_size] = fourierCrop(shape, current_pixel_size, target_pixel_size, fit_to_fast_shape);
+        // TODO If new_shape == shape, just copy?
+
         const size4_t slice_shape{1, 1, shape[2], shape[3]};
         const size4_t new_slice_shape{1, 1, new_shape[2], new_shape[3]};
 
         io::ImageFile output_file(output_filename, io::WRITE);
         output_file.shape(new_shape);
         output_file.pixelSize(float3_t{1, new_pixel_size[0], new_pixel_size[1]});
-        Array<real_t> buffer_io = compute_device.gpu() ? memory::empty<real_t>(new_slice_shape) : Array<real_t>{};
+        Array<real_t> input_buffer_io = compute_device.gpu() ? memory::empty<real_t>(slice_shape) : Array<real_t>{};
+        Array<real_t> output_buffer_io = compute_device.gpu() ? memory::empty<real_t>(new_slice_shape) : Array<real_t>{};
 
         const ArrayOption options(compute_device, Allocator::DEFAULT_ASYNC);
         auto[input, input_fft] = fft::empty<real_t>(slice_shape, options);
@@ -82,10 +85,15 @@ namespace qn::signal {
         //      The IO can be done on another CPU thread.
         for (size_t i = 0; i < shape[0]; ++i) {
             // Get the current slice.
-            input_file.readSlice(input, i, false);
-            fft::r2c(input, input_fft);
+            if (compute_device.gpu()) {
+                input_file.readSlice(input_buffer_io, i, false);
+                memory::copy(input_buffer_io, input);
+            } else {
+                input_file.readSlice(input, i, false);
+            }
 
             // Fourier crop.
+            fft::r2c(input, input_fft);
             fft::resize<fft::H2H>(input_fft, slice_shape, output_fft, new_slice_shape);
             noa::signal::fft::lowpass<fft::H2H>(output_fft, output_fft, new_slice_shape, lowpass_cutoff, 0.05f);
             if (standardize)
@@ -94,12 +102,14 @@ namespace qn::signal {
 
             // Save.
             if (compute_device.gpu()) {
-                memory::copy(output, buffer_io);
-                output_file.writeSlice(buffer_io, i, false);
+                memory::copy(output, output_buffer_io);
+                output_file.writeSlice(output_buffer_io, i, false);
             } else {
                 output_file.writeSlice(output, i, false);
             }
         }
+
+        return std::pair{current_pixel_size, new_pixel_size};
     }
 
     // Removes images from a stack of images based on
