@@ -12,7 +12,9 @@ set(QUINOA_SOURCES
 
         src/quinoa/core/Alignment.h
         src/quinoa/core/Geometry.h
-        src/quinoa/core/Signal.h
-        src/quinoa/core/Metadata.h
         src/quinoa/core/Metadata.cpp
+        src/quinoa/core/Metadata.h
+        src/quinoa/core/PairwiseCosine.h
+        src/quinoa/core/ProjectionMatching.h
+        src/quinoa/core/Signal.h
         )

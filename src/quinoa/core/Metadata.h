@@ -16,6 +16,14 @@ namespace qn {
         float exposure{};   // Cumulated exposure, in e-/A2.
         int32_t index{};    // Index [0, N) of the slice within its stack.
         bool excluded{};    // Whether the slice is excluded.
+
+        static float2_t center(dim_t height, dim_t width) noexcept {
+            return {height / 2, width / 2};
+        }
+
+        static float2_t center(const dim4_t& shape) noexcept {
+            return center(shape[2], shape[3]);
+        }
     };
 
     struct TiltScheme {

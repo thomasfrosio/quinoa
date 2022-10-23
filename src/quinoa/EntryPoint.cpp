@@ -10,6 +10,7 @@
 #include "quinoa/io/Options.h"
 
 #include "quinoa/core/Alignment.h"
+#include "quinoa/core/PairwiseCosine.h"
 #include "quinoa/core/Geometry.h"
 #include "quinoa/core/Signal.h"
 #include "quinoa/core/Metadata.h"
@@ -68,19 +69,27 @@ namespace qn {
         //      Start very low res and increase up to resolution target.
 
         const Array<float> cropped_stack = noa::io::load<float>(cropped_stack_filename);
-        qn::align::shiftPairwiseCosine(cropped_stack, new_metadata, device, {}, true);
 
-        { // Logging
+        { // Cosine stretching alignment:
+            // TODO Highpass and Lowpass?
+            // TODO Check if normalization helps with the gradients?
+
+            const float2_t rotation_center = MetadataSlice::center(cropped_stack.shape());
+            qn::alignment::PairwiseCosine pairwise_cosine(cropped_stack.shape(), rotation_center, device);
+            pairwise_cosine.updateShifts(cropped_stack, new_metadata);
+            pairwise_cosine.clear();
+
+            // Logging
             MetadataStack::logUpdate(metadata, new_metadata, cropped_pixel_size / original_pixel_size);
             auto cropped_coarse_stack_filename =
                     options["output_directory"].as<path_t>() /
                     string::format("{}_coarse{}",
                                    cropped_stack_filename.stem().string(),
                                    cropped_stack_filename.extension().string());
-            qn::geometry::transform(cropped_stack, new_metadata, cropped_pixel_size,
-                                    cropped_coarse_stack_filename, device);
+            qn::geometry::transform(cropped_stack, new_metadata,
+                                    cropped_coarse_stack_filename,
+                                    device, cropped_pixel_size);
         }
-
 
         // TODO Check GPU memory to see if we push the entire stack there.
         //      It prevents having to copy the slices to the GPU every time.
@@ -102,8 +111,9 @@ namespace qn {
                         string::format("{}_pm{:0>2}{}",
                                        cropped_stack_filename.stem().string(), i,
                                        cropped_stack_filename.extension().string());
-                qn::geometry::transform(cropped_stack, new_metadata, cropped_pixel_size,
-                                        cropped_coarse_stack_filename, device);
+                qn::geometry::transform(cropped_stack, new_metadata,
+                                        cropped_coarse_stack_filename,
+                                        device, cropped_pixel_size);
             }
         }
 
