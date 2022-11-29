@@ -67,7 +67,7 @@ namespace qn::signal {
     std::pair<float2_t, float2_t>
     fourierCrop(const path_t& input_filename, const path_t& output_filename,
                 float2_t target_pixel_size, Device compute_device,
-                bool fit_to_fast_shape = true,
+                bool fit_to_fast_shape = true, float smooth_edge_percent = 0.1f,
                 float highpass_cutoff = 0.075f, float lowpass_cutoff = 0.5f,
                 float highpass_width = 0.075f, float lowpass_width = 0.05f) {
         using namespace ::noa;
@@ -84,8 +84,10 @@ namespace qn::signal {
         auto[new_shape, new_pixel_size] = fourierCrop(shape, current_pixel_size, target_pixel_size, fit_to_fast_shape);
         // TODO If new_shape == shape, just copy?
 
-        const dim4_t slice_shape{1, 1, shape[2], shape[3]};
-        const dim4_t new_slice_shape{1, 1, new_shape[2], new_shape[3]};
+        const auto slice_shape = dim4_t{1, 1, shape[2], shape[3]};
+        const auto new_slice_shape = dim4_t{1, 1, new_shape[2], new_shape[3]};
+        const auto new_slice_center = float2_t{new_shape[2] / 2, new_shape[3] / 2};
+        const auto smooth_edge_size = static_cast<float>(std::max(new_shape[2], new_shape[3])) * smooth_edge_percent;
 
         io::ImageFile output_file(output_filename, io::WRITE);
         output_file.shape(new_shape);
@@ -117,6 +119,9 @@ namespace qn::signal {
                     highpass_width, lowpass_width);
             noa::signal::fft::standardize<fft::H2H>(output_fft, output_fft, new_slice_shape);
             noa::fft::c2r(output_fft, output);
+            noa::signal::rectangle(
+                    output, output, new_slice_center,
+                    new_slice_center - smooth_edge_size, smooth_edge_size);
 
             // Save.
             if (compute_device.gpu()) {

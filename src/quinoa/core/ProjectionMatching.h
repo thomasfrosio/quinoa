@@ -21,7 +21,7 @@ namespace qn::alignment {
     public:
         ProjectionMatching(dim4_t shape,
                            Device compute_device,
-                           float smooth_edge_size = 0.05f,
+                           float smooth_edge_percent = 0.1f,
                            float slice_z_radius = 0.0005f,
                            float cutoff = 0.5f,
                            Allocator allocator = Allocator::DEFAULT_ASYNC)
@@ -34,7 +34,7 @@ namespace qn::alignment {
             m_slice_shape = {1, 1, shape[2], shape[3]};
             m_slice_shape_padded = {1, 1, m_size_pad, m_size_pad};
             m_slice_center_padded = static_cast<float>(m_size_pad / 2);
-            m_zero_taper_size = static_cast<float>(max_size) * smooth_edge_size;
+            m_zero_taper_size = static_cast<float>(max_size) * smooth_edge_percent;
 
             // For the buffers, keep them as separated entities (no alias for in-place FFT).
             // This could be improved and when/if textures are added this is likely to change.
@@ -55,9 +55,10 @@ namespace qn::alignment {
         }
 
         void updateShift(const Array<float>& stack,
-                         MetadataStack& stack_meta,
+                         MetadataStack& metadata,
                          float2_t max_shift = {},
                          float max_angle_difference = 30.f,
+                         bool use_lower_tilts_only = false,
                          bool center = true) {
             qn::Logger::trace("Projection matching shift alignment...");
             Timer timer;
@@ -66,26 +67,26 @@ namespace qn::alignment {
             max_angle_difference = math::deg2rad(max_angle_difference);
 
             // Projection matching:
-            MetadataStack metadata = stack_meta;
-            metadata.squeeze().sort("absolute_tilt");
-            for (size_t i = 1; i < metadata.size(); ++i) {
-                MetadataSlice& slice = metadata[i];
+            MetadataStack metadata_ = metadata;
+            metadata_.squeeze().sort("absolute_tilt");
+            for (size_t slice_index = 1; slice_index < metadata_.size(); ++slice_index) {
+                MetadataSlice& slice = metadata_[slice_index];
 
                 // The target view is saved in m_input_slice.
                 // The projected reference is saved in m_output_slice.
-                computeTargetAndReference_(stack, metadata, i, max_angle_difference);
+                computeTargetAndReference_(stack, metadata_, slice_index, max_angle_difference, use_lower_tilts_only);
                 {
                     Array<float> debug_target_reference({2, 1, m_slice_shape[2], m_slice_shape[3]});
                     noa::memory::copy(m_input_slice, debug_target_reference.subregion(0));
                     noa::memory::copy(m_output_slice, debug_target_reference.subregion(1));
-                    noa::io::save(debug_target_reference, string::format("/home/thomas/Projects/quinoa/tests/debug_pm_shift/target_reference_{:>02}.mrc", i));
+//                    noa::io::save(debug_target_reference, string::format("/home/thomas/Projects/quinoa/tests/debug_pm_shift/target_reference_{:>02}.mrc", slice.index));
                 }
 
                 // Cross-correlation to find the shift between target and reference:
                 noa::fft::r2c(m_input_slice, m_input_slice_fft);
                 noa::fft::r2c(m_output_slice, m_output_slice_fft);
                 noa::signal::fft::xmap<fft::H2FC>(m_input_slice_fft, m_output_slice_fft, m_input_slice, true);
-//                    noa::io::save(m_input_slice, string::format("/home/thomas/Projects/quinoa/tests/debug_data1/xmap_{:>02}.mrc", i));
+//                    noa::io::save(m_input_slice, string::format("/home/thomas/Projects/quinoa/tests/debug_pm_shift/xmap_{:>02}.mrc", slice.index));
                 const float2_t shift = extractShiftFromXmap_(slice, max_shift);
 
                 // Update the metadata.
@@ -93,13 +94,13 @@ namespace qn::alignment {
             }
 
             if (center)
-                centerShifts_(metadata);
+                centerShifts_(metadata_);
 
             // Update the metadata.
-            for (size_t i = 0; i < metadata.size(); ++i) {
-                for (auto& original_slice: stack_meta.slices()) {
-                    if (original_slice.index == metadata[i].index)
-                        original_slice.shifts = metadata[i].shifts;
+            for (size_t i = 0; i < metadata_.size(); ++i) {
+                for (auto& original_slice: metadata.slices()) {
+                    if (original_slice.index == metadata_[i].index)
+                        original_slice.shifts = metadata_[i].shifts;
                 }
             }
 
@@ -122,7 +123,8 @@ namespace qn::alignment {
         void computeTargetAndReference_(const Array<float>& stack,
                                         const MetadataStack& metadata,
                                         size_t target_index,
-                                        float max_angle_difference) {
+                                        float max_angle_difference,
+                                        bool use_lower_tilts_only) {
             // Signal from backward projected neighbouring slices are about to be
             // iteratively collected, so reset buffer slices.
             noa::memory::fill(m_output_slice_padded_fft, cfloat_t{0});
@@ -140,16 +142,20 @@ namespace qn::alignment {
             // total slices in the stack are backward projected, and slices are weighted based on how "close"
             // they are to the target slice.
             float total_weight{0};
-            for (size_t reference_index = 0; reference_index < metadata.size(); ++reference_index) {
+            const size_t max_index = use_lower_tilts_only ? target_index : metadata.size();
+            for (size_t reference_index = 0; reference_index < max_index; ++reference_index) {
                 const float3_t reference_angles = noa::math::deg2rad(metadata[reference_index].angles);
                 const float2_t& reference_shifts = metadata[reference_index].shifts;
 
-                const float tilt_difference = math::abs(target_angles[1] - reference_angles[1]);
+                const float tilt_difference = std::abs(target_angles[1] - reference_angles[1]);
                 if (reference_index == target_index || tilt_difference > max_angle_difference)
                     continue;
 
                 // TODO Weighting based on the order of collection? Or is exposure weighting enough?
-                const float weight = math::sinc(tilt_difference * math::Constants<float>::PI / max_angle_difference);
+                // Find the weight for this slice. This is how much the slice should contribute to the
+                // final projected-reference.
+                constexpr auto PI = noa::math::Constants<float>::PI;
+                const float weight = noa::math::sinc(tilt_difference * PI / max_angle_difference);
                 noa::memory::fill(m_input_weight_padded, 1 / weight);
 
                 // Collect the FOV of this reference slice.
@@ -166,6 +172,7 @@ namespace qn::alignment {
                                 reference_angles, reference_shifts);
 //                noa::io::save(m_input_slice, string::format("/home/thomas/Projects/quinoa/tests/debug_data1/fov_{:>02}.mrc", reference_index));
                 noa::memory::resize(m_input_slice, m_input_slice_padded);
+//                noa::io::save(m_input_slice_padded, string::format("/home/thomas/Projects/quinoa/tests/debug_pm_shift/fov_{:>02}.mrc", reference_index));
                 noa::fft::r2c(m_input_slice_padded, m_input_slice_padded_fft);
 
                 // The shift of the reference slice should be removed to have the rotation center at the origin.
@@ -184,14 +191,23 @@ namespace qn::alignment {
                 noa::geometry::fft::extract3D<fft::HC2H>(
                         m_input_slice_padded_fft, m_slice_shape_padded,
                         m_output_slice_padded_fft, m_slice_shape_padded,
-                        float22_t{}, inv_reference_rotation, float22_t{},
-                        fwd_target_rotation, m_slice_z_radius, m_cutoff);
+                        float22_t{}, inv_reference_rotation,
+                        float22_t{}, fwd_target_rotation,
+                        m_slice_z_radius, m_cutoff);
                 noa::geometry::fft::extract3D<fft::HC2H>(
                         m_input_weight_padded, m_slice_shape_padded,
                         m_output_weight_padded, m_slice_shape_padded,
-                        float22_t{}, inv_reference_rotation, float22_t{},
-                        fwd_target_rotation, m_slice_z_radius, m_cutoff);
+                        float22_t{}, inv_reference_rotation,
+                        float22_t{}, fwd_target_rotation,
+                        m_slice_z_radius, m_cutoff);
             }
+
+            Array<float> cumulative_fov(
+                    m_input_weight_padded.share(),
+                    m_output_slice.shape(),
+                    m_output_slice.shape().strides(),
+                    m_output_slice.options());
+            noa::memory::copy(m_output_slice, cumulative_fov);
 
             // For the target view, simply extract it from the stack and apply the cumulative FOV.
             Array target_view = stack.subregion(metadata[target_index].index);
@@ -199,10 +215,10 @@ namespace qn::alignment {
                 noa::memory::copy(target_view, m_input_slice);
                 target_view = m_input_slice;
             }
-            // TODO Apply the cumulative FOV to the projected reference?
-            noa::io::save(m_output_slice,
-                          string::format("/home/thomas/Projects/quinoa/tests/debug_pm_shift/cumulative_fov{:>02}.mrc", target_index));
-            math::ewise(m_output_slice, 1 / total_weight, target_view,
+//            // TODO Apply the cumulative FOV to the projected reference?
+//            noa::io::save(m_output_slice,
+//                          string::format("/home/thomas/Projects/quinoa/tests/debug_pm_shift/cumulative_fov{:02}.mrc", metadata[target_index].index));
+            math::ewise(cumulative_fov, 1 / total_weight, target_view,
                         m_input_slice, math::multiply_t{});
 
             // For the reference view, center the output projected slice
@@ -212,11 +228,13 @@ namespace qn::alignment {
                     m_slice_shape_padded, m_slice_center_padded + target_shifts);
             math::ewise(m_output_slice_padded_fft, m_output_weight_padded, 1e-3f,
                         m_output_slice_padded_fft, math::divide_epsilon_t{});
-            io::save(m_output_weight_padded,
-                     string::format("/home/thomas/Projects/quinoa/tests/debug_pm_shift/reference_fft_weights_{:>02}.mrc", target_index));
+//            io::save(m_output_weight_padded,
+//                     string::format("/home/thomas/Projects/quinoa/tests/debug_pm_shift/reference_fft_weights_{:>02}.mrc", target_index));
 
             noa::fft::c2r(m_output_slice_padded_fft, m_output_slice_padded);
             noa::memory::resize(m_output_slice_padded, m_output_slice);
+            math::ewise(cumulative_fov, 1 / total_weight, m_output_slice,
+                        m_output_slice, math::multiply_t{});
         }
 
         // Mask out the regions that are not in the target view to not include them in the projected views.
@@ -228,7 +246,7 @@ namespace qn::alignment {
 
             const float2_t cos_factor{math::cos(reference_angles[2]) / math::cos(target_angles[2]),
                                       math::cos(reference_angles[1]) / math::cos(target_angles[1])};
-            const float33_t affine_matrix = math::inverse( // TODO Compute inverse transformation directly
+            const float33_t inv_matrix_target_to_reference = math::inverse( // TODO Compute inverse transformation directly?
                     noa::geometry::translate(m_slice_center + reference_shifts) *
                     float33_t{noa::geometry::rotate(reference_angles[0])} *
                     float33_t{noa::geometry::scale(cos_factor)} *
@@ -238,7 +256,7 @@ namespace qn::alignment {
 
             noa::signal::rectangle(reference, reference,
                                    m_slice_center, m_slice_center - m_zero_taper_size,
-                                   m_zero_taper_size, affine_matrix);
+                                   m_zero_taper_size, inv_matrix_target_to_reference);
         }
 
         // Mask out the regions that are not in the reference view to not include
@@ -272,6 +290,7 @@ namespace qn::alignment {
             );
             noa::geometry::transform2D(m_input_slice, m_output_slice, xmap_inv_transform);
 
+            // TODO Better fitting of the peak. 2D parabola?
             const float2_t peak_rotated = noa::signal::fft::xpeak2D<fft::FC2FC>(m_output_slice, max_shift, {2, 2});
             float2_t shift_rotated = peak_rotated - m_slice_center;
             // The shift perpendicular to the tilt axis is unreliable...

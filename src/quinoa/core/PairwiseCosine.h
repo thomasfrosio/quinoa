@@ -30,7 +30,7 @@ namespace qn::alignment {
         /// \param interpolation_mode   Interpolation mode used for the cosine stretching.
         /// \param allocator            Allocator to use for \p compute_device.
         PairwiseCosine(dim4_t shape, Device compute_device,
-                       float smooth_edge_percent = 0.3f,
+                       float smooth_edge_percent = 0.1f,
                        InterpMode interpolation_mode = INTERP_LINEAR_FAST,
                        Allocator allocator = Allocator::DEFAULT_ASYNC)
                 : m_center(MetadataSlice::center(shape)),
@@ -174,12 +174,12 @@ namespace qn::alignment {
                     m_target_reference, m_target_reference, m_center,
                     m_center - m_smooth_edge_size, m_smooth_edge_size,
                     inv_stretch_target_to_reference);
-            {
+//            {
 //                noa::io::save(
 //                        m_target_reference,
 //                        string::format("/home/thomas/Projects/quinoa/tests/debug_cosine/target_reference_{:>02}.mrc",
 //                                       reference_slice.index));
-            }
+//            }
 
             // Cross-correlation:
             fft::r2c(m_target_reference, m_target_reference_fft);
