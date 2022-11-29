@@ -18,6 +18,9 @@ namespace qn {
         bool excluded{};    // Whether the slice is excluded.
 
         static float2_t center(dim_t height, dim_t width) noexcept {
+            // Use integral division to always have the center onto a pixel.
+            // This is actually important for Fourier cropping and resizing,
+            // so that we don't have to shift by 0.5 for even dimensions.
             return {height / 2, width / 2};
         }
 
@@ -101,9 +104,7 @@ namespace qn {
         [[nodiscard]] size_t lowestTilt() const;
 
     public:
-        ///
-        static void logUpdate(const MetadataStack& origin, const MetadataStack& current,
-                              float2_t shift_scaling_factor = float2_t{1});
+        static void logUpdate(const MetadataStack& origin, const MetadataStack& current);
 
     private:
         void sortBasedOnIndexes_(bool ascending = true);

@@ -20,39 +20,38 @@ namespace qn::alignment {
     /// Shift alignment using cosine stretching on the higher tilt images.
     class PairwiseCosine {
     public:
-        /// Creates an empty object.
-        PairwiseCosine() = default;
-
         /// Allocates for the internal buffers.
         /// \param shape                (BD)HW shape of the slices. The BD dimensions are ignored.
-        /// \param center               HW (rotation) center of the slices.
+        /// \param shift_scaling_factor           HW pixel size of the slices.
         /// \param compute_device       Device where to perform the alignment.
         ///                             If it is a GPU, the input stack for the alignment can be on any device,
         ///                             including the CPU. Otherwise, the stack will be expected to be on the CPU.
+        /// \param smooth_edge_percent  Size, in percent of the maximum-sized dimension, of the zero-edge taper.
         /// \param interpolation_mode   Interpolation mode used for the cosine stretching.
-        /// \param border_mode          Border mode used for the cosine stretching.
-        ///                             Stretching/shrinking can (slightly) expose the border of the target slices,
-        ///                             so if the input stack is not tapered, BORDER_MIRROR is an effective solution
-        ///                             to remove the borders.
         /// \param allocator            Allocator to use for \p compute_device.
-        PairwiseCosine(dim4_t shape, float2_t center, Device compute_device,
+        PairwiseCosine(dim4_t shape, Device compute_device,
+                       float smooth_edge_percent = 0.3f,
                        InterpMode interpolation_mode = INTERP_LINEAR_FAST,
-                       BorderMode border_mode = BORDER_MIRROR,
                        Allocator allocator = Allocator::DEFAULT_ASYNC)
-                : m_center(center) {
-            const size4_t slice_shape{1, 1, shape[2], shape[3]};
-            const ArrayOption options{compute_device, allocator};
+                : m_center(MetadataSlice::center(shape)),
+                  m_smooth_edge_size(static_cast<float>(std::max(shape[2], shape[3])) * smooth_edge_percent) {
+            const dim4_t buffer_shape{2, 1, shape[2], shape[3]};
+            const dim4_t slice_shape{1, 1, shape[2], shape[3]};
+            const ArrayOption options(compute_device, allocator);
 
             // The "target" is the higher (absolute) tilt image that we want to align onto the "reference".
             // Performance-wise, using out-of-place FFTs could be slightly better, but here prefer the safer
             // option to use less memory and in-place FFTs.
-            std::tie(m_reference, m_reference_fft) = fft::empty<float>(slice_shape, options);
-            std::tie(m_target, m_target_fft) = fft::empty<float>(slice_shape, options);
+            std::tie(m_target_reference, m_target_reference_fft) = fft::empty<float>(buffer_shape, options);
+            m_target = m_target_reference.subregion(0);
+            m_reference = m_target_reference.subregion(1);
+            m_target_fft = m_target_reference_fft.subregion(0);
+            m_reference_fft = m_target_reference_fft.subregion(1);
 
             // Since we need to transform the target, use a GPU texture since we'll need to copy
             // the target to a new array anyway. For CPU devices, this doesn't allocate anything,
             // and we'll directly use the input stack as input for the transformation.
-            m_target_texture = Texture<float>(slice_shape, compute_device, interpolation_mode, border_mode);
+            m_target_texture = Texture<float>(slice_shape, compute_device, interpolation_mode, BORDER_ZERO);
 
             // The (phase) cross-correlation map.
             m_xmap = memory::empty<float>(slice_shape, options);
@@ -79,6 +78,9 @@ namespace qn::alignment {
             QN_CHECK(stack.device().cpu() || m_xmap.device().gpu(),
                      "The input device {} is not supported for the compute device {}",
                      stack.device(), m_xmap.device());
+            qn::Logger::trace("Pairwise cosine-stretch shift alignment...");
+            Timer timer;
+            timer.start();
 
             // We'll need the slices sorted by tilt angles, with the lowest absolute tilt being the pivot point.
             // The metadata is allowed to contain excluded views, so for simplicity here, squeeze them out.
@@ -97,8 +99,6 @@ namespace qn::alignment {
                     slice_to_slice_shifts.emplace_back(0);
                     continue;
                 }
-                Timer timer1;
-                timer1.start();
 
                 // If ith target has:
                 //  - negative tilt angle, then reference is at i + 1.
@@ -109,8 +109,6 @@ namespace qn::alignment {
                 // Compute the shifts.
                 slice_to_slice_shifts.emplace_back(
                         findRelativeShifts_(stack, metadata_[idx_reference], metadata_[idx_target], max_shift));
-
-                qn::Logger::trace("Slice {:0>2} took {}ms", metadata_[idx_target].index, timer1.elapsed());
             }
 
             // This is the main drawback of this method. We need to compute the global shifts from the relative
@@ -125,11 +123,8 @@ namespace qn::alignment {
                         original_slice.shifts += static_cast<float2_t>(global_shifts[i]);
                 }
             }
-        }
 
-        /// Resets to empty state. Clears all buffers.
-        PairwiseCosine& clear() {
-            return *this = PairwiseCosine();
+            qn::Logger::trace("Pairwise cosine-stretch shift alignment... took {}ms", timer.elapsed());
         }
 
     private:
@@ -153,32 +148,41 @@ namespace qn::alignment {
             const float3_t reference_angles = math::deg2rad(reference_slice.angles);
 
             // Compute the affine matrix to transform the target "onto" the reference.
-            // We expected the (absolute value of the) tilt and pitch of the target to be greater than the
-            // reference's, resulting in a stretching of the target. Otherwise, we'll end up shrinking the target,
-            // exposing its edges, which is an issue for the alignment since we don't taper the edges.
-            // For the tilt, it should be guaranteed since the target is at a higher absolute tilt.
-            // For the pitch, the scaling should be 1 anyway since this function is meant for the initial
-            // alignment, when the pitch is 0.
-            // These angles are flipped, since the scaling is perpendicular to the axis of rotation.
+            // These angles are flipped, since the cos-scaling is perpendicular to the axis of rotation.
             const float2_t cos_factor{math::cos(reference_angles[2]) / math::cos(target_angles[2]),
                                       math::cos(reference_angles[1]) / math::cos(target_angles[1])};
 
             // Apply the scaling for the tilt and pitch difference,
             // and cancel the difference (if any) in yaw and shift as well.
-            const float33_t stretch_target_to_reference{
+            // After this point, the target should "overlap" with the reference.
+            const float33_t fwd_stretch_target_to_reference =
                     noa::geometry::translate(m_center + reference_slice.shifts) *
                     float33_t{noa::geometry::rotate(reference_angles[0])} *
                     float33_t{noa::geometry::scale(cos_factor)} *
                     float33_t{noa::geometry::rotate(-target_angles[0])} *
-                    noa::geometry::translate(-m_center - target_slice.shifts)
-            };
+                    noa::geometry::translate(-m_center - target_slice.shifts);
+            const float33_t inv_stretch_target_to_reference = math::inverse(fwd_stretch_target_to_reference);
+            noa::geometry::transform2D(m_target_texture, m_target, inv_stretch_target_to_reference);
 
-            // After this point, the target should "overlap" with the reference.
-            noa::geometry::transform2D(m_target_texture, m_target, math::inverse(stretch_target_to_reference));
+            // Enforce common field-of-view, hopefully to guide the alignment and not compare things that
+            // cannot be compared. This is mostly relevant for large shifts between images and high tilt angles.
+            noa::signal::rectangle(
+                    m_target_reference, m_target_reference, m_center,
+                    m_center - m_smooth_edge_size, m_smooth_edge_size,
+                    fwd_stretch_target_to_reference);
+            noa::signal::rectangle(
+                    m_target_reference, m_target_reference, m_center,
+                    m_center - m_smooth_edge_size, m_smooth_edge_size,
+                    inv_stretch_target_to_reference);
+            {
+//                noa::io::save(
+//                        m_target_reference,
+//                        string::format("/home/thomas/Projects/quinoa/tests/debug_cosine/target_reference_{:>02}.mrc",
+//                                       reference_slice.index));
+            }
 
-            // Phase cross-correlation:
-            fft::r2c(m_reference, m_reference_fft);
-            fft::r2c(m_target, m_target_fft);
+            // Cross-correlation:
+            fft::r2c(m_target_reference, m_target_reference_fft);
             signal::fft::xmap<fft::H2F>(m_target_fft, m_reference_fft, m_xmap);
 
             // Computes the YX shift of the target. To shift-align the stretched target onto the reference,
@@ -188,8 +192,8 @@ namespace qn::alignment {
 
             // We could destretch the shift to bring it back to the original target. However, we'll need
             // to compute the global shifts later on, as well as "centering the tilt-axis". This implies
-            // to accumulate the shifts of the lower view while accounting for their own scaling.
-            // It seems that it is simpler to scale all the slice-to-slice shifts to the same reference
+            // to accumulate the shifts of the lower views while accounting for their own scaling.
+            // Instead, it is simpler to scale all the slice-to-slice shifts to the same reference
             // frame, process everything there, and then go back to whatever higher tilt reference at
             // the end. Here, this common reference frame is the untilted and unpitched specimen.
             const float2_t reference_pivot_tilt{reference_angles[2], reference_angles[1]};
@@ -251,12 +255,16 @@ namespace qn::alignment {
         }
 
     private:
+        Array<float> m_target_reference;
+        Array<cfloat_t> m_target_reference_fft;
         Array<float> m_target;
         Array<cfloat_t> m_target_fft;
         Array<float> m_reference;
         Array<cfloat_t> m_reference_fft;
+
         Texture<float> m_target_texture;
         Array<float> m_xmap;
         float2_t m_center{};
+        float m_smooth_edge_size{};
     };
 }

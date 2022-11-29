@@ -50,36 +50,52 @@ namespace qn::signal {
         return std::pair<size4_t, floatX_t>(new_shape, target_pixel_size);
     }
 
-    template<typename real_t = float, typename = std::enable_if_t<traits::is_any_v<real_t, float, double>>>
-    auto fourierCrop(const path_t& input_filename, const path_t& output_filename,
-                     float2_t target_pixel_size, Device compute_device,
-                     bool fit_to_fast_shape = true, bool standardize = true, float lowpass_cutoff = 0.5f) {
+    /// Fourier crops a stack.
+    /// \param[in] input_filename   Path of the input stack to Fourier crop.
+    /// \param[out] output_filename Path where to save the cropped stack.
+    /// \param target_pixel_size    HW target (aimed) pixel size, in A/pixel.
+    /// \param compute_device       Device on which the computation is done.
+    /// \param fit_to_fast_shape    Fits to a "fast" shape of FFTs. This should very slightly increase the size
+    ///                             of the output and decrease its pixel size.
+    /// \param highpass_cutoff      Cutoff, in cycle/pix, where the pass is fully recovered.
+    /// \param lowpass_cutoff       Cutoff, in cycle/pix, where the pass starts to roll-off.
+    /// \param highpass_width       Frequency width, in cycle/pix, of the Hann window between 0 and \p highpass_cutoff.
+    /// \param lowpass_width        Frequency width, in cycle/pix, of the Hann window, from \p lowpass_cutoff.
+    /// \return The input and output pixel sizes are returned.
+    ///         The output pixel size is usually a bit lower than the target.
+    template<typename Real = float, typename = std::enable_if_t<traits::is_any_v<Real, float, double>>>
+    std::pair<float2_t, float2_t>
+    fourierCrop(const path_t& input_filename, const path_t& output_filename,
+                float2_t target_pixel_size, Device compute_device,
+                bool fit_to_fast_shape = true,
+                float highpass_cutoff = 0.075f, float lowpass_cutoff = 0.5f,
+                float highpass_width = 0.075f, float lowpass_width = 0.05f) {
         using namespace ::noa;
 
         // Some files are not encoded properly, so if file is a volume, still interpret it as stack of 2D images.
         io::ImageFile input_file(input_filename, io::READ);
-        size4_t shape = input_file.shape();
+        dim4_t shape = input_file.shape();
         if (shape[0] == 1 && shape[1] > 1)
             std::swap(shape[0], shape[1]);
         QN_CHECK(shape[1] == 1, "File: {}. A tilt-series was expected, but got image file with shape {}",
                  input_filename, shape);
 
-        const float2_t current_pixel_size(input_file.pixelSize().get(1));
+        const auto current_pixel_size = float2_t(input_file.pixelSize().get(1));
         auto[new_shape, new_pixel_size] = fourierCrop(shape, current_pixel_size, target_pixel_size, fit_to_fast_shape);
         // TODO If new_shape == shape, just copy?
 
-        const size4_t slice_shape{1, 1, shape[2], shape[3]};
-        const size4_t new_slice_shape{1, 1, new_shape[2], new_shape[3]};
+        const dim4_t slice_shape{1, 1, shape[2], shape[3]};
+        const dim4_t new_slice_shape{1, 1, new_shape[2], new_shape[3]};
 
         io::ImageFile output_file(output_filename, io::WRITE);
         output_file.shape(new_shape);
         output_file.pixelSize(float3_t{1, new_pixel_size[0], new_pixel_size[1]});
-        Array<real_t> input_buffer_io = compute_device.gpu() ? memory::empty<real_t>(slice_shape) : Array<real_t>{};
-        Array<real_t> output_buffer_io = compute_device.gpu() ? memory::empty<real_t>(new_slice_shape) : Array<real_t>{};
+        Array input_buffer_io = compute_device.gpu() ? memory::empty<Real>(slice_shape) : Array<Real>{};
+        Array output_buffer_io = compute_device.gpu() ? memory::empty<Real>(new_slice_shape) : Array<Real>{};
 
         const ArrayOption options(compute_device, Allocator::DEFAULT_ASYNC);
-        auto[input, input_fft] = fft::empty<real_t>(slice_shape, options);
-        auto[output, output_fft] = fft::empty<real_t>(new_slice_shape, options);
+        auto[input, input_fft] = noa::fft::empty<Real>(slice_shape, options);
+        auto[output, output_fft] = noa::fft::empty<Real>(new_slice_shape, options);
 
         // TODO Add async support. On the GPU, use two streams to overlap memory copy and kernel.
         //      The IO can be done on another CPU thread.
@@ -93,12 +109,14 @@ namespace qn::signal {
             }
 
             // Fourier crop.
-            fft::r2c(input, input_fft);
-            fft::resize<fft::H2H>(input_fft, slice_shape, output_fft, new_slice_shape);
-            noa::signal::fft::lowpass<fft::H2H>(output_fft, output_fft, new_slice_shape, lowpass_cutoff, 0.05f);
-            if (standardize)
-                noa::signal::fft::standardize<fft::H2H>(output_fft, output_fft, new_slice_shape);
-            fft::c2r(output_fft, output);
+            noa::fft::r2c(input, input_fft);
+            noa::fft::resize<fft::H2H>(input_fft, slice_shape, output_fft, new_slice_shape);
+            noa::signal::fft::bandpass<fft::H2H>(
+                    output_fft, output_fft, new_slice_shape,
+                    highpass_cutoff, lowpass_cutoff,
+                    highpass_width, lowpass_width);
+            noa::signal::fft::standardize<fft::H2H>(output_fft, output_fft, new_slice_shape);
+            noa::fft::c2r(output_fft, output);
 
             // Save.
             if (compute_device.gpu()) {
@@ -109,7 +127,7 @@ namespace qn::signal {
             }
         }
 
-        return std::pair{current_pixel_size, new_pixel_size};
+        return {current_pixel_size, new_pixel_size};
     }
 
     // Removes images from a stack of images based on
