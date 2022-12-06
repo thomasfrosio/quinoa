@@ -1,5 +1,5 @@
 quinoa:
-  alignment_resolution: [ 18,16,12 ]  # Resolution, in Angstrom, at which to perform the alignment.
+  alignment_resolution: [ 12 ]  # Resolution, in Angstrom, at which to perform the alignment.
 
   # Stack files.
   # If the directory is entered, the program tries to look for the other input files

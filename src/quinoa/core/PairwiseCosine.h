@@ -174,21 +174,15 @@ namespace qn::alignment {
                     m_target_reference, m_target_reference, m_center,
                     m_center - m_smooth_edge_size, m_smooth_edge_size,
                     inv_stretch_target_to_reference);
-//            {
-//                noa::io::save(
-//                        m_target_reference,
-//                        string::format("/home/thomas/Projects/quinoa/tests/debug_cosine/target_reference_{:>02}.mrc",
-//                                       reference_slice.index));
-//            }
 
-            // Cross-correlation:
+            // (Conventional) cross-correlation:
             fft::r2c(m_target_reference, m_target_reference_fft);
             signal::fft::xmap<fft::H2F>(m_target_fft, m_reference_fft, m_xmap);
 
             // Computes the YX shift of the target. To shift-align the stretched target onto the reference,
             // we would then need to subtract this shift to the stretched target.
-            const float2_t peak = signal::fft::xpeak2D<fft::F2F>(m_xmap, max_shift);
-            const double2_t shift_stretched_reference(peak - m_center);
+            const float2_t peak_reference = signal::fft::xpeak2D<fft::F2F>(m_xmap, max_shift);
+            const double2_t shift_reference(peak_reference - m_center);
 
             // We could destretch the shift to bring it back to the original target. However, we'll need
             // to compute the global shifts later on, as well as "centering the tilt-axis". This implies
@@ -197,13 +191,13 @@ namespace qn::alignment {
             // frame, process everything there, and then go back to whatever higher tilt reference at
             // the end. Here, this common reference frame is the untilted and unpitched specimen.
             const float2_t reference_pivot_tilt{reference_angles[2], reference_angles[1]};
-            const double22_t stretch_to_0deg{
-                    noa::geometry::rotate(target_angles[0]) *
+            const double22_t fwd_stretch_reference_to_0deg{
+                    noa::geometry::rotate(reference_angles[0]) *
                     noa::geometry::scale(1 / math::cos(reference_pivot_tilt)) * // 1 = cos(0deg)
-                    noa::geometry::rotate(-target_angles[0])
+                    noa::geometry::rotate(-reference_angles[0])
             };
-            const double2_t shift_stretched_to_0deg = stretch_to_0deg * shift_stretched_reference;
-            return shift_stretched_to_0deg;
+            const double2_t shift_0deg = fwd_stretch_reference_to_0deg * shift_reference;
+            return shift_0deg;
         };
 
         // Compute the global shifts, i.e. the shifts to apply to a slice so that it becomes aligned with the
@@ -243,12 +237,12 @@ namespace qn::alignment {
             // of their respective slice, i.e. shrink the shifts to account for the slice's tilt and pitch.
             for (size_t i = 0; i < count; ++i) {
                 const double3_t angles(math::deg2rad(metadata[i].angles));
-                const double22_t shrink_matrix{
+                const double22_t fwd_shrink_matrix{
                         noa::geometry::rotate(angles[0]) *
                         noa::geometry::scale(math::cos(double2_t(angles[2], angles[1]))) *
                         noa::geometry::rotate(-angles[0])
                 };
-                global_shifts[i] = shrink_matrix * (global_shifts[i] - mean);
+                global_shifts[i] = fwd_shrink_matrix * (global_shifts[i] - mean);
             }
 
             return global_shifts;
@@ -257,9 +251,10 @@ namespace qn::alignment {
     private:
         Array<float> m_target_reference;
         Array<cfloat_t> m_target_reference_fft;
+
         Array<float> m_target;
-        Array<cfloat_t> m_target_fft;
         Array<float> m_reference;
+        Array<cfloat_t> m_target_fft;
         Array<cfloat_t> m_reference_fft;
 
         Texture<float> m_target_texture;

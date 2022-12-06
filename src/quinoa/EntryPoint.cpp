@@ -35,6 +35,10 @@ namespace qn {
             Stream::current(stream);
         }
 
+        // Filename and directories:
+        const auto original_stack_filename = options["stack_file"].as<path_t>();
+
+        // Alignment resolutions:
         std::vector<float> alignment_resolutions; // TODO Use flat_vector instead
         if (options["alignment_resolution"].IsScalar())
             alignment_resolutions.emplace_back(options["alignment_resolution"].as<float>());
@@ -45,14 +49,13 @@ namespace qn {
         std::sort(alignment_resolutions.begin(), alignment_resolutions.end(), std::greater{});
 
         // Alignment resolution loop. Progressively increase the resolution of the input stack.
-        const MetadataStack metadata_before_alignment = metadata;
+        MetadataStack metadata_from_previous_iter = metadata;
         for (size_t alignment_resolution_iter = 0;
              alignment_resolution_iter < alignment_resolutions.size();
              ++alignment_resolution_iter) {
 
             // Fourier crop to target resolution and preprocess.
-            auto original_stack_filename = options["stack_file"].as<path_t>();
-            auto cropped_stack_filename =
+            const auto cropped_stack_filename =
                     options["output_directory"].as<path_t>() /
                     string::format("{}_cropped_iter{:>02}{}",
                                    original_stack_filename.stem().string(),
@@ -77,7 +80,7 @@ namespace qn {
             // TODO Check GPU memory to see if we push the entire stack there.
             //      It prevents having to copy the slices to the GPU every time.
             //      Instead of loading again, couldn't we return the stack in fourierCrop?
-            Array cropped_stack = noa::io::load<float>(cropped_stack_filename);
+            Array cropped_stack = noa::io::load<float>(cropped_stack_filename, false, device);
 
             // Scale the metadata to the current pixel size.
             for (auto& slice: metadata.slices())
@@ -86,47 +89,51 @@ namespace qn {
 
             if (alignment_resolution_iter == 0) {
                 // TODO Find the initial rotation angle.
-            }
-            // TODO Find the tilt offset.
+                // TODO Find the tilt offset.
 
-            // Cosine stretching alignment:
-            // For the first iteration, run the alignment again with the new shifts.
-            // At this point, the stack should be preprocessed, which includes the highpass
-            // to remove the density gradients and the zero-taper.
-            {
+                // Cosine stretching alignment:
+                // For the first iteration, run the alignment again with the new shifts.
+                // At this point, the stack should be preprocessed, which includes the highpass
+                // to remove the density gradients and the zero-taper.
                 qn::alignment::PairwiseCosine pairwise_cosine(cropped_stack.shape(), device);
                 pairwise_cosine.updateShifts(cropped_stack, metadata);
-                if (alignment_resolution_iter == 0)
-                    pairwise_cosine.updateShifts(cropped_stack, metadata);
+                pairwise_cosine.updateShifts(cropped_stack, metadata);
             }
 
             // Projection matching alignment:
-            {
+            constexpr bool do_projection_matching = true;
+            if (do_projection_matching) {
+                qn::alignment::ProjectionParameters parameters{
+                        0.0005f, // backward_slice_z_radius TODO percent of padded size?
+                        65.f,    // backward_tilt_angle_difference
+                        0.5f,    // forward_cutoff
+                        true,    // backward_use_aligned_only
+                };
                 qn::alignment::ProjectionMatching projection_matching(cropped_stack.shape(), device);
-                const size_t max_iterations = 1; // TODO Find convergence
-                for (size_t i = 0; i < max_iterations; ++i) {
-                    projection_matching.updateShift(cropped_stack, metadata);
-                    // TODO Rotation alignment
-                }
+                projection_matching.align(cropped_stack, metadata, parameters, float2_t{}); // TODO max shift
             }
-
-            auto cropped_aligned_stack_filename =
-                    options["output_directory"].as<path_t>() /
-                    string::format("{}_iter{:0>2}{}",
-                                   cropped_stack_filename.stem().string(),
-                                   alignment_resolution_iter,
-                                   cropped_stack_filename.extension().string());
-            qn::geometry::transform(cropped_stack, metadata,
-                                    cropped_aligned_stack_filename,
-                                    device, cropped_pixel_size);
 
             // Scale shifts back to original pixel size.
             for (auto& slice: metadata.slices())
                 if (!slice.excluded)
                     slice.shifts *= cropped_pixel_size / original_pixel_size;
 
-            MetadataStack::logUpdate(metadata_before_alignment, metadata);
+            MetadataStack::logUpdate(metadata_from_previous_iter, metadata);
+            metadata_from_previous_iter = metadata;
         }
+
+        // Save the transformed stack.
+        const auto aligned_stack_filename =
+                options["output_directory"].as<path_t>() /
+                string::format("{}_aligned{}",
+                               original_stack_filename.stem().string(),
+                               original_stack_filename.extension().string());
+        noa::io::ImageFile original_stack_file(original_stack_filename, noa::io::READ);
+        const auto original_pixel_size = float2_t(original_stack_file.pixelSize().get(1));
+        const Array original_stack = noa::io::load<float>(original_stack_filename);
+        qn::geometry::transform(original_stack, metadata,
+                                aligned_stack_filename,
+                                device, original_pixel_size);
 
         // TODO Reconstruction
         // TODO Once reconstructed, molecular mask and forward project to remove noise, then start alignment again?
@@ -138,6 +145,8 @@ namespace qn {
 int main(int argc, char* argv[]) {
     // Initialize everything that needs to be initialized.
     noa::Session session("quinoa", "quinoa.log", Logger::VERBOSE); // TODO set verbosity
+    // TODO Set CUDA memory buffer
+    // TODO Set number of cached cufft plans.
 
     try {
         qn::Options options(argc, argv);
