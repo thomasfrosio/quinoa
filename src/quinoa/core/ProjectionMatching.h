@@ -13,10 +13,9 @@
 
 #include "quinoa/Types.h"
 #include "quinoa/core/Metadata.h"
-#include "quinoa/core/Geometry.h"
 #include "quinoa/io/Logging.h"
 
-namespace qn::alignment {
+namespace qn {
     struct ProjectionParameters {
         ///
         float backward_slice_z_radius = 0.0005f;
@@ -35,7 +34,7 @@ namespace qn::alignment {
     public:
         ProjectionMatching(dim4_t shape,
                            Device compute_device,
-                           float smooth_edge_percent = 0.1f,
+                           float smooth_edge_percent = 0.5f,
                            Allocator allocator = Allocator::DEFAULT_ASYNC)
                 : m_slice_center(MetadataSlice::center(shape)) {
             // Zero padding:
@@ -67,8 +66,7 @@ namespace qn::alignment {
             m_slice0_padded_fft = m_slices_padded_fft.subregion(0);
             m_slice1_padded_fft = m_slices_padded_fft.subregion(1);
 
-            m_slice0_weight_padded_fft = memory::empty<float>(m_slice_shape_padded.fft(), options);
-            m_slice1_weight_padded_fft = memory::empty<float>(m_slice_shape_padded.fft(), options);
+            m_slice_weight_padded_fft = memory::empty<float>(m_slice_shape_padded.fft(), options);
             m_cumulative_fov = memory::empty<float>(m_slice_shape, options);
         }
 
@@ -90,7 +88,12 @@ namespace qn::alignment {
             MetadataStack metadata_ = metadata;
             metadata_.squeeze().sort("absolute_tilt");
 
+            Array<float> buffer = memory::empty<float>(m_slices_fft.shape(), m_slices_fft.options());
+
             for (size_t slice_index = 1; slice_index < metadata_.size(); ++slice_index) {
+//                Timer timer0;
+//                timer0.start();
+
                 MetadataSlice& slice = metadata_[slice_index];
 
                 // TODO Grid search - optimizer.
@@ -98,31 +101,42 @@ namespace qn::alignment {
                 //      The score is fed to the optimizer, which then returns the next 3D rotation to measure.
                 //      The optimizer should also return when the alignment converges and output a convergence score.
                 float3_t best_angles_offset{};
-                {
-                    // The target view is saved in m_slice0.
-                    // The projected reference is saved in m_reference.
-//                    computeTargetAndReference_(stack, metadata_, slice_index, best_angles_offset, projection_parameters);
-                    {
-//                    noa::io::save(debug_target_reference, string::format(
-//                      "/home/thomas/Projects/quinoa/tests/debug_pm_shift/target_reference_{:>02}.mrc", slice.index));
-                    }
 
-                    // Cross-correlation to find the shift between target and reference:
-//                    noa::fft::r2c(m_slices, m_slices_fft);
+                std::array<float, 13> yaw_offsets{-90, -1.5f, -1, -0.5f, -0.25f, -0.15f, 0, 0.15f, 0.25f, 0.5f, 1, 1.5f, 2};
+                std::array<float, 13> cc_scores{};
+                for (size_t i = 0; i < yaw_offsets.size(); ++i) {
+                    const float3_t angle_offsets = {yaw_offsets[i], 0, 0};
+                    computeTargetAndReference_(stack, metadata_, slice_index, angle_offsets, projection_parameters);
 
-                    // Normalized cross-correlation:
-                    // TODO
+                    math::ewise(m_slice0, 1 / math::max(m_slice0), m_slice0, math::multiply_t{});
+                    math::ewise(m_slice1, 1 / math::max(m_slice1), m_slice1, math::multiply_t{});
+                    io::save(m_slices, string::format("/home/thomas/Projects/quinoa/tests/debug_data/target_reference_{}_{:0>2}.mrc", slice_index, i));
+
+                    noa::fft::r2c(m_slices, m_slices_fft);
+
+                    noa::math::ewise(m_slices_fft, buffer, math::abs_one_log_t{});
+                    io::save(noa::fft::remap(fft::H2HC, m_slice1_fft, m_slice_shape), string::format("/home/thomas/Projects/quinoa/tests/debug_data/target_reference_fft_{}_{:0>2}.mrc", slice_index, i));
+//                    noa::signal::fft::standardize<fft::H2H>(m_slices_fft, m_slices_fft, {2, 1, m_slice_shape[2], m_slice_shape[3]});
+
+                    cc_scores[i] = noa::signal::fft::xcorr<fft::H2H>(m_slice0_fft, m_slice1_fft, m_slice_shape);
+                    noa::signal::fft::xmap<fft::H2FC>(m_slice0_fft, m_slice1_fft, m_slice0); // TODO Double phase
+                    io::save(m_slice0, string::format("/home/thomas/Projects/quinoa/tests/debug_data/xmap_{}_{:0>2}.mrc", slice_index, i));
                 }
+
+                qn::Logger::trace("CC scores {}: {}", slice_index, cc_scores);
 
                 // Find the shifts:
                 computeTargetAndReference_(stack, metadata_, slice_index, best_angles_offset, projection_parameters);
+                noa::io::save(m_slices, string::format("/home/thomas/Projects/quinoa/tests/debug_pm_shift/target_reference_{:>02}.mrc", slice.index));
                 noa::fft::r2c(m_slices, m_slices_fft);
                 noa::signal::fft::xmap<fft::H2FC>(m_slice0_fft, m_slice1_fft, m_slice0); // TODO Double phase
                 const float2_t best_shift = extractShiftFromXmap_(slice, max_shift);
-//                noa::io::save(m_slice0, string::format("/home/thomas/Projects/quinoa/tests/debug_pm_shift/xmap_{:>02}.mrc", slice.index));
+                noa::io::save(m_slice0, string::format("/home/thomas/Projects/quinoa/tests/debug_pm_shift/xmap_{:>02}.mrc", slice.index));
 
                 // Update the metadata.
                 slice.shifts += best_shift;
+
+//                qn::Logger::trace("Projection matching shift alignment... iter took {}ms", timer0.elapsed());
             }
 
             if (center_tilt_axis)
@@ -140,10 +154,14 @@ namespace qn::alignment {
         }
 
     private:
-        float optimize_function() {
-//            best_angles_offset
-            return 0.f;
-        }
+//        float optimize_function() {
+//
+//            //            best_angles_offset
+//
+//            computeTargetAndReference_(stack, metadata_, slice_index, best_angles_offset, projection_parameters);
+//            noa::fft::r2c(m_slices, m_slices_fft);
+//            return noa::signal::fft::xcorr<fft::H2H>(m_slice0_fft, m_slice1_fft, m_slice_shape_padded);
+//        }
 
         /// Compute the target and reference slices.
         /// \details Proximity weighting: the backward projected views are weighted based on their
@@ -179,7 +197,7 @@ namespace qn::alignment {
             // Go through the stack and backward project the reference slices.
             // Reset the buffers for backward projection.
             noa::memory::fill(m_slice1_padded_fft, cfloat_t{0});
-            noa::memory::fill(m_slice1_weight_padded_fft, float{0});
+            noa::memory::fill(m_slice_weight_padded_fft, float{0});
             noa::memory::fill(m_cumulative_fov, float{0});
 
             float total_weight{0};
@@ -197,8 +215,7 @@ namespace qn::alignment {
                 // TODO Weighting based on the order of collection? Or is exposure weighting enough?
                 // How much the slice should contribute to the final projected-reference.
                 constexpr auto PI = noa::math::Constants<float>::PI;
-                const float weight = noa::math::sinc(tilt_difference * PI / max_tilt_difference);
-                noa::memory::fill(m_slice0_weight_padded_fft, 1 / weight);
+                const float weight = 1;//noa::math::sinc(tilt_difference * PI / max_tilt_difference);
 
                 // Collect the FOV of this reference slice.
                 addFOVReference(m_cumulative_fov, weight,
@@ -235,8 +252,8 @@ namespace qn::alignment {
                         projection_parameters.backward_slice_z_radius,
                         projection_parameters.forward_cutoff);
                 noa::geometry::fft::extract3D<fft::HC2H>(
-                        m_slice0_weight_padded_fft, m_slice_shape_padded,
-                        m_slice1_weight_padded_fft, m_slice_shape_padded,
+                        1 / weight, m_slice_shape_padded,
+                        m_slice_weight_padded_fft, m_slice_shape_padded,
                         float22_t{}, inv_reference_rotation,
                         float22_t{}, fwd_target_rotation,
                         projection_parameters.backward_slice_z_radius,
@@ -257,7 +274,7 @@ namespace qn::alignment {
             signal::fft::shift2D<fft::H2H>(
                     m_slice1_padded_fft, m_slice1_padded_fft,
                     m_slice_shape_padded, m_slice_center_padded + target_shifts);
-            math::ewise(m_slice1_padded_fft, m_slice1_weight_padded_fft, 1e-3f,
+            math::ewise(m_slice1_padded_fft, m_slice_weight_padded_fft, 1e-3f,
                         m_slice1_padded_fft, math::divide_epsilon_t{});
 
             noa::fft::c2r(m_slice1_padded_fft, m_slice1_padded);
@@ -364,8 +381,7 @@ namespace qn::alignment {
         Array<cfloat_t> m_slices_fft;
         Array<cfloat_t> m_slices_padded_fft;
 
-        Array<float> m_slice0_weight_padded_fft;
-        Array<float> m_slice1_weight_padded_fft;
+        Array<float> m_slice_weight_padded_fft;
         Array<float> m_cumulative_fov;
 
         // Alias of the main buffers.

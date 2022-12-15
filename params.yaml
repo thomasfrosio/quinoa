@@ -1,5 +1,5 @@
 quinoa:
-  alignment_resolution: [ 12 ]  # Resolution, in Angstrom, at which to perform the alignment.
+  alignment_resolution: 14  # Resolution, in Angstrom, at which to perform the alignment.
 
   # Stack files.
   # If the directory is entered, the program tries to look for the other input files
@@ -13,13 +13,16 @@ quinoa:
   stack_exposure:
 
   # Output directory. By default, it is set to the stack directory.
-  output_directory: "/home/thomas/Projects/quinoa/tests/ribo/tilt1"
+  output_directory: "/home/thomas/Projects/quinoa/tests/ribo3_reconstruct"
+  save_preprocessed_stack: true
+  save_aligned_stack: true
+  save_tomogram: true
 
   # Initial (global) CCW rotation angle, in degrees.
   # This is the in-plane rotation angle of the images. A value of zero indicates
   # that the tilt-axis in the image is parallel to the Y (i.e. vertical) axis. If left empty,
   # the program will try to compute it. This is ignored if the mdoc file is specified.
-  rotation_angle: 175.3
+  rotation_angle: 176
 
   # Slice order.
   # If the mdoc file is found, or if the tlt and exposure files are found,
@@ -42,7 +45,7 @@ quinoa:
   #     This last option is not compatible with the mdoc file or the "order" entries, since the program cannot know
   #     which view was removed from the stack.
   exclude_views_idx: 0 # Slice(s) index [0, n). A single value or a sequence, e.g. [0, 41].
-  exclude_blank_views: true
+  exclude_blank_views:
   exclude_views_from_stack: # Whether the excluded views should be removed from the output stacks. Defaults to false.
 
   compute_cpu_threads: 4

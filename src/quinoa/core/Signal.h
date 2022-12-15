@@ -67,9 +67,9 @@ namespace qn::signal {
     std::pair<float2_t, float2_t>
     fourierCrop(const path_t& input_filename, const path_t& output_filename,
                 float2_t target_pixel_size, Device compute_device,
-                bool fit_to_fast_shape = true, float smooth_edge_percent = 0.1f,
-                float highpass_cutoff = 0.075f, float lowpass_cutoff = 0.5f,
-                float highpass_width = 0.075f, float lowpass_width = 0.05f) {
+                bool fit_to_fast_shape = true, float smooth_edge_percent = 0.5f,
+                float highpass_cutoff = 0.1f, float lowpass_cutoff = 0.45f,
+                float highpass_width = 0.09f, float lowpass_width = 0.05f) {
         using namespace ::noa;
 
         // Some files are not encoded properly, so if file is a volume, still interpret it as stack of 2D images.

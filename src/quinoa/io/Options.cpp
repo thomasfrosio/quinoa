@@ -5,10 +5,13 @@
 #include "quinoa/io/YAML.h"
 
 namespace {
-    constexpr std::array<std::string_view, 20> QN_OPTIONS_ = {
+    constexpr std::array<std::string_view, 23> QN_OPTIONS_ = {
             "alignment_resolution",
             "rotation_angle",
             "output_directory",
+            "save_preprocessed_stack",
+            "save_aligned_stack",
+            "save_tomogram",
 
             "stack_directory",
             "stack_file",

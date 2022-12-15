@@ -1,143 +1,204 @@
-#include <noa/Math.h>
-#include <noa/Memory.h>
-#include <noa/FFT.h>
+#include <noa/Session.h>
 #include <noa/IO.h>
 
-#include "quinoa/Types.h"
 #include "quinoa/Exception.h"
-
 #include "quinoa/io/Logging.h"
 #include "quinoa/io/Options.h"
-
-#include "quinoa/core/PairwiseCosine.h"
-#include "quinoa/core/ProjectionMatching.h"
-#include "quinoa/core/Geometry.h"
-#include "quinoa/core/Signal.h"
+#include "quinoa/core/Alignment.h"
 #include "quinoa/core/Metadata.h"
+#include "quinoa/core/Reconstruction.h"
 
 namespace qn {
     void tiltSeriesAlignment(const qn::Options& options) {
         // Parses options early, to quickly throw if there's an invalid option.
+        const auto threads = options["compute_cpu_threads"].as<size_t>(size_t{0});
+        const auto device_name = options["compute_device"].as<std::string>("gpu");
+        const auto original_stack_filename = options["stack_file"].as<path_t>();
+        const auto output_directory = options["output_directory"].as<path_t>();
+        const auto alignment_resolution = options["alignment_resolution"].as<double>();
         MetadataStack metadata(options);
 
-        // Number of (OpenMP) threads:
-        const auto threads = options["compute_cpu_threads"].as<size_t>(size_t{0});
+        // Setting up the workers.
         noa::Session::threads(threads);
-
-        // Array options. Use the "most free" device if the ID is not specified.
-        const auto device_name = options["compute_device"].as<std::string>("gpu");
-        Device device(device_name);
-        if (device.type() == Device::GPU) {
+        auto compute_device = noa::Device(device_name);
+        if (compute_device.gpu()) {
+            // If left unspecified, use the GPU with the most amount of unused memory.
             const size_t pos = device_name.find(':');
             if (pos != std::string::npos && pos != device_name.size() - 1)
-                device = Device::mostFree(Device::GPU);
-            Stream stream(device, Stream::ASYNC);
-            Stream::current(stream);
+                compute_device = noa::Device::mostFree(noa::Device::GPU);
+            auto stream = noa::Stream(compute_device, noa::Stream::ASYNC);
+            noa::Stream::current(stream);
         }
 
-        // Filename and directories:
-        const auto original_stack_filename = options["stack_file"].as<path_t>();
+        // Preprocessing.
+        const auto preprocessing_parameters = PreProcessStackParameters{
+                compute_device,
 
-        // Alignment resolutions:
-        std::vector<float> alignment_resolutions; // TODO Use flat_vector instead
-        if (options["alignment_resolution"].IsScalar())
-            alignment_resolutions.emplace_back(options["alignment_resolution"].as<float>());
-        else if (options["alignment_resolution"].IsSequence())
-            alignment_resolutions = options["alignment_resolution"].as<std::vector<float>>();
-        else
-            alignment_resolutions = {16.f, 12.f}; // TODO Use pixel size and image size
-        std::sort(alignment_resolutions.begin(), alignment_resolutions.end(), std::greater{});
+                // Fourier cropping:
+                alignment_resolution, // target_resolution
+                true, // fit_to_fast_fft_shape
 
-        // Alignment resolution loop. Progressively increase the resolution of the input stack.
-        MetadataStack metadata_from_previous_iter = metadata;
-        for (size_t alignment_resolution_iter = 0;
-             alignment_resolution_iter < alignment_resolutions.size();
-             ++alignment_resolution_iter) {
+                // Image processing:
+                0, // median_filter_window
+                false, // exposure_filter
+                {0.10, 0.10}, // highpass_parameters
+                {0.45, 0.05}, // lowpass_parameters
+                true, // center_and_standardize
+                0.1f // smooth_edge_percent
+        };
+        const auto [preprocessed_stack, preprocessed_pixel_size, original_pixel_size] =
+                preProcessStack(original_stack_filename, preprocessing_parameters);
 
-            // Fourier crop to target resolution and preprocess.
+        if (options["save_preprocessed_stack"].as<bool>(false)) {
             const auto cropped_stack_filename =
-                    options["output_directory"].as<path_t>() /
-                    string::format("{}_cropped_iter{:>02}{}",
-                                   original_stack_filename.stem().string(),
-                                   alignment_resolution_iter,
-                                   original_stack_filename.extension().string());
-            const auto target_resolution = alignment_resolutions[alignment_resolution_iter];
-            const auto [original_pixel_size, cropped_pixel_size] =
-                    qn::signal::fourierCrop(original_stack_filename, cropped_stack_filename,
-                                            float2_t(target_resolution / 2), device);
-            // TODO Exposure filter.
-
-            // Exclude bad images.
-            if (alignment_resolution_iter == 0) {
-                if (options["exclude_blank_views"].as<bool>(false)) {
-                    // TODO Mass normalization
-                }
-
-                if (options["exclude_views_from_stack"].as<bool>(false))
-                    metadata.squeeze();
-            }
-
-            // TODO Check GPU memory to see if we push the entire stack there.
-            //      It prevents having to copy the slices to the GPU every time.
-            //      Instead of loading again, couldn't we return the stack in fourierCrop?
-            Array cropped_stack = noa::io::load<float>(cropped_stack_filename, false, device);
-
-            // Scale the metadata to the current pixel size.
-            for (auto& slice: metadata.slices())
-                if (!slice.excluded)
-                    slice.shifts *= original_pixel_size / cropped_pixel_size;
-
-            if (alignment_resolution_iter == 0) {
-                // TODO Find the initial rotation angle.
-                // TODO Find the tilt offset.
-
-                // Cosine stretching alignment:
-                // For the first iteration, run the alignment again with the new shifts.
-                // At this point, the stack should be preprocessed, which includes the highpass
-                // to remove the density gradients and the zero-taper.
-                qn::alignment::PairwiseCosine pairwise_cosine(cropped_stack.shape(), device);
-                pairwise_cosine.updateShifts(cropped_stack, metadata);
-                pairwise_cosine.updateShifts(cropped_stack, metadata);
-            }
-
-            // Projection matching alignment:
-            constexpr bool do_projection_matching = true;
-            if (do_projection_matching) {
-                qn::alignment::ProjectionParameters parameters{
-                        0.0005f, // backward_slice_z_radius TODO percent of padded size?
-                        65.f,    // backward_tilt_angle_difference
-                        0.5f,    // forward_cutoff
-                        true,    // backward_use_aligned_only
-                };
-                qn::alignment::ProjectionMatching projection_matching(cropped_stack.shape(), device);
-                projection_matching.align(cropped_stack, metadata, parameters, float2_t{}); // TODO max shift
-            }
-
-            // Scale shifts back to original pixel size.
-            for (auto& slice: metadata.slices())
-                if (!slice.excluded)
-                    slice.shifts *= cropped_pixel_size / original_pixel_size;
-
-            MetadataStack::logUpdate(metadata_from_previous_iter, metadata);
-            metadata_from_previous_iter = metadata;
+                    output_directory /
+                    noa::string::format("{}_preprocessed{}",
+                                        original_stack_filename.stem().string(),
+                                        original_stack_filename.extension().string());
+            noa::io::save(preprocessed_stack, float2_t(preprocessed_pixel_size), cropped_stack_filename);
         }
 
-        // Save the transformed stack.
-        const auto aligned_stack_filename =
-                options["output_directory"].as<path_t>() /
-                string::format("{}_aligned{}",
-                               original_stack_filename.stem().string(),
-                               original_stack_filename.extension().string());
-        noa::io::ImageFile original_stack_file(original_stack_filename, noa::io::READ);
-        const auto original_pixel_size = float2_t(original_stack_file.pixelSize().get(1));
-        const Array original_stack = noa::io::load<float>(original_stack_filename);
-        qn::geometry::transform(original_stack, metadata,
-                                aligned_stack_filename,
-                                device, original_pixel_size);
+        // TODO Initial tilt-axis angle
+        // TODO Tilt-angles offset
+        // TODO Exclude views using mass normalization?
+
+        // Initial alignment.
+        {
+            // Focus in the center of the tilt-series. This seems to be the safest approach.
+            // The edges can be (more) problematic, especially for thick samples. Indeed, they
+            // are the regions that vary the most with the tilt, making them difficult to track.
+            // For this reason, the stack is filtered with (very) smooth mask located at the
+            // center of the FOV. This should focus the FOV in the center of the stack, but still
+            // include enough information for the cross-correlation, even with large shifts.
+
+            // Pairwise cosine:
+            const auto pairwise_cosine_parameters = PairwiseCosineParameters {
+                    {}, // max_shift
+                    0.35f, // smooth_edge_percent
+
+                    {0.03, 0.03}, // highpass_filter
+                    {0.40, 0.05}, // lowpass_filter
+
+                    true, // center_tilt_axis
+                    noa::InterpMode::INTERP_LINEAR_FAST,
+                    {}//output_directory / "stretch_alignment" // debug_directory
+            };
+
+            // Projection matching:
+            const auto project_matching_parameters = ProjectionParameters{
+
+            };
+
+            const auto global_alignment_parameters = InitialGlobalAlignmentParameters{
+                    true, // do_pairwise_cosine_alignment
+                    false, // do_projection_matching_alignment
+                    output_directory / "debug_initial_alignment" // debug_directory
+            };
+
+            const auto pre_scale = float2_t(original_pixel_size / preprocessed_pixel_size);
+            for (auto& slice: metadata.slices())
+                if (!slice.excluded)
+                    slice.shifts *= pre_scale;
+
+            initialGlobalAlignment(preprocessed_stack, metadata,
+                                   global_alignment_parameters,
+                                   pairwise_cosine_parameters,
+                                   project_matching_parameters);
+
+            const auto post_scale = 1 / pre_scale;
+            for (auto& slice: metadata.slices())
+                if (!slice.excluded)
+                    slice.shifts *= post_scale;
+        }
+
+        // Refinement and deformations.
+        {
+            // TODO
+        }
+
+        if (options["save_aligned_stack"].as<bool>(false)) {
+            const auto post_process_stack_parameters = PostProcessStackParameters {
+                    compute_device,
+
+                    // Fourier cropping:
+                    alignment_resolution, // target_resolution
+                    true, // fit_to_fast_fft_shape
+
+                    // Image processing:
+                    0, // median_filter_window
+                    false, // exposure_filter
+                    {0.05, 0.05}, // highpass_parameters
+                    {0.45, 0.05}, // lowpass_parameters
+                    true, // center_and_standardize
+                    0.01f, // smooth_edge_percent
+
+                    // Transformation:
+                    noa::InterpMode::INTERP_LINEAR_FAST,
+                    noa::BorderMode::BORDER_ZERO
+            };
+
+            const auto aligned_stack_filename =
+                    options["output_directory"].as<path_t>() /
+                    noa::string::format("{}_aligned{}",
+                                        original_stack_filename.stem().string(),
+                                        original_stack_filename.extension().string());
+
+            qn::postProcessStack(original_stack_filename, metadata.squeeze(),
+                                 aligned_stack_filename,
+                                 post_process_stack_parameters);
+        }
+
+        if (options["save_tomogram"].as<bool>(true)) {
+//            const auto reconstruction_stack_parameters = PreProcessStackParameters{
+//                    compute_device,
+//
+//                    // Fourier cropping:
+//                    alignment_resolution, // target_resolution
+//                    true, // fit_to_fast_fft_shape
+//
+//                    // Image processing:
+//                    0, // median_filter_window
+//                    false, // exposure_filter
+//                    {0.05, 0.05}, // highpass_parameters
+//                    {0.48, 0.05}, // lowpass_parameters
+//                    true, // center_and_standardize
+//                    0.08f // smooth_edge_percent
+//            };
+//            auto [reconstruction_stack, reconstruction_pixel_size, _] =
+//                    preProcessStack(original_stack_filename, reconstruction_stack_parameters);
+//            reconstruction_stack = reconstruction_stack.subregion(noa::indexing::slice_t{1, 41});
+
+            const auto reconstruction_stack = noa::io::load<float>(
+                    "/home/thomas/Projects/quinoa/tests/ribo3_reconstruct/tilt1_aligned.mrc", true, compute_device);
+            MetadataStack aligned_metadata(options);
+            aligned_metadata.squeeze();
+            for (auto& slice: aligned_metadata.slices())
+                slice.angles[0] = 0;
+
+            const auto reconstruction_parameters = TiledReconstructionParameters{
+                320, // volume thickness
+                64 // cube size
+            };
+
+            // Scale the shifts to the reconstruction stack.
+//            const auto pre_scale = float2_t(original_pixel_size / reconstruction_pixel_size);
+//            for (auto& slice: metadata.slices())
+//                if (!slice.excluded)
+//                    slice.shifts *= pre_scale;
+
+            const auto reconstruction = qn::tiledReconstruction(
+                    reconstruction_stack, aligned_metadata, reconstruction_parameters);
+//            const auto average_pixel_size = noa::math::sum(reconstruction_pixel_size) / 2;
+//            const auto tomogram_pixel_size = float3_t(average_pixel_size);
+
+            const auto tomogram_filename =
+                    output_directory /
+                    noa::string::format("{}_tomogram.mrc", original_stack_filename.stem().string());
+            noa::io::save(reconstruction, tomogram_filename);
+        }
 
         // TODO Reconstruction
         // TODO Once reconstructed, molecular mask and forward project to remove noise, then start alignment again?
-        // TODO Patch local alignment with BSpline grid?
         // TODO CTF (maybe one day...)
     }
 }

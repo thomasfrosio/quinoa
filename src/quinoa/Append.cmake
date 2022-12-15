@@ -11,10 +11,11 @@ set(QUINOA_SOURCES
         src/quinoa/io/YAML.h
 
         src/quinoa/core/Alignment.h
-        src/quinoa/core/Geometry.h
         src/quinoa/core/Metadata.cpp
         src/quinoa/core/Metadata.h
         src/quinoa/core/PairwiseCosine.h
+        src/quinoa/core/Preprocessing.h
         src/quinoa/core/ProjectionMatching.h
-        src/quinoa/core/Signal.h
+        src/quinoa/core/Utilities.h
+        src/quinoa/core/Reconstruction.h
         )
