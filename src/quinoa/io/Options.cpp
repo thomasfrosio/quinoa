@@ -5,19 +5,37 @@
 #include "quinoa/io/YAML.h"
 
 namespace {
-    constexpr std::array<std::string_view, 23> QN_OPTIONS_ = {
+    constexpr std::array<std::string_view, 36> QN_OPTIONS_ = {
+            "preprocessing_run",
+            "preprocessing_tilt_axis_angle",
+            "preprocessing_tilt_angle_offset",
+            "preprocessing_exclude_blank_views",
+            "preprocessing_exclude_view_indexes",
+
+            "alignment_run",
             "alignment_resolution",
-            "rotation_angle",
+            "alignment_pairwise_cosine",
+            "alignment_projection_matching",
+            "alignment_preprocessed_stack",
+            "alignment_aligned_stack",
+            "alignment_aligned_stack_resolution",
+
+            "refinement_run",
+
+            "reconstruction_run",
+            "reconstruction_resolution",
+            "reconstruction_thickness",
+            "reconstruction_cube_size",
+
             "output_directory",
-            "save_preprocessed_stack",
-            "save_aligned_stack",
-            "save_tomogram",
 
             "stack_directory",
             "stack_file",
             "stack_mdoc",
             "stack_tlt",
             "stack_exposure",
+
+            "rotation_angle",
 
             "order_starting_angle",
             "order_starting_direction",
@@ -28,7 +46,7 @@ namespace {
 
             "exclude_views_idx",
             "exclude_blank_views",
-            "exclude_views_from_stack",
+            "exclude_views_from_aligned_stack",
 
             "compute_cpu_threads",
             "compute_device",

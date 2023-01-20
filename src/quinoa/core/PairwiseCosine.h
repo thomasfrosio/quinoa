@@ -36,7 +36,7 @@ namespace qn {
         /// \param smooth_edge_percent  Size, in percent of the maximum-sized dimension, of the zero-edge taper.
         /// \param interpolation_mode   Interpolation mode used for the cosine-stretching.
         /// \param allocator            Allocator to use for \p compute_device.
-        PairwiseCosine(dim4_t shape, Device compute_device,
+        PairwiseCosine(dim4_t shape, noa::Device compute_device,
                        noa::InterpMode interpolation_mode,
                        noa::Allocator allocator = noa::Allocator::DEFAULT_ASYNC) {
             const auto options = noa::ArrayOption(compute_device, allocator);
@@ -71,10 +71,7 @@ namespace qn {
         ///          perpendicular to the tilt-axis, where x is the tilt angle of the neighbouring
         ///          view, in radians. Then use conventional correlation to find the XY shift between images.
         /// \param[in] stack        Input stack.
-        /// \param[in,out] metadata Metadata of \p stack. The slice indexes should correspond to the batch indexes
-        ///                         in the \p stack. Excluded slices are ignored. When the function returns, this
-        ///                         metadata is updated with the new shifts. The order of the slices is unchanged
-        ///                         and excluded slices are preserved.
+        /// \param[in,out] metadata Metadata of \p stack. This is updated with the new shifts.
         /// \param max_shift        Maximum YX shift a slice is allowed to have. If <= 0, it is ignored.
         /// \param center           Whether the average shift (in the microscope reference frame) should be centered.
         void updateShifts(const Array<float>& stack,
@@ -91,11 +88,9 @@ namespace qn {
                     parameters.smooth_edge_percent;
 
             // We'll need the slices sorted by tilt angles, with the lowest absolute tilt being the pivot point.
-            // The metadata is allowed to contain excluded views, so for simplicity here, squeeze them out.
-            MetadataStack metadata_ = metadata;
-            metadata_.squeeze().sort("tilt");
-            const size_t index_lowest_tilt = metadata_.lowestTilt();
-            const size_t slice_count = metadata_.size();
+            metadata.sort("tilt");
+            const size_t index_lowest_tilt = metadata.lowestTilt();
+            const size_t slice_count = metadata.size();
 
             // The main processing loop. From the lowest to the highest tilt, find the relative shifts.
             // These shifts are the slice-to-slice shifts, i.e. the shift to apply to the target to align
@@ -116,24 +111,19 @@ namespace qn {
 
                 // Compute the shifts.
                 slice_to_slice_shifts.emplace_back(
-                        findRelativeShifts_(stack, metadata_[idx_reference], metadata_[idx_target],
+                        findRelativeShifts_(stack, metadata[idx_reference], metadata[idx_target],
                                             slice_center, smooth_edge_size, parameters));
             }
 
             // This is the main drawback of this method. We need to compute the global shifts from the relative
             // shifts, so the high tilt slices end up accumulating the errors of the lower tilts.
             const std::vector<double2_t> global_shifts =
-                    relative2globalShifts_(slice_to_slice_shifts, metadata_, index_lowest_tilt,
+                    relative2globalShifts_(slice_to_slice_shifts, metadata, index_lowest_tilt,
                                            parameters.center_tilt_axis);
 
-            // Update the metadata. We may have removed some slices that were excluded,
-            // so use the slice index to know which is which.
-            for (size_t i = 0; i < slice_count; ++i) {
-                for (auto& original_slice: metadata.slices()) {
-                    if (original_slice.index == metadata_[i].index)
-                        original_slice.shifts += static_cast<float2_t>(global_shifts[i]);
-                }
-            }
+            // Update the metadata.
+            for (size_t i = 0; i < slice_count; ++i)
+                metadata[i].shifts += static_cast<float2_t>(global_shifts[i]);
 
             qn::Logger::info("Pairwise cosine-stretch shift alignment... done. Took {:.2f}ms\n", timer.elapsed());
         }
@@ -182,7 +172,7 @@ namespace qn {
 
             // Enforce common field-of-view, hopefully to guide the alignment and not compare things that
             // cannot be compared. This is relevant for large shifts between images and high tilt angles,
-            // but also to restrict the alignment to the center of the images.
+            // but also to restrict the alignment to a region of the images.
             noa::signal::rectangle(
                     m_target_reference, m_target_reference, slice_center,
                     slice_center - smooth_edge_size, smooth_edge_size,
@@ -267,7 +257,7 @@ namespace qn {
                                 global_shifts.rbegin() + index_rpivot,
                                 scan_op);
 
-            qn::Logger::trace ("Average shift: {:.3f}", mean);
+            qn::Logger::trace("Average shift: {:.3f}", mean);
             if (!center_tilt_axis)
                 mean = 0;
 

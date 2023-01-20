@@ -1,5 +1,30 @@
 quinoa:
-  alignment_resolution: 14  # Resolution, in Angstrom, at which to perform the alignment.
+  # Preprocessing.
+  preprocessing_run: false
+  preprocessing_tilt_axis_angle: true
+  preprocessing_tilt_angle_offset: true
+  preprocessing_exclude_blank_views: true
+  preprocessing_exclude_view_indexes:
+
+  # Global alignment.
+  alignment_run: true
+  alignment_resolution: 20  # Resolution, in Angstrom, at which to perform the alignment.
+  alignment_pairwise_cosine: true
+  alignment_projection_matching: true
+  alignment_preprocessed_stack: false
+  alignment_aligned_stack: true
+  alignment_aligned_stack_resolution:
+
+  # Refinement:
+  refinement_run: false
+
+  # Reconstruction:
+  reconstruction_run: false
+  reconstruction_resolution: 20
+  reconstruction_thickness: # in μm
+  reconstruction_cube_size: # in pixel
+
+  # ---
 
   # Stack files.
   # If the directory is entered, the program tries to look for the other input files
@@ -7,22 +32,19 @@ quinoa:
   # If the mdoc file is found, the tlt and exposure files are not used. The exposure file
   # is entirely optional.
   stack_directory:
-  stack_file: "/home/thomas/Projects/data/ribo/tilt1/tilt1.mrc"
+  stack_file: "/home/thomas/Projects/simtilt/stack.st"
   stack_mdoc:
   stack_tlt:
   stack_exposure:
 
   # Output directory. By default, it is set to the stack directory.
-  output_directory: "/home/thomas/Projects/quinoa/tests/ribo3_reconstruct"
-  save_preprocessed_stack: true
-  save_aligned_stack: true
-  save_tomogram: true
+  output_directory: "/home/thomas/Projects/quinoa/tests/simtilt"
 
   # Initial (global) CCW rotation angle, in degrees.
   # This is the in-plane rotation angle of the images. A value of zero indicates
   # that the tilt-axis in the image is parallel to the Y (i.e. vertical) axis. If left empty,
   # the program will try to compute it. This is ignored if the mdoc file is specified.
-  rotation_angle: 176
+  rotation_angle: 0
 
   # Slice order.
   # If the mdoc file is found, or if the tlt and exposure files are found,
@@ -44,11 +66,11 @@ quinoa:
   #   - Or, remove the views from the stack. The tlt file, and if an exposure file is used, should be updated as well.
   #     This last option is not compatible with the mdoc file or the "order" entries, since the program cannot know
   #     which view was removed from the stack.
-  exclude_views_idx: 0 # Slice(s) index [0, n). A single value or a sequence, e.g. [0, 41].
+  exclude_views_idx: # Slice(s) index [0, n). A single value or a sequence, e.g. [0, 41].
   exclude_blank_views:
-  exclude_views_from_stack: # Whether the excluded views should be removed from the output stacks. Defaults to false.
+  exclude_views_from_aligned_stack: # Whether the excluded views should be removed from the aligned stacks. Defaults to false.
 
-  compute_cpu_threads: 4
-  compute_device: gpu
+  compute_device: gpu:0
+  compute_cpu_threads: 1
 
   logging: debug  # Should be: debug, verbose, info, quiet. Default to "info".

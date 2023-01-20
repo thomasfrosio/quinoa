@@ -11,11 +11,11 @@ namespace qn {
     ///       Furthermore, the shifts should be applied before the rotation.
     struct MetadataSlice {
     public:
-        float3_t angles{};  // Euler angles, in degrees, of the slice. ZYX extrinsic (yaw, tilt, pitch)
-        float2_t shifts{};  // YX shifts, in pixels, of the slice.
-        float exposure{};   // Cumulated exposure, in e-/A2.
-        int32_t index{};    // Index [0, N) of the slice within its stack.
-        bool excluded{};    // Whether the slice is excluded.
+        float3_t angles{};      // Euler angles, in degrees, of the slice. ZYX extrinsic (yaw, tilt, pitch)
+        float2_t shifts{};      // YX shifts, in pixels, of the slice.
+        float exposure{};       // Cumulated exposure, in e-/A2.
+        int32_t index{};        // Index [0, N) of the slice within the array.
+        int32_t index_file{};   // Index [0, N) of the slice within the original file.
 
         static float2_t center(dim_t height, dim_t width) noexcept {
             // Use integral division to always have the center onto a pixel.
@@ -63,21 +63,13 @@ namespace qn {
                       float rotation_angle = 0);
 
     public: // Stack manipulations
-        /// Marks slices as "excluded".
-        /// Note however that these "excluded" slices are not actually excluded from any operation,
-        /// and one should use squeeze() to remove the v slices from the container.
+        /// Exclude the slice(s) according to their "index" field.
+        /// The metadata is sorted in ascending order according to the "index" field
+        /// and the "index" field is reset from [0, N), N being the new slices count.
         MetadataStack& exclude(const std::vector<int32_t>& indexes_to_exclude) noexcept;
 
-        /// Keeps (by setting the other slices to "excluded") some slices.
-        /// Note however that these "excluded" slices are not actually excluded from any operation,
-        /// and one should use squeeze() to remove the "excluded" slices from the container.
-        MetadataStack& keep(const std::vector<int32_t>& indexes_to_keep) noexcept;
-
-        /// Removes the excluded slices from the container.
-        MetadataStack& squeeze();
-
         /// (Stable) sorts the slices based on a given key.
-        /// Valid keys: "index", "tilt", "absolute_tilt", "exposure".
+        /// Valid keys: "index", "index_file", "tilt", "absolute_tilt", "exposure".
         MetadataStack& sort(std::string_view key, bool ascending = true);
 
     public: // Getters
@@ -108,6 +100,7 @@ namespace qn {
 
     private:
         void sortBasedOnIndexes_(bool ascending = true);
+        void sortBasedOnIndexesFile_(bool ascending = true);
         void sortBasedOnTilt_(bool ascending = true);
         void sortBasedOnAbsoluteTilt_(bool ascending = true);
         void sortBasedOnExposure_(bool ascending = true);

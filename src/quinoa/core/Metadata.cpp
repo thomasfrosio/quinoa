@@ -35,8 +35,10 @@ namespace qn {
         // Assume slices are saved in the ascending tilt order.
         std::sort(slices.begin(), slices.end(),
                   [](const auto& lhs, const auto& rhs) { return lhs.angles[1] < rhs.angles[1]; });
-        for (size_t i = 0; i < slices.size(); ++i)
+        for (size_t i = 0; i < slices.size(); ++i) {
             slices[i].index = static_cast<int32_t>(i);
+            slices[i].index_file = static_cast<int32_t>(i);
+        }
 
         return slices;
     }
@@ -116,6 +118,7 @@ namespace qn {
             m_slices.push_back({float3_t{rotation_angle, tlt_file[i], 0},
                                 float2_t{},
                                 exposure_file[i],
+                                static_cast<int32_t>(i),
                                 static_cast<int32_t>(i)});
         }
     }
@@ -125,25 +128,22 @@ namespace qn {
     }
 
     MetadataStack& MetadataStack::exclude(const std::vector<int32_t>& indexes_to_exclude) noexcept {
-        for (int32_t index_to_exclude: indexes_to_exclude)
-            for (auto& slice: m_slices)
-                if (slice.index == index_to_exclude)
-                    slice.excluded = true;
-        return *this;
-    }
+        const auto end_of_new_range = std::remove_if(
+                m_slices.begin(), m_slices.end(),
+                [&](const MetadataSlice& slice) {
+                    const int32_t slice_index = slice.index;
+                    return std::any_of(indexes_to_exclude.begin(), indexes_to_exclude.end(),
+                                       [=](int32_t index_to_exclude) { return slice_index == index_to_exclude; });
+                });
 
-    MetadataStack& MetadataStack::keep(const std::vector<int32_t>& indexes_to_keep) noexcept {
+        m_slices.erase(end_of_new_range, m_slices.end());
+
+        // Sort and reset index.
+        sortBasedOnIndexes_();
+        int32_t count{0};
         for (auto& slice: m_slices)
-            for (int32_t index_to_keep: indexes_to_keep)
-                if (slice.index != index_to_keep)
-                    slice.excluded = true;
-        return *this;
-    }
+            slice.index = count++;
 
-    MetadataStack& MetadataStack::squeeze() {
-        m_slices.erase(
-                std::remove_if(m_slices.begin(), m_slices.end(), [](const auto& slice) { return slice.excluded; }),
-                m_slices.end());
         return *this;
     }
 
@@ -151,6 +151,8 @@ namespace qn {
         key = noa::string::lower(key);
         if (key == "index")
             sortBasedOnIndexes_(ascending);
+        else if (key == "index_file")
+            sortBasedOnIndexesFile_(ascending);
         else if (key == "tilt")
             sortBasedOnTilt_(ascending);
         else if (key == "absolute_tilt")
@@ -168,6 +170,15 @@ namespace qn {
                              return ascending ?
                                     lhs.index < rhs.index :
                                     lhs.index > rhs.index;
+                         });
+    }
+
+    void MetadataStack::sortBasedOnIndexesFile_(bool ascending) {
+        std::stable_sort(m_slices.begin(), m_slices.end(),
+                         [ascending](const auto& lhs, const auto& rhs) {
+                             return ascending ?
+                                    lhs.index_file < rhs.index_file :
+                                    lhs.index_file > rhs.index_file;
                          });
     }
 
@@ -221,10 +232,8 @@ namespace qn {
 
         for (size_t i = 0; i < size; ++i) {
             const MetadataSlice& current_slice = current[i];
-            if (current_slice.excluded)
-                continue;
-
             const MetadataSlice* origin_slice = &origin[i];
+
             if (current_slice.index != origin_slice->index) {
                 // They are not sorted in the same order, so retrieve corresponding slice.
                 size_t count{0};

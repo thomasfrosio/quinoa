@@ -12,19 +12,12 @@
 namespace qn::details {
     /// Computes the dimension sizes for Fourier cropping at a target resolution.
     /// \details The target pixel size is aimed, but might not be obtained exactly, depending on the input shape.
-    ///          The actual pixel size of the output array is returned and is usually a bit lower than the target.
-    /// \param shape                BDHW shape.
-    /// \param current_pixel_size   (D)HW current pixel size of the input, in A/pixel.
-    /// \param target_pixel_size    (D)HW target (aimed) pixel size, in A/pixel.
-    /// \param fit_to_fast_shape    Fits to a "fast" shape for FFTs.
-    ///                             This often very slightly increases the size of the output
-    ///                             and decrease its pixel size.
+    ///          The actual pixel size of the output array is returned.
     template<typename FloatN>
     auto fourierCropDimensions(
             dim4_t shape,
             FloatN current_pixel_size,
-            FloatN target_pixel_size,
-            bool fit_to_fast_shape = true
+            FloatN target_pixel_size
     ) -> std::pair<dim4_t, FloatN> {
 
         using coord_t = noa::traits::value_type_t<FloatN>;
@@ -33,16 +26,7 @@ namespace qn::details {
         // Get the initial target shape for that resolution.
         const auto current_shape = static_cast<FloatN>(shape.get(2 - IS_3D));
         const auto target_nyquist = current_pixel_size * coord_t{0.5} / target_pixel_size;
-        auto target_shape = noa::math::floor(target_nyquist * current_shape / coord_t{0.5});
-
-        // Update the target shape for faster FFTs.
-        if (fit_to_fast_shape) {
-            for (size_t i = 0; i < FloatN::COUNT; ++i) {
-                const auto size = noa::clamp_cast<dim_t>(target_shape[i]);
-                if (size > 1)
-                    target_shape[i] = static_cast<coord_t>(noa::fft::nextFastSize(size));
-            }
-        }
+        const auto target_shape = noa::math::round(target_nyquist * current_shape / coord_t{0.5});
 
         // Compute new pixel size and new shape.
         const auto new_nyquist = target_shape * 0.5 / current_shape;
@@ -59,39 +43,40 @@ namespace qn::details {
 }
 
 namespace qn {
-    struct PreProcessStackParameters {
+    struct LoadStackParameters {
         Device compute_device;
+
+        // Initial filtering on original images:
+        int32_t median_filter_window{0};
 
         // Fourier cropping:
         double target_resolution;
-        bool fit_to_fast_fft_shape{true};
 
-        // Image processing:
-        int32_t median_filter_window{0};
+        // Signal processing after cropping:
         bool exposure_filter{false};
         float2_t highpass_parameters{0.10, 0.10};
         float2_t lowpass_parameters{0.45, 0.05};
-        bool center_and_standardize{true};
+
+        // Image processing after cropping:
+        bool normalize_and_standardize{true};
         float smooth_edge_percent{0.01f};
+        bool zero_pad_to_fast_fft_shape{true};
     };
 
-    struct PreProcessStackOutputs {
+    struct LoadStackOutputs {
         Array<float> output_stack;
         double2_t output_pixel_size;
         double2_t input_pixel_size;
     };
 
-    /// Preprocesses the input tilt-series.
-    /// \details The input tilt-series is loaded one slice at a time. Slices are median filtered, fourier cropped,
-    ///          bandpass filtered, standardized and masked to have smooth edges. Then, slices can be saved to a file
-    ///          (one slice at a time) and the output stack is then returned.
+    /// Loads a tilt-series and does some preprocessing.
     [[nodiscard]]
-    auto preProcessStack(
+    auto loadStack(
             const path_t& tilt_series_path,
-            const PreProcessStackParameters& parameters
-    ) -> PreProcessStackOutputs {
-        qn::Logger::info("Preprocessing tilt-series...");
-        qn::Logger::trace("Compute device: {}", parameters.compute_device);
+            const MetadataStack& tilt_series_metadata,
+            const LoadStackParameters& parameters
+    ) -> LoadStackOutputs {
+        qn::Logger::info("Loading the tilt-series...");
         Timer timer;
         timer.start();
 
@@ -108,179 +93,195 @@ namespace qn {
         // Fourier crop setup.
         const auto input_pixel_size = double2_t(input_file.pixelSize().get(1));
         const auto target_pixel_size = double2_t(parameters.target_resolution / 2);
-        const auto [output_shape, output_pixel_size] = details::fourierCropDimensions(
-                input_shape, input_pixel_size, target_pixel_size, parameters.fit_to_fast_fft_shape);
+        const auto [cropped_shape, output_pixel_size] = details::fourierCropDimensions(
+                input_shape, input_pixel_size, target_pixel_size);
 
-        qn::Logger::trace("Fourier cropping parameters:\n"
-                          "  Fit to fast shape: {}\n"
-                          "  Input:  shape={}, pixel_size={:.2f}\n"
-                          "  Output: shape={}, pixel_size={:.2f}",
-                          parameters.fit_to_fast_fft_shape,
-                          input_shape, input_pixel_size, output_shape, output_pixel_size);
+        // Zero-padding in real-space.
+        auto output_shape = cropped_shape;
+        if (parameters.zero_pad_to_fast_fft_shape)
+            output_shape = noa::fft::nextFastShape(output_shape);
 
-        // Setting up dimensions.
-        const auto slice_count = input_shape[0];
-        const auto slice_shape = dim4_t{1, 1, input_shape[2], input_shape[3]};
-        const auto new_slice_shape = dim4_t{1, 1, output_shape[2], output_shape[3]};
-        const auto new_stack_shape = dim4_t{slice_count, 1, output_shape[2], output_shape[3]};
-        const auto new_slice_center = float2_t{output_shape[2] / 2, output_shape[3] / 2};
-        const auto smooth_edge_size = static_cast<float>(std::max(output_shape[2], output_shape[3])) *
-                parameters.smooth_edge_percent;
+        const auto input_slice_shape = dim4_t{1, 1, input_shape[2], input_shape[3]};
+        const auto cropped_slice_shape = dim4_t{1, 1, cropped_shape[2], cropped_shape[3]};
+        const auto cropped_slice_center = float2_t{cropped_shape[2] / 2, cropped_shape[3] / 2};
+        const auto output_stack_shape = dim4_t{tilt_series_metadata.size(), 1, output_shape[2], output_shape[3]};
+        const auto smooth_edge_size = static_cast<float>(std::max(cropped_shape[2], cropped_shape[3])) *
+                                      parameters.smooth_edge_percent;
 
         const bool use_gpu = parameters.compute_device.gpu();
         const bool do_median_filter = parameters.median_filter_window > 1;
         const auto median_window = static_cast<dim_t>(parameters.median_filter_window);
         const auto options = noa::ArrayOption(parameters.compute_device, noa::Allocator::DEFAULT_ASYNC);
 
-        qn::Logger::trace("Median filter: {}\n"
-                          "Center & standardize: {}\n"
-                          "Smooth edge: {:.1f}%\n"
-                          "Exposure filter: {}",
+        qn::Logger::trace("Compute device: {}\n"
+                          "Median filter on input: {}\n"
+                          "Exposure filter: {}\n"
+                          "Normalize and Standardize: {}\n"
+                          "Zero-taper: {:.1f}%\n"
+                          "Zero-padding to fast shape: {}\n"
+                          "Input:  shape={}, pixel_size={:.2f}\n"
+                          "Output: shape={}, pixel_size={:.2f}",
+                          parameters.compute_device,
                           do_median_filter ? noa::string::format("true (window={})", median_window) : "false",
-                          parameters.center_and_standardize,
+                          parameters.exposure_filter,
+                          parameters.normalize_and_standardize,
                           parameters.smooth_edge_percent * 100.f,
-                          parameters.exposure_filter);
+                          parameters.zero_pad_to_fast_fft_shape,
+                          input_shape, input_pixel_size,
+                          output_shape, output_pixel_size);
 
-        // Input buffers. If compute device is a GPU, we need a transition buffer for the IO.
+        // Input buffers. If compute device is a GPU, we need a stage buffer for the IO.
         // This could be pinned for faster copy, but for now, keep it to pageable memory.
-        auto [input_slice, input_slice_fft] = noa::fft::empty<float>(slice_shape, options);
-        auto input_slice_io = use_gpu ? noa::memory::empty<float>(slice_shape) : input_slice;
-
-        // Output buffers.
         // For median filtering, we need another buffer because it is an out-of-place operation.
-        const auto output_slice_fft = noa::memory::empty<cfloat_t>(new_slice_shape.fft(), options);
-        const auto output_stack = noa::memory::empty<float>(new_stack_shape, options);
-        auto output_slice_median =
-                do_median_filter ? noa::memory::empty<float>(new_slice_shape, options) : noa::Array<float>{};
+        auto [input_slice, input_slice_fft] = noa::fft::empty<float>(input_slice_shape, options);
+        auto input_slice_io = use_gpu ? noa::memory::empty<float>(input_slice_shape) : input_slice;
+        auto input_slice_median = do_median_filter ? noa::memory::like(input_slice) : noa::Array<float>{};
+
+        // Fourier-crop and output buffers.
+        const auto [cropped_slice, cropped_slice_fft] = noa::fft::empty<float>(cropped_slice_shape, options);
+        const auto output_stack = noa::memory::empty<float>(output_stack_shape, options);
+
+        // Normalization.
+        // Allocate the mean and stddev on the compute device, in order
+        // to not have to synchronize and transfer back and forth to the GPU.
+        const auto do_normalization = parameters.normalize_and_standardize;
+        const auto mean = noa::memory::empty<float>(do_normalization ? dim4_t{1} : dim4_t{}, options);
+        const auto stddev = noa::memory::empty<float>(do_normalization ? dim4_t{1} : dim4_t{}, options);
 
         // Process one input slice at a time.
-        for (dim_t slice_index = 0; slice_index < slice_count; ++slice_index) {
+        for (const auto& slice_metadata: tilt_series_metadata.slices()) {
+
+            // Just make sure the image file matches the metadata.
+            const auto input_slice_index = static_cast<dim_t>(slice_metadata.index_file);
+            const auto output_slice_index = slice_metadata.index;
+            QN_CHECK(input_slice_index < input_shape[0],
+                     "Slice index is invalid. This happened because the file stack and the metadata don't match. "
+                     "Trying to access slice index {}, but the file stack has a total of {} slices",
+                     input_slice_index, input_shape[0]);
+
             // Read the current slice from the file.
             // If CPU, input_slice_io is just an alias for input_slice.
             // If GPU, we need an extra copy.
-            input_file.readSlice(input_slice_io, slice_index, false);
+            input_file.readSlice(input_slice_io, input_slice_index, false);
             if (use_gpu)
                 noa::memory::copy(input_slice_io, input_slice);
 
-            noa::fft::r2c(input_slice, input_slice_fft);
-            noa::fft::resize<noa::fft::H2H>(input_slice_fft, slice_shape, output_slice_fft, new_slice_shape);
-
-            // We need to do the median filter after the Fourier cropping, but before the bandpass.
-            const auto output_slice = output_stack.subregion(slice_index);
             if (do_median_filter) {
-                noa::fft::c2r(output_slice_fft, output_slice);
-                noa::signal::median2(output_slice, output_slice_median, median_window);
-                noa::fft::r2c(output_slice_median, output_slice_fft);
+                noa::signal::median2(input_slice, input_slice_median, median_window);
+                std::swap(input_slice, input_slice_median); // interchangeable arrays
             }
 
-            // TODO Add exposure filter and update the lowpass cutoff.
+            // Fourier-space cropping and filtering:
+            noa::fft::r2c(input_slice, input_slice_fft);
+            noa::fft::resize<noa::fft::H2H>(
+                    input_slice_fft, input_slice_shape,
+                    cropped_slice_fft, cropped_slice_shape);
+            // TODO Add exposure filter.
             noa::signal::fft::bandpass<noa::fft::H2H>(
-                    output_slice_fft, output_slice_fft, new_slice_shape,
+                    cropped_slice_fft, cropped_slice_fft, cropped_slice_shape,
                     parameters.highpass_parameters[0], parameters.lowpass_parameters[0],
                     parameters.highpass_parameters[1], parameters.lowpass_parameters[1]);
+            noa::fft::c2r(cropped_slice_fft, cropped_slice);
 
-            if (parameters.center_and_standardize)
-                noa::signal::fft::standardize<noa::fft::H2H>(output_slice_fft, output_slice_fft, new_slice_shape);
+            // Unfortunately, because of the zero-padding, we have to compute
+            // the stats and normalize one slice at a time.
+            if (do_normalization) {
+                 noa::math::mean(cropped_slice, mean);
+                 noa::math::std(cropped_slice, stddev);
+                 noa::math::ewise(cropped_slice, mean, stddev,
+                                  cropped_slice, noa::math::minus_divide_t{});
+            }
 
-            // Save the output slice directly into the output stack.
-            noa::fft::c2r(output_slice_fft, output_slice);
+            // Zero-padding and save to output stack.
             noa::signal::rectangle(
-                    output_slice, output_slice, new_slice_center,
-                    new_slice_center - smooth_edge_size, smooth_edge_size);
+                    cropped_slice, cropped_slice, cropped_slice_center,
+                    cropped_slice_center - smooth_edge_size, smooth_edge_size);
+            noa::memory::resize(cropped_slice, output_stack.subregion(output_slice_index));
         }
 
-        qn::Logger::info("Preprocessing tilt-series... done. Took {:.2f}ms\n", timer.elapsed());
+        qn::Logger::info("Loading the tilt-series... done. Took {:.2f}ms\n", timer.elapsed());
         return {output_stack, output_pixel_size, input_pixel_size};
     }
+}
 
-    struct PostProcessStackParameters{
+namespace qn {
+    struct SaveStackParameters{
         Device compute_device;
+
+        // Initial filtering on original images:
+        int32_t median_filter_window{0};
 
         // Fourier cropping:
         double target_resolution;
-        bool fit_to_fast_fft_shape{false};
 
-        // Image processing:
-        int32_t median_filter_window{0};
+        // Signal processing after cropping:
         bool exposure_filter{false};
-        float2_t highpass_parameters{0.05, 0.05};
+        float2_t highpass_parameters{0.10, 0.10};
         float2_t lowpass_parameters{0.45, 0.05};
-        bool center_and_standardize{false};
-        float smooth_edge_percent{0.008f};
+
+        // Image processing after cropping:
+        bool normalize_and_standardize{true};
+        float smooth_edge_percent{0.01f};
 
         // Transformation:
-        InterpMode interpolation_mode = InterpMode::INTERP_LINEAR_FAST;
+        InterpMode interpolation_mode = InterpMode::INTERP_LINEAR;
         BorderMode border_mode = BorderMode::BORDER_ZERO;
     };
 
     /// Corrects for the in-plane rotation and shifts, as encoded in the metadata, and save the transformed stack.
-    /// \details The slices in the output file are saved in the order as specified in the metadata.
-    ///          Excluded views are still saved in the output file, but they are not transformed.
-    ///          To remove them from the file, simply remove them from the metadata (see MetadataStack::squeeze()).
-    void postProcessStack(
+    void saveStack(
             const path_t& input_tilt_series_path,
             const MetadataStack& input_tilt_series_metadata,
             const path_t& output_tilt_series_path,
-            const PostProcessStackParameters& parameters
+            const SaveStackParameters& parameters
     ) {
-        qn::Logger::info("Postprocessing tilt-series...");
-        qn::Logger::trace("Compute device: {}", parameters.compute_device);
+        qn::Logger::info("Saving the tilt-series...");
         Timer timer;
         timer.start();
 
-        // Some files are not encoded properly, so if file encodes a volume, still interpret it as stack of 2D images.
+        // Some files are not encoded properly, so if file encodes a volume,
+        // still interpret it as stack of 2D images.
         auto input_file = noa::io::ImageFile(input_tilt_series_path, noa::io::READ);
         dim4_t input_shape = input_file.shape();
         if (input_shape[0] == 1 && input_shape[1] > 1)
             std::swap(input_shape[0], input_shape[1]);
-        const auto input_slice_shape = dim4_t{1, 1, input_shape[2], input_shape[3]};
-
         QN_CHECK(input_shape[1] == 1,
                  "File: {}. A tilt-series was expected, but got image file with shape {}",
                  input_tilt_series_path, input_shape);
 
-        // Fourier crop setup.
         const auto input_pixel_size = double2_t(input_file.pixelSize().get(1));
         const auto target_pixel_size = double2_t(parameters.target_resolution / 2);
         const auto [output_shape, output_pixel_size] = details::fourierCropDimensions(
-                input_shape, input_pixel_size, target_pixel_size, parameters.fit_to_fast_fft_shape);
+                input_shape, input_pixel_size, target_pixel_size);
+
+        const auto input_slice_shape = dim4_t{1, 1, input_shape[2], input_shape[3]};
         const auto output_slice_shape = dim4_t{1, 1, output_shape[2], output_shape[3]};
         const auto output_stack_shape = dim4_t{input_tilt_series_metadata.size(), 1, output_shape[2], output_shape[3]};
         const auto output_slice_center = float2_t{output_shape[2] / 2, output_shape[3] / 2};
-
-        qn::Logger::trace("Fourier cropping parameters:\n"
-                          "  Fit to fast shape: {}\n"
-                          "  Input:  shape={}, pixel_size={:.2f}\n"
-                          "  Output: shape={}, pixel_size={:.2f}",
-                          parameters.fit_to_fast_fft_shape,
-                          input_shape, input_pixel_size, output_shape, output_pixel_size);
-
-        // The metadata should be unscaled, so shifts are at the original pixel size.
-        // Here we apply the shifts on the fourier cropped slices, so we need to scale
-        // the shifts from the metadata down before applying them.
-        const auto shift_scale_factor = float2_t(input_pixel_size / output_pixel_size);
+        const auto smooth_edge_size = static_cast<float>(std::max(output_shape[2], output_shape[3])) *
+                                      parameters.smooth_edge_percent;
 
         const bool use_gpu = parameters.compute_device.gpu();
         const bool do_median_filter = parameters.median_filter_window > 1;
         const auto median_window = static_cast<dim_t>(parameters.median_filter_window);
         const auto options = noa::ArrayOption(parameters.compute_device, noa::Allocator::DEFAULT_ASYNC);
-        const auto smooth_edge_size = static_cast<float>(std::max(output_shape[2], output_shape[3])) *
-                                      parameters.smooth_edge_percent;
 
-        qn::Logger::trace("Median filter: {}\n"
-                          "Center & standardize: {}\n"
-                          "Smooth edge: {:.1f}%\n"
+        qn::Logger::trace("Compute device: {}\n"
+                          "Median filter on input: {}\n"
                           "Exposure filter: {}\n"
-                          "Interpolation method: {}\n"
-                          "Border mode: {}",
+                          "Normalize and Standardize: {}\n"
+                          "Zero-taper: {:.1f}%\n"
+                          "Input:  shape={}, pixel_size={:.2f}\n"
+                          "Output: shape={}, pixel_size={:.2f}",
+                          parameters.compute_device,
                           do_median_filter ? noa::string::format("true (window={})", median_window) : "false",
-                          parameters.center_and_standardize,
-                          parameters.smooth_edge_percent * 100.f,
                           parameters.exposure_filter,
-                          parameters.interpolation_mode,
-                          parameters.border_mode);
+                          parameters.normalize_and_standardize,
+                          parameters.smooth_edge_percent * 100.f,
+                          input_shape, input_pixel_size,
+                          output_shape, output_pixel_size);
 
-        // Input buffers. If compute device is a GPU, we need a transition buffer for the IO.
+        // Input buffers. If compute device is a GPU, we need a stage buffer for the IO.
         // This could be pinned for faster copy, but for now, keep it to pageable memory.
         // For median filtering, we need another buffer because it is an out-of-place operation.
         auto [input_slice, input_slice_fft] = noa::fft::empty<float>(input_slice_shape, options);
@@ -300,15 +301,30 @@ namespace qn {
         output_file.shape(output_stack_shape);
         output_file.pixelSize(float3_t{1, output_pixel_size[0], output_pixel_size[1]});
 
-        for (size_t slice_index = 0; slice_index < input_tilt_series_metadata.size(); ++slice_index) {
-            const MetadataSlice& slice_metadata = input_tilt_series_metadata[slice_index];
-            QN_CHECK(static_cast<dim_t>(slice_metadata.index) < input_shape[0],
-                     "Slice index is invalid. This happened because the stack and the metadata don't match");
+        // Normalization.
+        // Allocate the mean and stddev on the compute device, in order
+        // to not have to synchronize and transfer back and forth to the GPU.
+        const auto do_normalization = parameters.normalize_and_standardize;
+        const auto mean = noa::memory::empty<float>(do_normalization ? dim4_t{1} : dim4_t{}, options);
+        const auto stddev = noa::memory::empty<float>(do_normalization ? dim4_t{1} : dim4_t{}, options);
+
+        // The metadata should be unscaled, so shifts are at the original pixel size.
+        // Here we apply the shifts on the fourier cropped slices, so we need to scale
+        // the shifts from the metadata down before applying them.
+        const auto shift_scale_factor = float2_t(input_pixel_size / output_pixel_size);
+
+        for (const MetadataSlice& slice_metadata: input_tilt_series_metadata.slices()) {
+            const auto input_slice_index = static_cast<dim_t>(slice_metadata.index_file);
+            const auto output_slice_index = static_cast<dim_t>(slice_metadata.index);
+            QN_CHECK(input_slice_index < input_shape[0],
+                     "Slice index is invalid. This happened because the file stack and the metadata don't match. "
+                     "Trying to access slice index {}, but the file stack has a total of {} slices",
+                     input_slice_index, input_shape[0]);
 
             // Read the current slice from the file.
             // If CPU, input_slice_io is just an alias for input_slice.
             // If GPU, we need an extra copy.
-            input_file.readSlice(input_slice_io, static_cast<dim_t>(slice_metadata.index));
+            input_file.readSlice(input_slice_io, input_slice_index);
             if (use_gpu)
                 noa::memory::copy(input_slice_io, input_slice);
 
@@ -332,35 +348,33 @@ namespace qn {
                     parameters.highpass_parameters[0], parameters.lowpass_parameters[0],
                     parameters.highpass_parameters[1], parameters.lowpass_parameters[1]);
 
-            if (parameters.center_and_standardize) {
-                noa::signal::fft::standardize<noa::fft::H2H>(
-                        output_slice_fft, output_slice_fft, output_slice_shape);
-            }
-
             noa::fft::c2r(output_slice_fft, output_slice);
             noa::signal::rectangle(
                     output_slice, output_slice, output_slice_center,
                     output_slice_center - smooth_edge_size, smooth_edge_size);
 
             // Apply the transformation encoded in the metadata.
-            if (!slice_metadata.excluded) {
-                output_slice_texture.update(output_slice);
-                const auto slice_shifts = slice_metadata.shifts * shift_scale_factor;
-                const auto inv_transform = noa::math::inverse(
-                        noa::geometry::translate(output_slice_center) *
-                        float33_t(noa::geometry::rotate(noa::math::deg2rad(-slice_metadata.angles[0]))) *
-                        noa::geometry::translate(-output_slice_center - slice_shifts)
-                );
-                noa::geometry::transform2D(output_slice_texture, output_slice_buffer, inv_transform);
-            } else {
-                std::swap(output_slice, output_slice_buffer); // alike arrays
+            if (do_normalization) {
+                noa::math::mean(output_slice, mean);
+                noa::math::std(output_slice, stddev);
+                noa::math::ewise(output_slice, mean, stddev,
+                                 output_slice, noa::math::minus_divide_t{});
             }
+
+            output_slice_texture.update(output_slice);
+            const auto slice_shifts = slice_metadata.shifts * shift_scale_factor;
+            const auto inv_transform = noa::math::inverse(
+                    noa::geometry::translate(output_slice_center) *
+                    float33_t(noa::geometry::rotate(noa::math::deg2rad(-slice_metadata.angles[0]))) *
+                    noa::geometry::translate(-output_slice_center - slice_shifts)
+            );
+            noa::geometry::transform2D(output_slice_texture, output_slice_buffer, inv_transform);
 
             if (use_gpu)
                 noa::memory::copy(output_slice_buffer, output_slice_buffer_io);
-            output_file.writeSlice(output_slice_buffer_io, slice_index);
+            output_file.writeSlice(output_slice_buffer_io, output_slice_index);
         }
 
-        qn::Logger::info("Postprocessing tilt-series... done. Took {:.2f}ms\n", timer.elapsed());
+        qn::Logger::info("Saving the tilt-series... done. Took {:.2f}ms\n", timer.elapsed());
     }
 }
