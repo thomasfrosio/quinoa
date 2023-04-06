@@ -10,13 +10,12 @@ input stack, which can be tricky if [views are to be excluded by their indexes](
 
 ### `.tlt and .exposure files`
 
-A simpler `.tlt` and `.exposure` file pair can be used instead. Each tilt image in the input stack is represented 
-by The `.tlt` file should be a new-line separated list of the tilt angles of the tilt images as saved in the input 
-stack file. The `.exposure` file contains the e-/A^2 exposure instead.
+A simpler `.tlt` and `.exposure` file pair can be used instead. The `.tlt` file should be a new-line separated list 
+of the tilt angles as saved in the input stack file. The `.exposure` file contains the e-/A^2 exposure instead.
 
 ### `order_* parameters`
 
-If the `.mdoc` file is found, or if the `.tlt` and `.exposure` files are found, the order_* entries are not used.
+If the `.mdoc` file is found, or if the `.tlt` and `.exposure` files are found, the `order_*` entries are not used.
 Otherwise, every `order_*` entry below should be specified.
 
 These parameters allow to construct the tilt-scheme without requiring any input file and is the preferred option if 

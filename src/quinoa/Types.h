@@ -1,9 +1,6 @@
 #pragma once
 
-#include <noa/Types.h>
-#include <noa/Array.h>
-#include <noa/Texture.h>
-
+#include <noa/Array.hpp>
 #include <yaml-cpp/yaml.h>
 
 namespace qn {

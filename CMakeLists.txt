@@ -22,9 +22,11 @@ target_compile_features(quinoa_compiler_option INTERFACE cxx_std_17)
 add_library(quinoa_libraries INTERFACE)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/noa.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/yaml-cpp.cmake)
+include(${PROJECT_SOURCE_DIR}/cmake/ext/nlopt.cmake)
 target_link_libraries(quinoa_libraries INTERFACE
         noa::noa
         yaml-cpp::yaml-cpp
+        nlopt
         )
 
 # ---------------------------------------------------------------------------------------

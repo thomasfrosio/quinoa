@@ -11,33 +11,35 @@ namespace qn {
     ///       Furthermore, the shifts should be applied before the rotation.
     struct MetadataSlice {
     public:
-        float3_t angles{};      // Euler angles, in degrees, of the slice. ZYX extrinsic (yaw, tilt, pitch)
-        float2_t shifts{};      // YX shifts, in pixels, of the slice.
-        float exposure{};       // Cumulated exposure, in e-/A2.
-        int32_t index{};        // Index [0, N) of the slice within the array.
-        int32_t index_file{};   // Index [0, N) of the slice within the original file.
+        Vec3<f32> angles{}; // Euler angles, in degrees, of the slice. ZYX extrinsic (yaw, tilt, pitch)
+        Vec2<f32> shifts{}; // YX shifts, in pixels, of the slice.
+        f32 exposure{};     // Cumulated exposure, in e-/A2.
+        i32 index{};        // Index [0, N) of the slice within the array.
+        i32 index_file{};   // Index [0, N) of the slice within the original file.
 
-        static float2_t center(dim_t height, dim_t width) noexcept {
+        static Vec2<f32> center(i64 height, i64 width) noexcept {
             // Use integral division to always have the center onto a pixel.
             // This is actually important for Fourier cropping and resizing,
             // so that we don't have to shift by 0.5 for even dimensions.
             return {height / 2, width / 2};
         }
 
-        static float2_t center(const dim4_t& shape) noexcept {
+        static Vec2<f32> center(const Shape4<i64>& shape) noexcept {
             return center(shape[2], shape[3]);
         }
+
+        static constexpr f32 UNSET_YAW_VALUE = std::numeric_limits<f32>::max();
     };
 
     struct TiltScheme {
-        float starting_angle{};         // Angle, in degrees, of the first image that was collected.
-        int32_t starting_direction{};   // Direction (>0 or <0) after collecting the first image.
-        float angle_increment{};        // Angle increment, in degrees, between images.
-        int32_t group{};                // Number of images that are collected before switching to the opposite side.
-        bool exclude_start{};           // Exclude the first image from the first group.
-        float per_view_exposure{};      // Per view exposure, in e-/A^2.
+        f32 starting_angle{};       // Angle, in degrees, of the first image that was collected.
+        i32 starting_direction{};   // Direction (>0 or <0) after collecting the first image.
+        f32 angle_increment{};      // Angle increment, in degrees, between images.
+        i32 group{};                // Number of images that are collected before switching to the opposite side.
+        bool exclude_start{};       // Exclude the first image from the first group.
+        f32 per_view_exposure{};    // Per view exposure, in e-/A^2.
 
-        [[nodiscard]] std::vector<MetadataSlice> generate(int32_t count, float rotation_angle = 0.f) const;
+        [[nodiscard]] std::vector<MetadataSlice> generate(i32 count, f32 rotation_angle = 0.f) const;
     };
 
     /// Metadata of a stack of 2D slices.
@@ -46,27 +48,27 @@ namespace qn {
         MetadataStack() = default;
 
         /// Creates the metadata.
-        /// This also exclude the views if needed (but does not squeeze).
+        /// Excluded views are not included, obviously.
         explicit MetadataStack(const Options& options);
 
         /// Creates the metadata from a mdoc file.
-        explicit MetadataStack(const path_t& mdoc_filename);
+        explicit MetadataStack(const Path& mdoc_filename);
 
         /// Creates the metadata from a tlt and exposure file.
-        MetadataStack(const path_t& tlt_filename,
-                      const path_t& exposure_filename,
-                      float rotation_angle = 0);
+        MetadataStack(const Path& tlt_filename,
+                      const Path& exposure_filename,
+                      f32 rotation_angle = 0);
 
         /// Creates the metadata from the tilt scheme.
         MetadataStack(TiltScheme tilt_scheme,
-                      int32_t order_count,
-                      float rotation_angle = 0);
+                      i32 order_count,
+                      f32 rotation_angle = 0);
 
     public: // Stack manipulations
-        /// Exclude the slice(s) according to their "index" field.
+        /// Excludes the slice(s) according to their "index" field.
         /// The metadata is sorted in ascending order according to the "index" field
         /// and the "index" field is reset from [0, N), N being the new slices count.
-        MetadataStack& exclude(const std::vector<int32_t>& indexes_to_exclude) noexcept;
+        MetadataStack& exclude(const std::vector<i32>& indexes_to_exclude) noexcept;
 
         /// (Stable) sorts the slices based on a given key.
         /// Valid keys: "index", "index_file", "tilt", "absolute_tilt", "exposure".
@@ -93,17 +95,17 @@ namespace qn {
 
         /// Find the index (as currently sorted in this instance)
         /// of the slice with the lowest absolute tilt angle.
-        [[nodiscard]] size_t lowestTilt() const;
+        [[nodiscard]] i64 find_lowest_tilt_index() const;
 
     public:
-        static void logUpdate(const MetadataStack& origin, const MetadataStack& current);
+        static void log_update(const MetadataStack& origin, const MetadataStack& current);
 
     private:
-        void sortBasedOnIndexes_(bool ascending = true);
-        void sortBasedOnIndexesFile_(bool ascending = true);
-        void sortBasedOnTilt_(bool ascending = true);
-        void sortBasedOnAbsoluteTilt_(bool ascending = true);
-        void sortBasedOnExposure_(bool ascending = true);
+        void sort_on_indexes_(bool ascending = true);
+        void sort_on_file_indexes_(bool ascending = true);
+        void sort_on_tilt_(bool ascending = true);
+        void sort_on_absolute_tilt_(bool ascending = true);
+        void sort_on_exposure_(bool ascending = true);
 
     private:
         std::vector<MetadataSlice> m_slices;

@@ -4,7 +4,7 @@
 #include <exception>
 #include <filesystem>
 
-#include <noa/String.h>
+#include <noa/String.hpp>
 
 namespace qn {
     // Global (within ::qn) exception. Usually caught in main().

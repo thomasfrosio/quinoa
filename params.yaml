@@ -1,19 +1,27 @@
 quinoa:
+  # ---
+
   # Preprocessing.
-  preprocessing_run: false
-  preprocessing_tilt_axis_angle: true
-  preprocessing_tilt_angle_offset: true
-  preprocessing_exclude_blank_views: true
-  preprocessing_exclude_view_indexes:
+  preprocessing_run: true
+  preprocessing_exclude_blank_views: false
+  preprocessing_exclude_view_indexes: 0 # Slice(s) index [0, n). A single value or a sequence, e.g. [0, 41].
+  # If views should be excluded, one should either:
+  #   - Specify the "preprocessing_exclude_view_indexes" entry and provide the original input files (.mdoc, .tlt, etc.)
+  #   - Or, use the "preprocessing_exclude_blank_views" option. This uses a simple mass-normalization to identify blank views.
+  #   - Or, remove the views from the stack. The tlt file, and if an exposure file is used, should be updated as well.
+  #     This last option is not compatible with the mdoc file or the "order" entries, since the program cannot know
+  #     which view was removed from the stack.
 
   # Global alignment.
   alignment_run: true
   alignment_resolution: 20  # Resolution, in Angstrom, at which to perform the alignment.
+  alignment_global_tilt_axis_angle: true
+  alignment_global_tilt_angle_offset: true
   alignment_pairwise_cosine: true
   alignment_projection_matching: true
-  alignment_preprocessed_stack: false
-  alignment_aligned_stack: true
-  alignment_aligned_stack_resolution:
+  alignment_save_input_stack: true
+  alignment_save_aligned_stack: true
+  alignment_save_aligned_stack_resolution:
 
   # Refinement:
   refinement_run: false
@@ -32,19 +40,19 @@ quinoa:
   # If the mdoc file is found, the tlt and exposure files are not used. The exposure file
   # is entirely optional.
   stack_directory:
-  stack_file: "/home/thomas/Projects/simtilt/stack.st"
+  stack_file: "/home/thomas/Projects/data/ribo/tilt1/tilt1.mrc"
   stack_mdoc:
   stack_tlt:
   stack_exposure:
 
   # Output directory. By default, it is set to the stack directory.
-  output_directory: "/home/thomas/Projects/quinoa/tests/simtilt"
+  output_directory: "/home/thomas/Projects/quinoa/tests/tilt1_v2"
 
   # Initial (global) CCW rotation angle, in degrees.
   # This is the in-plane rotation angle of the images. A value of zero indicates
   # that the tilt-axis in the image is parallel to the Y (i.e. vertical) axis. If left empty,
   # the program will try to compute it. This is ignored if the mdoc file is specified.
-  rotation_angle: 0
+  rotation_angle:
 
   # Slice order.
   # If the mdoc file is found, or if the tlt and exposure files are found,
@@ -58,17 +66,6 @@ quinoa:
   order_group: 3  # Number of images that are collected before switching to the opposite side.
   order_exclude_start: false  # Exclude the first image from the first group.
   order_per_view_exposure: 3  # Per view exposure, in e-/A^2. If empty, the program ignores the exposure weighting.
-
-  # Exclude views.
-  # If views should be excluded from the alignment, one should either:
-  #   - Specify the "exclude_views_id" entry and provide the original input files (.mrc, .mdoc, .tlt, etc.)
-  #   - Or, use the "exclude_blank_views" option. This uses a simple mass-normalization to identify blank views.
-  #   - Or, remove the views from the stack. The tlt file, and if an exposure file is used, should be updated as well.
-  #     This last option is not compatible with the mdoc file or the "order" entries, since the program cannot know
-  #     which view was removed from the stack.
-  exclude_views_idx: # Slice(s) index [0, n). A single value or a sequence, e.g. [0, 41].
-  exclude_blank_views:
-  exclude_views_from_aligned_stack: # Whether the excluded views should be removed from the aligned stacks. Defaults to false.
 
   compute_device: gpu:0
   compute_cpu_threads: 1

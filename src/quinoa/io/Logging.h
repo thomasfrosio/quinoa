@@ -1,7 +1,7 @@
 #pragma once
 
 // For now, let noa handle logging.
-#include <noa/Session.h>
+#include <noa/Session.hpp>
 
 namespace qn {
     // Log messages.

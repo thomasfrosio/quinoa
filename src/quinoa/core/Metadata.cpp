@@ -1,4 +1,4 @@
-#include <noa/IO.h>
+#include <noa/IO.hpp>
 
 #include "quinoa/core/Metadata.h"
 #include "quinoa/io/Options.h"
@@ -6,21 +6,21 @@
 #include "quinoa/Exception.h"
 
 namespace qn {
-    std::vector<MetadataSlice> TiltScheme::generate(int32_t count, float rotation_angle) const {
+    std::vector<MetadataSlice> TiltScheme::generate(i32 count, f32 rotation_angle) const {
         std::vector<MetadataSlice> slices;
         slices.reserve(static_cast<size_t>(count));
 
-        auto direction = static_cast<float>(starting_direction);
-        float angle0 = starting_angle;
-        float angle1 = angle0;
-        float exposure = per_view_exposure;
+        auto direction = static_cast<f32>(starting_direction);
+        f32 angle0 = starting_angle;
+        f32 angle1 = angle0;
+        f32 exposure = per_view_exposure;
 
-        slices.push_back({float3_t{rotation_angle, angle0, 0}, float2_t{}, 0.f, 0, false});
-        int group_count = !exclude_start;
+        slices.push_back({{rotation_angle, angle0, 0}, {}, 0.f, 0, false});
+        i32 group_count = !exclude_start;
 
-        for (int32_t i = 1; i < count; ++i) {
+        for (i32 i = 1; i < count; ++i) {
             angle0 += direction * angle_increment;
-            slices.push_back({float3_t{rotation_angle, angle0, 0}, float2_t{}, exposure, 0, false});
+            slices.push_back({{rotation_angle, angle0, 0}, {}, exposure, 0, false});
 
             if (group_count == group - 1) {
                 direction *= -1;
@@ -36,8 +36,8 @@ namespace qn {
         std::sort(slices.begin(), slices.end(),
                   [](const auto& lhs, const auto& rhs) { return lhs.angles[1] < rhs.angles[1]; });
         for (size_t i = 0; i < slices.size(); ++i) {
-            slices[i].index = static_cast<int32_t>(i);
-            slices[i].index_file = static_cast<int32_t>(i);
+            slices[i].index = static_cast<i32>(i);
+            slices[i].index_file = static_cast<i32>(i);
         }
 
         return slices;
@@ -45,69 +45,59 @@ namespace qn {
 
     MetadataStack::MetadataStack(const Options& options) {
         if (!options["stack_mdoc"].IsNull()) {
-            *this = MetadataStack(options["stack_mdoc"].as<path_t>());
+            *this = MetadataStack(options["stack_mdoc"].as<Path>());
 
         } else if (!options["stack_tlt"].IsNull() &&
                    !options["stack_exposure"].IsNull()) {
-            *this = MetadataStack(options["stack_tlt"].as<path_t>(),
-                                  options["stack_exposure"].as<path_t>(),
-                                  options["rotation_angle"].as<float>(0.f));
+            *this = MetadataStack(options["stack_tlt"].as<Path>(),
+                                  options["stack_exposure"].as<Path>(),
+                                  options["rotation_angle"].as<f32>(MetadataSlice::UNSET_YAW_VALUE));
 
         } else if (!options["order_starting_angle"].IsNull() &&
                    !options["order_starting_direction"].IsNull() &&
                    !options["order_angle_increment"].IsNull() &&
                    !options["order_group"].IsNull() &&
                    !options["order_exclude_start"].IsNull()) {
-            const auto stack_file = options["stack_file"].as<path_t>();
-            const size4_t shape = noa::io::ImageFile(stack_file, noa::io::READ).shape();
-            const auto count = static_cast<int32_t>(shape[0] == 1 && shape[1] > 1 ? shape[1] : shape[0]);
+            const auto stack_file = options["stack_file"].as<Path>();
+            const auto shape = noa::io::ImageFile(stack_file, noa::io::READ).shape();
+            const auto count = static_cast<i32>(shape[0] == 1 && shape[1] > 1 ? shape[1] : shape[0]);
 
             const TiltScheme scheme{
-                    options["order_starting_angle"].as<float>(),
-                    options["order_starting_direction"].as<int32_t>(),
-                    options["order_angle_increment"].as<float>(),
-                    options["order_group"].as<int32_t>(),
+                    options["order_starting_angle"].as<f32>(),
+                    options["order_starting_direction"].as<i32>(),
+                    options["order_angle_increment"].as<f32>(),
+                    options["order_group"].as<i32>(),
                     options["order_exclude_start"].as<bool>(),
-                    options["order_per_view_exposure"].as<float>(0.f),
+                    options["order_per_view_exposure"].as<f32>(MetadataSlice::UNSET_YAW_VALUE),
             };
-            *this = MetadataStack(scheme, count, options["rotation_angle"].as<float>(0.f));
+            *this = MetadataStack(scheme, count, options["rotation_angle"].as<f32>(MetadataSlice::UNSET_YAW_VALUE));
 
         } else {
             QN_THROW("Missing option(s). Could not find enough information regarding the tilt geometry");
         }
-
-        if (!options["exclude_views_idx"].IsNull()) {
-            std::vector<int32_t> exclude_views_idx;
-            if (options["exclude_views_idx"].IsSequence())
-                exclude_views_idx = options["exclude_views_idx"].as<std::vector<int32_t>>();
-            else if (options["exclude_views_idx"].IsScalar())
-                exclude_views_idx.emplace_back(options["exclude_views_idx"].as<int32_t>());
-            else
-                QN_THROW("The value of \"exclude_views_idx\" is not recognized");
-            exclude(exclude_views_idx);
-        }
     }
 
-    MetadataStack::MetadataStack(const path_t&) {
+    MetadataStack::MetadataStack(const Path&) {
         QN_THROW("TODO Extracting the tilt-scheme from a .mdoc file is not implemented yet");
     }
 
-    MetadataStack::MetadataStack(const qn::path_t& tlt_filename,
-                                 const qn::path_t& exposure_filename,
-                                 float rotation_angle) {
+    MetadataStack::MetadataStack(const Path& tlt_filename,
+                                 const Path& exposure_filename,
+                                 f32 rotation_angle) {
         auto is_empty = [](const auto& str) { return str.empty(); };
         std::string file;
         std::vector<std::string> lines;
 
-        file = noa::io::TextFile<std::ifstream>(tlt_filename, noa::io::READ).readAll();
+        using TextFile = noa::io::TextFile<std::ifstream>;
+        file = TextFile(tlt_filename, noa::io::READ).read_all();
         lines = noa::string::split<std::string>(file, '\n');
         lines.erase(std::remove_if(lines.begin(), lines.end(), is_empty), lines.end());
-        std::vector<float> tlt_file = noa::string::parse<float>(lines);
+        const std::vector<f32> tlt_file = noa::string::parse<f32>(lines);
 
-        file = noa::io::TextFile<std::ifstream>(exposure_filename, noa::io::READ).readAll();
+        file = TextFile(exposure_filename, noa::io::READ).read_all();
         lines = noa::string::split<std::string>(file, '\n');
         lines.erase(std::remove_if(lines.begin(), lines.end(), is_empty), lines.end());
-        std::vector<float> exposure_file = noa::string::parse<float>(lines);
+        const std::vector<f32> exposure_file = noa::string::parse<f32>(lines);
 
         QN_CHECK(tlt_file.size() == exposure_file.size(),
                  "The .tlt ({}) and .order ({}) file do not have the same number of lines",
@@ -115,32 +105,32 @@ namespace qn {
 
         // Create the slices.
         for (size_t i = 0; i < tlt_file.size(); ++i) {
-            m_slices.push_back({float3_t{rotation_angle, tlt_file[i], 0},
-                                float2_t{},
+            m_slices.push_back({{rotation_angle, tlt_file[i], 0},
+                                {},
                                 exposure_file[i],
-                                static_cast<int32_t>(i),
-                                static_cast<int32_t>(i)});
+                                static_cast<i32>(i),
+                                static_cast<i32>(i)});
         }
     }
 
-    MetadataStack::MetadataStack(TiltScheme scheme, int32_t count, float rotation_angle) {
+    MetadataStack::MetadataStack(TiltScheme scheme, i32 count, f32 rotation_angle) {
         m_slices = scheme.generate(count, rotation_angle);
     }
 
-    MetadataStack& MetadataStack::exclude(const std::vector<int32_t>& indexes_to_exclude) noexcept {
+    MetadataStack& MetadataStack::exclude(const std::vector<i32>& indexes_to_exclude) noexcept {
         const auto end_of_new_range = std::remove_if(
                 m_slices.begin(), m_slices.end(),
                 [&](const MetadataSlice& slice) {
-                    const int32_t slice_index = slice.index;
+                    const i32 slice_index = slice.index;
                     return std::any_of(indexes_to_exclude.begin(), indexes_to_exclude.end(),
-                                       [=](int32_t index_to_exclude) { return slice_index == index_to_exclude; });
+                                       [=](i32 index_to_exclude) { return slice_index == index_to_exclude; });
                 });
 
         m_slices.erase(end_of_new_range, m_slices.end());
 
         // Sort and reset index.
-        sortBasedOnIndexes_();
-        int32_t count{0};
+        sort_on_indexes_();
+        i32 count{0};
         for (auto& slice: m_slices)
             slice.index = count++;
 
@@ -150,21 +140,21 @@ namespace qn {
     MetadataStack& MetadataStack::sort(std::string_view key, bool ascending) {
         key = noa::string::lower(key);
         if (key == "index")
-            sortBasedOnIndexes_(ascending);
+            sort_on_indexes_(ascending);
         else if (key == "index_file")
-            sortBasedOnIndexesFile_(ascending);
+            sort_on_file_indexes_(ascending);
         else if (key == "tilt")
-            sortBasedOnTilt_(ascending);
+            sort_on_tilt_(ascending);
         else if (key == "absolute_tilt")
-            sortBasedOnAbsoluteTilt_(ascending);
+            sort_on_absolute_tilt_(ascending);
         else if (key == "exposure")
-            sortBasedOnExposure_(ascending);
+            sort_on_exposure_(ascending);
         else
             QN_THROW("The key should be \"index\", \"tilt\",  \"absolute_tilt\" or \"exposure\", but got \"{}\"", key);
         return *this;
     }
 
-    void MetadataStack::sortBasedOnIndexes_(bool ascending) {
+    void MetadataStack::sort_on_indexes_(bool ascending) {
         std::stable_sort(m_slices.begin(), m_slices.end(),
                          [ascending](const auto& lhs, const auto& rhs) {
                              return ascending ?
@@ -173,7 +163,7 @@ namespace qn {
                          });
     }
 
-    void MetadataStack::sortBasedOnIndexesFile_(bool ascending) {
+    void MetadataStack::sort_on_file_indexes_(bool ascending) {
         std::stable_sort(m_slices.begin(), m_slices.end(),
                          [ascending](const auto& lhs, const auto& rhs) {
                              return ascending ?
@@ -182,7 +172,7 @@ namespace qn {
                          });
     }
 
-    void MetadataStack::sortBasedOnTilt_(bool ascending) {
+    void MetadataStack::sort_on_tilt_(bool ascending) {
         std::stable_sort(m_slices.begin(), m_slices.end(),
                          [ascending](const auto& lhs, const auto& rhs) {
                              return ascending ?
@@ -191,7 +181,7 @@ namespace qn {
                          });
     }
 
-    void MetadataStack::sortBasedOnAbsoluteTilt_(bool ascending) {
+    void MetadataStack::sort_on_absolute_tilt_(bool ascending) {
         std::stable_sort(m_slices.begin(), m_slices.end(),
                          [ascending](const auto& lhs, const auto& rhs) {
                              return ascending ?
@@ -200,7 +190,7 @@ namespace qn {
                          });
     }
 
-    void MetadataStack::sortBasedOnExposure_(bool ascending) {
+    void MetadataStack::sort_on_exposure_(bool ascending) {
         std::stable_sort(m_slices.begin(), m_slices.end(),
                          [ascending](const auto& lhs, const auto& rhs) {
                              return ascending ?
@@ -209,17 +199,17 @@ namespace qn {
                          });
     }
 
-    size_t MetadataStack::lowestTilt() const {
+    i64 MetadataStack::find_lowest_tilt_index() const {
         const auto iter = std::min_element(
                 m_slices.begin(), m_slices.end(),
                 [](const auto& lhs, const auto& rhs) {
                     return std::abs(lhs.angles[1]) < std::abs(rhs.angles[1]);
                 });
-        return static_cast<size_t>(iter - m_slices.begin());
+        return iter - m_slices.begin();
     }
 
-    void MetadataStack::logUpdate(const MetadataStack& origin,
-                                  const MetadataStack& current) {
+    void MetadataStack::log_update(const MetadataStack& origin,
+                                   const MetadataStack& current) {
         const size_t size = current.size();
         QN_CHECK(origin.size() == size,
                  "The two metadata should have the same number of slices, but got {} and {}",
@@ -249,8 +239,8 @@ namespace qn {
             }
 
             // Log:
-            const float3_t angle_difference = current_slice.angles - origin_slice->angles;
-            const float2_t shift_difference = current_slice.shifts - origin_slice->shifts;
+            const auto angle_difference = current_slice.angles - origin_slice->angles;
+            const auto shift_difference = current_slice.shifts - origin_slice->shifts;
             qn::Logger::info("{}, {}, ({:+f}), {}, ({:+f}), {}, ({:+f}), {}, ({:+f}), {}, ({:+f})",
                              current_slice.index,
                              current_slice.angles[0], angle_difference[0],
