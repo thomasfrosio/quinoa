@@ -33,6 +33,8 @@ namespace qn {
     public:
         ProjectionMatching(const noa::Shape4<i64>& shape,
                            noa::Device compute_device,
+                           const MetadataStack& metadata,
+                           const ProjectionMatchingParameters& parameters,
                            noa::Allocator allocator = noa::Allocator::DEFAULT_ASYNC);
 
         void update_geometry(const Array<float>& stack,
@@ -40,16 +42,23 @@ namespace qn {
                              const ProjectionMatchingParameters& parameters);
 
     private:
-        [[nodiscard]] auto project_and_correlate_(
+        [[nodiscard]]
+        auto project_and_correlate_(
                 const View<f32>& stack,
-                const View<f32>& peak_window,
                 const MetadataStack& metadata,
                 i64 target_index,
                 const std::vector<i64>& reference_indexes,
                 const ProjectionMatchingParameters& parameters,
-                const Vec3<f32>& angle_offsets,
+                const Vec3<f32>& angle_offsets
+        ) -> f32;
+
+        [[nodiscard]]
+        auto extract_final_shift_(
+                const MetadataStack& metadata,
+                i64 target_index,
+                const ProjectionMatchingParameters& parameters,
                 const Vec2<f32>& peak_window_center
-        ) -> std::pair<f32, Vec2<f32>>;
+        ) -> Vec2<f32>;
 
         /// Compute the target and reference slices.
         /// \details Proximity weighting: the backward projected views are weighted based on their
@@ -79,31 +88,19 @@ namespace qn {
                 const std::vector<i64>& reference_indexes,
                 const ProjectionMatchingParameters& parameters);
 
-        [[nodiscard]] auto extract_peak_window(const Vec2<f32>& max_shift) -> View<f32>;
+        [[nodiscard]] auto extract_peak_window_(const Vec2<f32>& max_shift) -> View<f32>;
 
-        // Get the indexes of the slices contributing to the projected reference.
+        // Set the indexes of the slices contributing to the projected reference.
         static void set_reference_indexes_(
                 i64 target_index,
                 const MetadataStack& metadata,
                 const ProjectionMatchingParameters& parameters,
                 std::vector<i64>& output_reference_indexes);
 
-        // Mask out the regions that are not in the target view to not include them in the projected views.
-        // To do so, transform a smooth rectangular mask from the target view onto the current view
-        // that is about to be backward projected.
-        static void apply_fov_of_target(
-                const View<f32>& input, const View<f32>& output,
-                const Vec3<f32>& target_angles, const Vec2<f32>& target_shifts,
-                const Vec3<f32>& reference_angles, const Vec2<f32>& reference_shifts,
-                f32 zero_taper_size, const Vec2<f32>& slice_center);
-
-        // Masks out the regions that are not in the reference view to not include
-        // To do so, transform a smooth rectangular mask from the reference view onto the target view.
-        static void add_fov_to_cumulative_fov(
-                const View<f32>& cumulative_fov, f32 weight,
-                const Vec3<f32>& target_angles, const Vec2<f32>& target_shifts,
-                const Vec3<f32>& reference_angles, const Vec2<f32>& reference_shifts,
-                f32 zero_taper_size, const Vec2<f32>& slice_center);
+        // Get the maximum number of reference slices used for projection.
+        [[nodiscard]] static i64 max_references_count_(
+                const MetadataStack& metadata,
+                const ProjectionMatchingParameters& parameters);
 
         // Extract the peak from the cross-correlation map.
         // The cross-correlation map should be fft-centered.
@@ -125,18 +122,25 @@ namespace qn {
         static void center_tilt_axis_(MetadataStack& metadata);
 
     private:
-        // Main buffers.
-        noa::Array<f32> m_slices;
-        noa::Array<f32> m_slices_padded;
-        noa::Array<c32> m_slices_fft;
-        noa::Array<c32> m_slices_padded_fft;
-        noa::Array<f32> m_slice_weight_padded_fft;
-        noa::Array<f32> m_cumulative_fov;
+        // Device buffers.
+        noa::Array<c32> m_target_reference_fft; // 2 slices
+        noa::Array<f32> m_references; // n slices
+        noa::Array<c32> m_references_padded_fft; // n slices
+        noa::Array<c32> m_projected_padded_fft; // 1 slice
+        noa::Array<f32> m_projected_weight_padded_fft; // 1 slice
         noa::Array<f32> m_peak_window;
 
+        // Pinned buffers (all with n elements each)
+        noa::Array<f32> m_reference_weights;
+        noa::Array<i32> m_reference_batch_indexes;
+        noa::Array<Float23> m_fov_inv_reference2target;
+        noa::Array<Float23> m_fov_inv_target2reference;
+        noa::Array<Float33> m_insert_inv_references_rotation;
+        noa::Array<Vec2<f32>> m_reference_shifts_center2origin;
+
         i64 m_max_size;
-        Shape4<i64> m_slice_shape;
         Shape4<i64> m_slice_shape_padded;
+        Shape4<i64> m_slices_padded_shape;
         Vec2<f32> m_slice_center;
         Vec2<f32> m_slice_center_padded;
     };

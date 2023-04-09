@@ -19,4 +19,14 @@ namespace qn {
                     cubes_coords.emplace_back(Vec3<i64>{z, y, x} * cube_size + cube_size / 2); // center of the cubes
         return {cubes_coords, cubes_count};
     }
+
+    template<typename Int>
+    [[nodiscard]] constexpr bool is_consecutive_range(const View<Int>& sequence, Int step = 1) noexcept {
+        NOA_ASSERT(noa::indexing::is_contiguous_vector(sequence));
+        const Int* range = sequence.get();
+        for (i64 i = 1; i < sequence.size(); ++i)
+            if (range[i - 1] != range[i] + step)
+                return false;
+        return true;
+    }
 }

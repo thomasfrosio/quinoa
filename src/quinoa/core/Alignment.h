@@ -98,7 +98,8 @@ namespace qn {
         // At this point, the global geometry should be pretty much on point.
         if (alignment_parameters.projection_matching) {
             auto projection_matching = qn::ProjectionMatching(
-                    tilt_series.shape(), tilt_series.device());
+                    tilt_series.shape(), tilt_series.device(),
+                    tilt_series_metadata, projection_matching_parameters);
             projection_matching.update_geometry(
                     tilt_series, tilt_series_metadata,
                     projection_matching_parameters);
