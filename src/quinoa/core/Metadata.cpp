@@ -51,7 +51,7 @@ namespace qn {
                    !options["stack_exposure"].IsNull()) {
             *this = MetadataStack(options["stack_tlt"].as<Path>(),
                                   options["stack_exposure"].as<Path>(),
-                                  options["rotation_angle"].as<f32>(MetadataSlice::UNSET_YAW_VALUE));
+                                  options["rotation_angle"].as<f32>(MetadataSlice::UNSET_ROTATION_VALUE));
 
         } else if (!options["order_starting_angle"].IsNull() &&
                    !options["order_starting_direction"].IsNull() &&
@@ -68,9 +68,9 @@ namespace qn {
                     options["order_angle_increment"].as<f32>(),
                     options["order_group"].as<i32>(),
                     options["order_exclude_start"].as<bool>(),
-                    options["order_per_view_exposure"].as<f32>(MetadataSlice::UNSET_YAW_VALUE),
+                    options["order_per_view_exposure"].as<f32>(MetadataSlice::UNSET_ROTATION_VALUE),
             };
-            *this = MetadataStack(scheme, count, options["rotation_angle"].as<f32>(MetadataSlice::UNSET_YAW_VALUE));
+            *this = MetadataStack(scheme, count, options["rotation_angle"].as<f32>(MetadataSlice::UNSET_ROTATION_VALUE));
 
         } else {
             QN_THROW("Missing option(s). Could not find enough information regarding the tilt geometry");

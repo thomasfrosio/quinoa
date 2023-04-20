@@ -57,6 +57,7 @@ namespace qn {
                 const MetadataStack& metadata,
                 i64 target_index,
                 const ProjectionMatchingParameters& parameters,
+                const View<f32>& peak_window,
                 const Vec2<f32>& peak_window_center
         ) -> Vec2<f32>;
 
@@ -123,23 +124,23 @@ namespace qn {
 
     private:
         // Device buffers.
-        noa::Array<c32> m_target_reference_fft; // 2 slices
         noa::Array<f32> m_references; // n slices
         noa::Array<c32> m_references_padded_fft; // n slices
-        noa::Array<c32> m_projected_padded_fft; // 1 slice
-        noa::Array<f32> m_projected_weight_padded_fft; // 1 slice
+        noa::Array<c32> m_target_reference_fft; // 2 slices
+        noa::Array<c32> m_target_reference_padded_fft; // 2 slices
+        noa::Array<f32> m_multiplicity_padded_fft; // 1 slice
         noa::Array<f32> m_peak_window;
 
-        // Pinned buffers (all with n elements each)
+        // Managed buffers (all with n elements each)
         noa::Array<f32> m_reference_weights;
-        noa::Array<i32> m_reference_batch_indexes;
+        noa::Array<Vec4<i32>> m_reference_batch_indexes;
         noa::Array<Float23> m_fov_inv_reference2target;
         noa::Array<Float23> m_fov_inv_target2reference;
         noa::Array<Float33> m_insert_inv_references_rotation;
         noa::Array<Vec2<f32>> m_reference_shifts_center2origin;
 
         i64 m_max_size;
-        Shape4<i64> m_slice_shape_padded;
+        Shape4<i64> m_slice_padded_shape;
         Shape4<i64> m_slices_padded_shape;
         Vec2<f32> m_slice_center;
         Vec2<f32> m_slice_center_padded;

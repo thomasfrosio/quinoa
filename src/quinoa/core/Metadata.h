@@ -6,21 +6,19 @@
 #include "quinoa/io/Options.h"
 
 namespace qn {
-    /// Metadata of a 2D slice.
-    /// \note For the transformation, the rotation center is fixed at n // 2, where n is the size of the axis.
-    ///       Furthermore, the shifts should be applied before the rotation.
+    // Metadata of a 2d slice.
+    // The rotation center is fixed at n // 2, where n is the size of the axis.
+    // The shifts are applied before the rotations.
     struct MetadataSlice {
     public:
-        Vec3<f32> angles{}; // Euler angles, in degrees, of the slice. ZYX extrinsic (yaw, tilt, pitch)
-        Vec2<f32> shifts{}; // YX shifts, in pixels, of the slice.
+        Vec3<f32> angles{}; // Euler angles, in degrees, of the slice. zyx extrinsic (rotation, tilt, elevation)
+        Vec2<f32> shifts{}; // yx shifts, in pixels, of the slice.
         f32 exposure{};     // Cumulated exposure, in e-/A2.
         i32 index{};        // Index [0, N) of the slice within the array.
         i32 index_file{};   // Index [0, N) of the slice within the original file.
 
         static Vec2<f32> center(i64 height, i64 width) noexcept {
-            // Use integral division to always have the center onto a pixel.
-            // This is actually important for Fourier cropping and resizing,
-            // so that we don't have to shift by 0.5 for even dimensions.
+            // Just make it a function to make it less ambiguous
             return {height / 2, width / 2};
         }
 
@@ -28,7 +26,7 @@ namespace qn {
             return center(shape[2], shape[3]);
         }
 
-        static constexpr f32 UNSET_YAW_VALUE = std::numeric_limits<f32>::max();
+        static constexpr f32 UNSET_ROTATION_VALUE = std::numeric_limits<f32>::max();
     };
 
     struct TiltScheme {

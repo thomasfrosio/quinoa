@@ -63,37 +63,38 @@ namespace qn {
                     int32_t{1}, // int32_t median_filter_window
                     alignment_resolution, // double target_resolution
                     false, // bool exposure_filter
-                    {0.10, 0.10}, // float2_t highpass_parameters
-                    {0.49, 0.05}, // float2_t lowpass_parameters
+                    {0.03, 0.03}, // float2_t highpass_parameters
+                    {0.5, 0.05}, // float2_t lowpass_parameters
                     true, // bool normalize_and_standardize
-                    0.08f, // float smooth_edge_percent
+                    0.03f, // float smooth_edge_percent
                     true, // bool zero_pad_to_fast_fft_shape
             };
 
-            const auto yaw_parameters = GlobalYawOffsetParameters{
-                    /*highpass_filter*/ {0.1, 0.08},
-                    /*lowpass_filter*/ {0.4, 0.05},
-                    /*absolute_max_tilt_difference*/ 40.f,
-                    /*solve_using_estimated_gradient*/ true,
-                    /*interpolation_mode*/ noa::InterpMode::LINEAR_FAST
+            const auto rotation_parameters = GlobalRotationParameters{
+                    /*highpass_filter=*/ {0.05, 0.05},
+                    /*lowpass_filter=*/ {0.25, 0.15},
+                    /*absolute_max_tilt_difference=*/ 70.f,
+                    /*solve_using_estimated_gradient=*/ false,
+                    /*interpolation_mode=*/ noa::InterpMode::LINEAR_FAST
             };
 
-            const auto pairwise_cosine_parameters = PairwiseCosineParameters{
-                    {}, // max_shift
-                    0.35f, // smooth_edge_percent
-                    {0.03, 0.03}, // highpass_filter
-                    {0.40, 0.05}, // lowpass_filter
-                    true, // center_tilt_axis
-                    noa::InterpMode::LINEAR_FAST,
-                    "" // debug_directory
+            const auto pairwise_cosine_parameters = PairwiseShiftParameters{
+                    /*max_shift=*/ {},
+                    /*pairwise_fov_taper=*/ 0.3f,
+                    /*area_match_taper=*/ 0.1f,
+                    /*highpass_filter=*/ {0.03, 0.03},
+                    /*lowpass_filter=*/ {0.25, 0.1},
+                    /*center_shifts=*/ true,
+                    /*interpolation_mode=*/ noa::InterpMode::LINEAR_FAST,
+                    /*debug_directory=*/ "" //output_directory / "debug_pairwise_shift"
             };
 
             const auto project_matching_parameters = ProjectionMatchingParameters{
                     {}, // max_shift
-                    0.35f, // smooth_edge_percent
+                    0.25f, // smooth_edge_percent
 
-                    0.001f, // backward_slice_z_radius
-                    180.f, // backward_tilt_angle_difference
+                    0.0005f, // backward_slice_z_radius
+                    45.f, // backward_tilt_angle_difference
                     true, // backward_use_aligned_only
 
                     0.5f, // forward_cutoff
@@ -103,9 +104,13 @@ namespace qn {
             };
 
             const auto alignment_parameters = InitialGlobalAlignmentParameters{
-                    options["alignment_global_tilt_axis_angle"].as<bool>(false),
-                    options["alignment_pairwise_cosine"].as<bool>(true),
-                    options["alignment_projection_matching"].as<bool>(true),
+                    options["alignment_rotation_offset"].as<bool>(true),
+                    options["alignment_tilt_offset"].as<bool>(true),
+                    options["alignment_elevation_offset"].as<bool>(true),
+
+                    options["alignment_pairwise_shift"].as<bool>(true),
+                    options["alignment_projection_matching_shift"].as<bool>(true),
+                    options["alignment_projection_matching_rotation"].as<bool>(true),
 
                     options["alignment_save_input_stack"].as<bool>(false),
                     options["alignment_save_aligned_stack"].as<bool>(true),
@@ -128,7 +133,7 @@ namespace qn {
             initial_global_alignment(original_stack_filename, metadata,
                                      loading_parameters,
                                      alignment_parameters,
-                                     yaw_parameters,
+                                     rotation_parameters,
                                      pairwise_cosine_parameters,
                                      project_matching_parameters,
                                      saving_parameters);

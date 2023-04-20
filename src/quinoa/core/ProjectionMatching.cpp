@@ -32,12 +32,13 @@ namespace qn {
         // Zero padding:
         m_max_size = std::max(shape[2], shape[3]);
         const i64 size_pad = m_max_size * 2;
-        m_slice_shape_padded = {1, 1, size_pad, size_pad};
+        m_slice_padded_shape = {1, 1, size_pad, size_pad};
         m_slice_center_padded = static_cast<f32>(size_pad / 2);
 
         // Find the maximum number of reference slices we'll need to hold at a given time.
         const i64 max_reference_count = max_references_count_(metadata, parameters);
         const auto target_reference_shape = Shape4<i64>{2, 1, shape[2], shape[3]};
+        const auto target_reference_padded_shape = Shape4<i64>{2, 1, size_pad, size_pad};
         const auto slices_shape = Shape4<i64>{max_reference_count, 1, shape[2], shape[3]};
         m_slices_padded_shape = Shape4<i64>{max_reference_count, 1, size_pad, size_pad};
 
@@ -46,15 +47,15 @@ namespace qn {
         m_target_reference_fft = noa::memory::empty<c32>(target_reference_shape.fft(), device_options);
         m_references = noa::memory::empty<f32>(slices_shape, device_options);
         m_references_padded_fft = noa::memory::empty<c32>(m_slices_padded_shape.fft(), device_options);
-        m_projected_padded_fft = noa::memory::empty<c32>(m_slice_shape_padded.fft(), device_options);
-        m_projected_weight_padded_fft = noa::memory::like<f32>(m_projected_padded_fft);
+        m_target_reference_padded_fft = noa::memory::empty<c32>(target_reference_padded_shape.fft(), device_options);
+        m_multiplicity_padded_fft = noa::memory::empty<f32>({1, 1, size_pad, size_pad / 2 + 1}, device_options);
         m_peak_window = noa::memory::empty<f32>({1, 1, 1, 128 * 128}, device_options);
 
-        // Pinned buffers. This allocates ~n*25*4 bytes.
-        const auto pinned_options = ArrayOption(compute_device, Allocator::PINNED);
+        // Managed buffers. This allocates ~n*25*4 bytes.
+        const auto managed_options = ArrayOption(compute_device, Allocator::MANAGED);
         const auto max_reference_shape = Shape4<i64>{max_reference_count, 1, 1, 1};
-        m_reference_weights = noa::memory::empty<f32>(max_reference_shape, pinned_options);
-        m_reference_batch_indexes = noa::memory::like<i32>(m_reference_weights);
+        m_reference_weights = noa::memory::empty<f32>(max_reference_shape, managed_options);
+        m_reference_batch_indexes = noa::memory::like<Vec4<i32>>(m_reference_weights);
         m_fov_inv_reference2target = noa::memory::like<Float23>(m_reference_weights); // FIXME Batch?
         m_fov_inv_target2reference = noa::memory::like<Float23>(m_reference_weights); // FIXME Batch?
         m_insert_inv_references_rotation = noa::memory::like<Float33>(m_reference_weights);
@@ -99,9 +100,9 @@ namespace qn {
         // Set up the optimizer.
         const Optimizer optimizer(NLOPT_LN_NELDERMEAD, 3);
         optimizer.set_max_objective(max_objective_function, &optimizer_data);
-        optimizer.set_x_tolerance_abs(0.001);
-        optimizer.set_fx_tolerance_abs(0.0001);
-        const auto upper_bounds = Vec3<f64>{0.5, 0, 1};
+        optimizer.set_x_tolerance_abs(0.005);
+//        optimizer.set_fx_tolerance_abs(0.0001);
+        const auto upper_bounds = Vec3<f64>{2, 0, 0};
         const auto lower_bounds = -upper_bounds;
         optimizer.set_bounds(lower_bounds.data(), upper_bounds.data());
 
@@ -123,14 +124,22 @@ namespace qn {
 
             Vec3<f64> x{0};
             f64 fx;
-            optimizer.optimize(x.data(), &fx);
-            qn::Logger::debug("{}: angles={}, score={}", target_index, x, fx);
+//            optimizer.optimize(x.data(), &fx);
+            fx = project_and_correlate_(
+                    optimizer_data.stack,
+                    optimizer_data.metadata,
+                    optimizer_data.target_index,
+                    optimizer_data.reference_indexes,
+                    *optimizer_data.parameters,
+                    {}
+            );
 
             // Now compute the shift for these last/best angles.
             // The target and projected-reference are already computed,
             // so we can just use them instead of re-projecting everything.
             const Vec2<f32> shifts = extract_final_shift_(
-                    optimizer_data.metadata, target_index, parameters, peak_window_center);
+                    optimizer_data.metadata, target_index, parameters, peak_window_2d, peak_window_center);
+            qn::Logger::debug("{}: angles={}, score={}, shift={}", target_index, x, fx, shifts);
 
             // Update the metadata.
             auto& slice = optimizer_data.metadata[target_index];
@@ -148,7 +157,7 @@ namespace qn {
         for (const auto& updated_metadata: optimizer_data.metadata.slices()) {
             for (auto& original_slice: metadata.slices()) {
                 if (original_slice.index == updated_metadata.index) {
-                    original_slice.angles[0] = updated_metadata.angles[0];
+                    original_slice.angles = updated_metadata.angles;
                     original_slice.shifts = updated_metadata.shifts;
                 }
             }
@@ -233,7 +242,8 @@ namespace qn {
                                       reference_indexes, parameters);
         const auto target_reference = m_references.subregion(noa::indexing::slice_t{0, 2});
         if (!parameters.debug_directory.empty())
-            noa::io::save(target_reference, parameters.debug_directory / "target_reference.mrc");
+            noa::io::save(target_reference, parameters.debug_directory /
+            noa::string::format("target_reference_{:>02}.mrc", target_index));
 
         const auto target = target_reference.subregion(0);
         const auto reference = target_reference.subregion(1);
@@ -246,11 +256,15 @@ namespace qn {
                 target_reference_fft, target_reference_fft,
                 target_reference.shape(), 0.10f, 0.40f, 0.08f, 0.05f);
 
-        // Compute the cross-correlation coefficient.
-        const auto target_fft = target_reference_fft.subregion(0);
-        const auto reference_fft = target_reference_fft.subregion(1);
-        const auto cc_score = noa::signal::fft::xcorr<fft::H2H>(target_fft, reference_fft, target_reference.shape());
-        return cc_score;
+//        return -noa::math::rmsd(target, reference);
+
+
+
+//        // Compute the cross-correlation coefficient.
+//        const auto target_fft = target_reference_fft.subregion(0);
+//        const auto reference_fft = target_reference_fft.subregion(1);
+//        const auto cc_score = noa::signal::fft::xcorr<fft::H2H>(target_fft, reference_fft, target.shape());
+//        return cc_score;
 
         // At this point, m_target_reference_fft is valid and contains the target
         // and projected-reference ready for extract_final_shift_().
@@ -260,6 +274,7 @@ namespace qn {
             const MetadataStack& metadata,
             i64 target_index,
             const ProjectionMatchingParameters& parameters,
+            const View<f32>& peak_window,
             const Vec2<f32>& peak_window_center
     ) -> Vec2<f32> {
         // Assume this is called after project_and_correlate_().
@@ -273,10 +288,11 @@ namespace qn {
         noa::signal::fft::xmap<noa::fft::H2FC>(
                 target_fft, reference_fft, xmap); // TODO DOUBLE_PHASE
         if (!parameters.debug_directory.empty())
-            noa::io::save(xmap, parameters.debug_directory / "xmap.mrc");
+            noa::io::save(xmap, parameters.debug_directory /
+                    noa::string::format("xmap_{:>02}.mrc", target_index));
 
         const auto [shift, peak_value] = extract_peak_from_xmap_(
-                xmap, m_peak_window.view(),
+                xmap, peak_window,
                 m_slice_center, peak_window_center,
                 metadata[target_index]); // TODO DOUBLE_PHASE
         return shift;
@@ -293,14 +309,12 @@ namespace qn {
         // Use views to not reference count arrays since nothing is destructed here.
         const auto references_count = static_cast<i64>(reference_indexes.size());
         const auto range = noa::indexing::slice_t{0, references_count};
+        const auto references_padded_shape = m_slices_padded_shape.pop_front().push_front(references_count);
 
         const auto references_all = m_references.view();
         const View<f32> references = references_all.subregion(range);
         const View<c32> references_padded_fft = m_references_padded_fft.view().subregion(range);
-        const View<f32> references_padded = noa::fft::alias_to_real(references_padded_fft, m_slices_padded_shape);
-        const View<c32> projected_padded_fft = m_projected_padded_fft.view();
-        const View<f32> projected_padded = noa::fft::alias_to_real(projected_padded_fft, m_slice_shape_padded);
-        const View<f32> projected_weight_padded_fft = m_projected_weight_padded_fft.view();
+        const View<f32> references_padded = noa::fft::alias_to_real(references_padded_fft, references_padded_shape);
 
         const auto reference_weights = m_reference_weights.view().subregion(range);
         const auto reference_batch_indexes = m_reference_batch_indexes.view().subregion(range);
@@ -325,18 +339,17 @@ namespace qn {
             const Vec2<f32>& reference_shifts = metadata[reference_index].shifts;
             const Vec3<f32> reference_angles = noa::math::deg2rad(metadata[reference_index].angles);
 
-            // TODO Weighting based on the order of collection? Or is exposure weighting enough so leave to 1?
+            // TODO Weighting based on the order of collection? Or use exposure weighting?
             // Multiplicity and weight.
             // How much the slice should contribute to the final projected-reference.
             [[maybe_unused]] constexpr auto PI = noa::math::Constant<f32>::PI;
             [[maybe_unused]] const f32 tilt_difference = std::abs(target_angles[1] - reference_angles[1]);
-            const f32 weight =  1;//noa::math::sinc(tilt_difference * PI / max_tilt_difference);
-            reference_weights(i, 0, 0, 0) = weight; // FIXME
+            const f32 weight = 1; //noa::math::sinc(tilt_difference * PI / parameters.backward_tilt_angle_difference);
+            reference_weights(i, 0, 0, 0) = 1 / weight; // FIXME?
             total_weight += weight;
 
-            // Get the references indexes. Necessary for copy_batches to copy the references to a contiguous array.
-            // These are the indexes of the reference slices within the input stack.
-            reference_batch_indexes(i, 0, 0, 0) = metadata[reference_index].index;
+            // Get the references indexes. These are the indexes of the reference slices within the input stack.
+            reference_batch_indexes(i, 0, 0, 0) = {metadata[reference_index].index, 0, 0, 0};
 
             // Compute the matrices for the FOV.
             const auto cos_factor =
@@ -364,11 +377,11 @@ namespace qn {
         View<f32> input_reference_slices;
         if (is_consecutive_range(reference_batch_indexes)) {
             // If the reference slices are already consecutive, no need to copy to a new array.
-            const auto start = reference_batch_indexes(0, 0, 0, 0);
+            const auto start = reference_batch_indexes(0, 0, 0, 0)[0];
             const auto end = start + references_count;
             input_reference_slices = stack.subregion(noa::indexing::slice_t{start, end});
         } else {
-            noa::memory::copy_batches(stack, references, reference_batch_indexes);
+            noa::memory::extract_subregions(stack, references, reference_batch_indexes, noa::BorderMode::NOTHING);
             input_reference_slices = references;
         }
 
@@ -384,56 +397,74 @@ namespace qn {
         // phase_shift_2d can do the remap, but not in-place, so use remap to center the slice.
         noa::signal::fft::phase_shift_2d<noa::fft::H2H>(
                 references_padded_fft, references_padded_fft,
-                m_slice_shape_padded, reference_shifts_center2origin);
+                references_padded_shape, reference_shifts_center2origin);
         noa::fft::remap(noa::fft::H2HC, references_padded_fft,
-                        references_padded_fft, m_slice_shape_padded);
+                        references_padded_fft, references_padded_shape);
+
+        // We'll save the target and reference next to each other.
+        const View<c32> target_reference_padded_fft = m_target_reference_padded_fft.view();
+        const View<c32> target_padded_fft = target_reference_padded_fft.subregion(0);
+        const View<c32> reference_padded_fft = target_reference_padded_fft.subregion(1);
+        const View<f32> multiplicity_padded_fft = m_multiplicity_padded_fft.view();
+        const View<f32> target_reference_padded = noa::fft::alias_to_real(
+                target_reference_padded_fft, m_slice_padded_shape.pop_front().push_front(2)); // output
 
         // Projection:
         // - The projected reference (and its corresponding sampling function) is reconstructed
         //   by adding the contribution of the input reference slices to the relevant "projected" frequencies.
         noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
-                references_padded_fft, m_slice_shape_padded,
-                projected_padded_fft, m_slice_shape_padded,
+                references_padded_fft, references_padded_shape,
+                reference_padded_fft, m_slice_padded_shape,
                 Float22{}, insert_inv_references_rotation,
                 Float22{}, extract_fwd_target_rotation,
                 parameters.backward_slice_z_radius, false,
                 parameters.forward_cutoff);
         noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
-                reference_weights, m_slice_shape_padded,
-                projected_weight_padded_fft, m_slice_shape_padded,
+                noa::indexing::broadcast(reference_weights, references_padded_shape.fft()), references_padded_shape,
+                multiplicity_padded_fft, m_slice_padded_shape,
                 Float22{}, insert_inv_references_rotation,
                 Float22{}, extract_fwd_target_rotation,
                 parameters.backward_slice_z_radius, false,
                 parameters.forward_cutoff);
 
-        // For the reference view, center the output projected slice onto the target,
-        // apply the projected-weight/multiplicity, and apply the cumulative FOV.
+        // Center projection back and shift onto the target.
         noa::signal::fft::phase_shift_2d<noa::fft::H2H>(
-                projected_padded_fft, projected_padded_fft,
-                m_slice_shape_padded, m_slice_center_padded + target_shifts);
-        noa::ewise_trinary(projected_padded_fft, projected_weight_padded_fft, 1e-3f,
-                           projected_padded_fft, noa::divide_epsilon_t{});
-        noa::fft::c2r(projected_padded_fft, projected_padded);
+                reference_padded_fft, reference_padded_fft,
+                m_slice_padded_shape, m_slice_center_padded + target_shifts);
 
-        // Save the target and the projected reference:
-        const auto output_target = references_all.subregion(0);
-        const auto output_reference = references_all.subregion(1);
+        // We want to apply the same projection-weighting onto the target too,
+        // so zero pad and fft the target too.
+        const View<f32> target_padded = target_reference_padded.subregion(0);
+        View target_view = stack.subregion(metadata[target_index].index);
+        noa::memory::resize(target_view, target_padded);
+        noa::fft::r2c(target_padded, target_padded_fft);
+
+        // Apply weight/multiplicity to both the target and projected reference.
+        // If weight is 0 (i.e. less than machine epsilon), the frequency is set to 0.
+        // Otherwise, divide by the multiplicity, effectively applying the sampling function.
+        noa::ewise_binary(reference_padded_fft, multiplicity_padded_fft,
+                          reference_padded_fft, noa::divide_safe_t{}); // FIXME
+
+//        noa::ewise_binary(multiplicity_padded_fft, 1e-5f, multiplicity_padded_fft, noa::greater_t{});
+//        noa::ewise_binary(multiplicity_padded_fft, target_padded_fft, target_padded_fft, noa::multiply_t{});
+
+//        noa::signal::fft::bandpass<noa::fft::H2H>(
+//                target_reference_padded_fft, target_reference_padded_fft,
+//                target_reference_padded.shape(), 0.10f, 0.40f, 0.08f, 0.05f);
+
+        noa::fft::c2r(target_reference_padded_fft, target_reference_padded);
+
+        // Gather the FOV of the reference slices into a single cumulative FOV.
+        // The target and the projected reference are saved next to each other.
+        const auto target_reference = references_all.subregion(noa::indexing::slice_t{0, 2});
         const auto cumulative_fov = references_all.subregion(2);
-
-        // Gather the FOV of the reference slices into a single FOV.
         noa::geometry::rectangle(
                 reference_weights, cumulative_fov,
                 m_slice_center, m_slice_center - zero_taper_size,
                 zero_taper_size, fov_inv_reference2target);
-
-        noa::memory::resize(projected_padded, output_reference);
-        noa::ewise_trinary(cumulative_fov, 1 / total_weight, output_reference,
-                           output_reference, noa::multiply_t{});
-
-        // For the target view, simply extract it from the stack and apply the cumulative FOV.
-        View target_view = stack.subregion(metadata[target_index].index);
-        noa::ewise_trinary(cumulative_fov, 1 / total_weight, target_view,
-                           output_target, noa::multiply_t{});
+        noa::memory::resize(target_reference_padded, target_reference);
+        noa::ewise_trinary(cumulative_fov, 1 / total_weight, target_reference,
+                           target_reference, noa::multiply_t{});
     }
 
     auto ProjectionMatching::extract_peak_from_xmap_(

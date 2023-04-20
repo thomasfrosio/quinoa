@@ -7,6 +7,7 @@
 #include <noa/Memory.hpp>
 #include <noa/Signal.hpp>
 #include <noa/core/utils/Timer.hpp>
+#include <noa/algorithms/Utilities.hpp>
 
 #include "quinoa/core/Metadata.h"
 #include "quinoa/io/Logging.h"
@@ -20,24 +21,35 @@ namespace qn::details {
             const Shape4<i64>& shape,
             const Vec<Real, N>& current_pixel_size,
             const Vec<Real, N>& target_pixel_size
-    ) -> std::pair<Shape4<i64>, Vec<Real, N>> {
+    ) -> std::tuple<Shape4<i64>, Vec<Real, N>, Vec<Real, N>> {
 
-        // Get the initial target shape for that resolution.
-        const auto current_shape = Vec<i64, N>(shape.data() + 4 - N).template as<f64>();
-        const auto target_nyquist = current_pixel_size * Real{0.5} / target_pixel_size;
-        const auto target_shape = noa::math::round(target_nyquist * current_shape / Real{0.5});
+        // Find the frequency cutoff in the current spectrum that corresponds to the desired spacing.
+        const auto current_shape = Shape<i64, N>(shape.data() + 4 - N);
+        const auto current_shape_f = current_shape.vec().template as<f64>();
+        const auto frequency_cutoff = current_pixel_size * Real{0.5} / target_pixel_size;
 
-        // Compute new pixel size and new shape.
-        const auto new_nyquist = target_shape * 0.5 / current_shape;
+        // Get Fourier cropped shape and the actual new spacing.
+        const auto new_shape_f = noa::math::round(frequency_cutoff * current_shape_f / Real{0.5});
+        const auto new_nyquist = new_shape_f * 0.5 / current_shape_f;
         const auto new_pixel_size = current_pixel_size / (2 * new_nyquist);
-        const auto new_shape = Vec4<i64>{
-                shape[0],
-                N == 3 ? target_shape[0] : 1,
-                target_shape[0 + N == 3],
-                target_shape[1 + N == 3]
-        };
 
-        return {Shape4<i64>(new_shape), new_pixel_size};
+        // Output shape.
+        const auto new_shape = Shape<i64, N>(new_shape_f.template as<i64>());
+        const auto new_shape_4d = Shape4<i64>(Vec4<i64>{
+                shape[0],
+                N == 3 ? new_shape[0] : 1,
+                new_shape[0 + N == 3],
+                new_shape[1 + N == 3]
+        });
+
+        // In order to preserve the center, we may need to shift.
+        // Adding this shift to the cropped dft moves the dc_original_index to dc_new_index.
+        const auto dc_original_index = noa::algorithm::frequency2index<true>(Vec<i64, N>{0}, current_shape);
+        const auto dc_new_index = noa::algorithm::frequency2index<true>(Vec<i64, N>{0}, new_shape);
+        const auto center = dc_original_index.template as<f64>() * (current_pixel_size / new_pixel_size);
+        const auto shift = dc_new_index.template as<f64>() - center;
+
+        return {new_shape_4d, new_pixel_size, shift};
     }
 }
 
@@ -92,7 +104,7 @@ namespace qn {
         // Fourier crop setup.
         const auto input_pixel_size = input_file.pixel_size().pop_front().as<f64>();
         const auto target_pixel_size = Vec2<f64>(parameters.target_resolution / 2);
-        const auto [cropped_shape, output_pixel_size] = details::fourier_crop_dimensions(
+        const auto [cropped_shape, output_pixel_size, rescale_shift] = details::fourier_crop_dimensions(
                 input_shape, input_pixel_size, target_pixel_size);
 
         // Zero-padding in real-space.
@@ -168,6 +180,9 @@ namespace qn {
             noa::fft::resize<noa::fft::H2H>(
                     input_slice_fft, input_slice_shape,
                     cropped_slice_fft, cropped_slice_shape);
+            noa::signal::fft::phase_shift_2d<noa::fft::H2H>(
+                    cropped_slice_fft, cropped_slice_fft,
+                    cropped_slice_shape, rescale_shift.as<f32>());
             // TODO Add exposure filter.
             noa::signal::fft::bandpass<noa::fft::H2H>(
                     cropped_slice_fft, cropped_slice_fft, cropped_slice_shape,
@@ -239,7 +254,7 @@ namespace qn {
 
         const auto input_pixel_size = input_file.pixel_size().pop_front().as<f64>();
         const auto target_pixel_size = Vec2<f64>(parameters.target_resolution / 2);
-        const auto [output_shape, output_pixel_size] = details::fourier_crop_dimensions(
+        const auto [output_shape, output_pixel_size, rescale_shift] = details::fourier_crop_dimensions(
                 input_shape, input_pixel_size, target_pixel_size);
 
         const auto input_slice_shape = Shape4<i64>{1, 1, input_shape[2], input_shape[3]};
@@ -323,7 +338,10 @@ namespace qn {
             noa::fft::resize<noa::fft::H2H>(
                     input_slice_fft, input_slice_shape,
                     output_slice_fft, output_slice_shape);
-
+            // TODO We could apply the rescale-shifts in real-space with the other shifts
+            noa::signal::fft::phase_shift_2d<noa::fft::H2H>(
+                    output_slice_fft, output_slice_fft,
+                    output_slice_shape, rescale_shift.as<f32>());
             // TODO Add exposure filter and update the lowpass cutoff.
             noa::signal::fft::bandpass<noa::fft::H2H>(
                     output_slice_fft, output_slice_fft, output_slice_shape,

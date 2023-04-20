@@ -5,17 +5,19 @@
 #include "quinoa/io/YAML.h"
 
 namespace {
-    constexpr std::array<std::string_view, 33> QN_OPTIONS_ = {
+    constexpr std::array<std::string_view, 35> QN_OPTIONS_ = {
             "preprocessing_run",
             "preprocessing_exclude_blank_views",
             "preprocessing_exclude_view_indexes",
 
             "alignment_run",
             "alignment_resolution",
-            "alignment_global_tilt_axis_angle",
-            "alignment_global_tilt_angle_offset",
-            "alignment_pairwise_cosine",
-            "alignment_projection_matching",
+            "alignment_rotation_offset",
+            "alignment_tilt_offset",
+            "alignment_elevation_offset",
+            "alignment_pairwise_shift",
+            "alignment_projection_matching_shift",
+            "alignment_projection_matching_rotation",
             "alignment_save_input_stack",
             "alignment_save_aligned_stack",
             "alignment_save_aligned_stack_resolution",

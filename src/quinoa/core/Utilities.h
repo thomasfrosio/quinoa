@@ -21,11 +21,11 @@ namespace qn {
     }
 
     template<typename Int>
-    [[nodiscard]] constexpr bool is_consecutive_range(const View<Int>& sequence, Int step = 1) noexcept {
+    [[nodiscard]] constexpr bool is_consecutive_range(const View<Vec4<Int>>& sequence, Int step = 1) noexcept {
         NOA_ASSERT(noa::indexing::is_contiguous_vector(sequence));
-        const Int* range = sequence.get();
+        const auto* range = sequence.get();
         for (i64 i = 1; i < sequence.size(); ++i)
-            if (range[i - 1] != range[i] + step)
+            if (range[i - 1][0] + step != range[i][0])
                 return false;
         return true;
     }

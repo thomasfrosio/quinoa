@@ -8,9 +8,13 @@
 
 namespace qn {
     struct InitialGlobalAlignmentParameters {
-        bool global_tilt_axis_angle{true};
-        bool pairwise_cosine{true};
-        bool projection_matching{true};
+        bool rotation_offset{true};
+        bool tilt_offset{true};
+        bool elevation_offset{true};
+
+        bool pairwise_shift{true};
+        bool projection_matching_shift{true};
+        bool projection_matching_rotation{true};
 
         bool save_input_stack{false};
         bool save_aligned_stack{false};
@@ -26,11 +30,12 @@ namespace qn {
             MetadataStack& tilt_series_metadata,
             const LoadStackParameters& loading_parameters,
             const InitialGlobalAlignmentParameters& alignment_parameters,
-            const GlobalYawOffsetParameters& yaw_offset_parameters,
-            const PairwiseCosineParameters& pairwise_cosine_parameters,
+            const GlobalRotationParameters& rotation_offset_parameters,
+            const PairwiseShiftParameters& pairwise_cosine_parameters,
             const ProjectionMatchingParameters& projection_matching_parameters,
             const SaveStackParameters& saving_parameters) {
 
+        // TODO load stack in the "exposure" order.
         const auto [tilt_series, preprocessed_pixel_size, original_pixel_size] =
                 load_stack(tilt_series_filename, tilt_series_metadata, loading_parameters);
 
@@ -48,55 +53,77 @@ namespace qn {
         for (auto& slice: tilt_series_metadata.slices())
             slice.shifts *= pre_scale;
 
+        // TODO tilt offset can be estimated using CC first.
+
         // Initial alignment using neighbouring views as reference.
         {
-            const bool has_initial_yaw = MetadataSlice::UNSET_YAW_VALUE != tilt_series_metadata[0].angles[0];
+            const bool has_initial_rotation = MetadataSlice::UNSET_ROTATION_VALUE != tilt_series_metadata[0].angles[0];
 
-            auto pairwise_cosine = PairwiseCosine(
-                    tilt_series.shape(), tilt_series.device(),
-                    pairwise_cosine_parameters.interpolation_mode);
+            auto pairwise_cosine =
+                    !alignment_parameters.pairwise_shift ?
+                    PairwiseShift() :
+                    PairwiseShift(tilt_series.shape(), tilt_series.device());
 
-            auto global_yaw = GlobalYawSolver(
-                    tilt_series, tilt_series_metadata,
-                    tilt_series.device(), yaw_offset_parameters);
+            auto global_rotation =
+                    !alignment_parameters.rotation_offset ?
+                    GlobalRotation() :
+                    GlobalRotation(
+                            tilt_series, tilt_series_metadata,
+                            tilt_series.device(), rotation_offset_parameters);
 
-            if (!has_initial_yaw) {
-                pairwise_cosine.update_shifts(tilt_series, tilt_series_metadata,
-                                              pairwise_cosine_parameters,
-                                              /*cosine_stretch=*/ false);
-                global_yaw.initialize_yaw(tilt_series_metadata, yaw_offset_parameters);
-                pairwise_cosine.update_shifts(tilt_series, tilt_series_metadata,
-                                              pairwise_cosine_parameters,
-                        /*cosine_stretch=*/ false);
-                global_yaw.initialize_yaw(tilt_series_metadata, yaw_offset_parameters);
-            }
-
-            // Once we have a first estimate, start again. At each iteration the yaw should be better, improving
-            // the cosine stretching for the shifts. Similarly, the shifts should improve, allowing a better estimate
-            // of the common field-of-view.
-            const std::array<f32, 3> yaw_bounds{5, 2, 1};
-            for (auto yaw_bound: yaw_bounds) {
-                if (alignment_parameters.pairwise_cosine) {
+            if (!has_initial_rotation) {
+                // Find a good estimate of the shifts, without cosine-stretching.
+                // Use area-matching only once we've got big shifts out of the picture.
+                std::array shift_area_match{false, false, true, true};
+                for (auto area_match: shift_area_match) {
                     pairwise_cosine.update_shifts(
                             tilt_series, tilt_series_metadata,
-                            pairwise_cosine_parameters);
+                            pairwise_cosine_parameters,
+                            /*cosine_stretch=*/ false,
+                            /*area_match=*/ area_match);
                 }
-                if (alignment_parameters.global_tilt_axis_angle) {
-                    global_yaw.update_yaw(
-                            tilt_series_metadata, yaw_offset_parameters,
-                            -yaw_bound, yaw_bound);
+
+                // Once we have estimates for the shifts, do the global rotation search.
+                global_rotation.initialize(tilt_series_metadata, rotation_offset_parameters);
+            } else {
+                for ([[maybe_unused]] auto _: noa::irange(2)) {
+                    pairwise_cosine.update_shifts(
+                            tilt_series, tilt_series_metadata,
+                            pairwise_cosine_parameters,
+                            /*cosine_stretch=*/ true,
+                            /*area_match=*/ false);
                 }
             }
-            if (alignment_parameters.pairwise_cosine) {
+
+            // Once we have a first estimate, start again. At each iteration the rotation should be better, improving
+            // the cosine stretching for the shifts. Similarly, the shifts should improve, allowing a better estimate
+            // of the common field-of-view.
+            const std::array<f32, 3> user_rotation_bounds{2, 1, 0.5};
+            const std::array<f32, 3> estimate_rotation_bounds{10, 4, 0.5};
+            for (auto i : noa::irange<size_t>(3)) {
                 pairwise_cosine.update_shifts(
                         tilt_series, tilt_series_metadata,
-                        pairwise_cosine_parameters);
+                        pairwise_cosine_parameters,
+                        /*cosine_stretch=*/ true,
+                        /*area_match=*/ true);
+                global_rotation.update(
+                        tilt_series_metadata, rotation_offset_parameters,
+                        has_initial_rotation ? user_rotation_bounds[i] : estimate_rotation_bounds[i]);
             }
+            pairwise_cosine.update_shifts(
+                    tilt_series, tilt_series_metadata,
+                    pairwise_cosine_parameters,
+                    /*cosine_stretch=*/ true,
+                    /*area_match=*/ true);
         }
+
+        // TODO Estimate tilt and elevation offset using CTF.
+        // TODO Rerun pairwise shift and rotation offset.
 
         // Projection matching alignment.
         // At this point, the global geometry should be pretty much on point.
-        if (alignment_parameters.projection_matching) {
+        if (alignment_parameters.projection_matching_shift ||
+            alignment_parameters.projection_matching_rotation) {
             auto projection_matching = qn::ProjectionMatching(
                     tilt_series.shape(), tilt_series.device(),
                     tilt_series_metadata, projection_matching_parameters);
