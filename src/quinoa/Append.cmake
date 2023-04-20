@@ -13,15 +13,19 @@ set(QUINOA_SOURCES
         src/quinoa/core/Alignment.h
         src/quinoa/core/Metadata.cpp
         src/quinoa/core/Metadata.h
-        src/quinoa/core/PairwiseCosine.h
-        src/quinoa/core/PairwiseCosine.cpp
         src/quinoa/core/Stack.hpp
-        src/quinoa/core/Preprocessing.hpp
+        src/quinoa/core/Optimizer.hpp
+        src/quinoa/core/Utilities.h
+
+        src/quinoa/core/PairwiseShift.hpp
+        src/quinoa/core/PairwiseShift.cpp
+        src/quinoa/core/GlobalRotation.hpp
+        src/quinoa/core/GlobalRotation.cpp
         src/quinoa/core/ProjectionMatching.h
         src/quinoa/core/ProjectionMatching.cpp
-        src/quinoa/core/Utilities.h
+
+        src/quinoa/core/Preprocessing.hpp
+
 #        src/quinoa/core/Reconstruction.h
-        src/quinoa/core/YawFinder.h
-        src/quinoa/core/YawFinder.cpp
-        src/quinoa/core/Optimizer.hpp
+
         )

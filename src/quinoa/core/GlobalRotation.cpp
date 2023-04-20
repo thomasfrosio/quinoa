@@ -1,4 +1,4 @@
-#include "quinoa/core/YawFinder.h"
+#include "quinoa/core/GlobalRotation.hpp"
 #include "quinoa/core/Optimizer.hpp"
 
 namespace {
@@ -76,6 +76,14 @@ namespace qn {
         if (m_reference_rfft.is_empty())
             return;
 
+        qn::Logger::info("Global rotation offset alignment...");
+        qn::Logger::trace("Compute device: {}\n"
+                          "Max absolute angle difference: {:.2f}",
+                          m_reference_rfft.device(),
+                          parameters.absolute_max_tilt_difference);
+        noa::Timer timer;
+        timer.start();
+
         // Set the rotations to 0 since the search is relative to the rotation saved in the metadata.
         for (auto& slice : metadata.slices())
             slice.angles[0] = 0.f;
@@ -128,9 +136,11 @@ namespace qn {
         if (x_best > 180)
             x_best -= 360;
 
-        qn::Logger::trace("Found initial global rotation of {:.3f} degrees (score={:.3f})", x_best, fx_best);
         for (auto& slice : metadata.slices())
             slice.angles[0] = x_best;
+
+        qn::Logger::trace("Found initial global rotation of {:.3f} degrees (score={:.3f})", x_best, fx_best);
+        qn::Logger::info("Global rotation offset alignment... done. Took {}\n", timer.elapsed());
     }
 
     void GlobalRotation::update(MetadataStack& metadata,
@@ -138,6 +148,16 @@ namespace qn {
                                 f32 bound) {
         if (m_reference_rfft.is_empty())
             return;
+
+        qn::Logger::info("Global rotation offset alignment...");
+        qn::Logger::trace("Compute device: {}\n"
+                          "Max absolute angle difference: {:.2f}\n"
+                          "Max rotation offset: {:.2f}",
+                          m_reference_rfft.device(),
+                          parameters.absolute_max_tilt_difference,
+                          bound);
+        noa::Timer timer;
+        timer.start();
 
         OptimizerData optimizer_data;
         optimizer_data.global_rotation = this;
@@ -175,12 +195,14 @@ namespace qn {
         f64 x{0.}; // initial rotation offset relative to whatever is in the metadata
         f64 fx{};
         optimizer.optimize(&x, &fx); // returns the best rotation in x
-        qn::Logger::trace("Found global rotation offset of {:.3f} degrees (score={:.3f})", x, fx);
 
         // Update the metadata.
         const auto rotation_offset = static_cast<f32>(x);
         for (auto& slice : metadata.slices())
             slice.angles[0] += rotation_offset;
+
+        qn::Logger::trace("Found global rotation offset of {:.3f} degrees (score={:.3f})", x, fx);
+        qn::Logger::info("Global rotation offset alignment... done. Took {}\n", timer.elapsed());
     }
 
     auto GlobalRotation::max_objective_fx_(

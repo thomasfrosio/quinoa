@@ -1,12 +1,11 @@
 #include <noa/Memory.hpp>
-#include <noa/Math.hpp>
 #include <noa/IO.hpp>
 #include <noa/Geometry.hpp>
 #include <noa/FFT.hpp>
 #include <noa/Signal.hpp>
 #include <noa/core/utils/Timer.hpp>
 
-#include "quinoa/core/PairwiseCosine.h"
+#include "quinoa/core/PairwiseShift.hpp"
 
 namespace qn {
     PairwiseShift::PairwiseShift(
@@ -22,7 +21,7 @@ namespace qn {
         m_xmap = noa::memory::empty<f32>({1, 1, shape[2], shape[3]}, options);
     }
 
-    void PairwiseShift::update_shifts(
+    void PairwiseShift::update(
             const Array<f32>& stack,
             MetadataStack& metadata,
             const PairwiseShiftParameters& parameters,
@@ -32,7 +31,7 @@ namespace qn {
         if (m_buffer_rfft.is_empty())
             return;
 
-        qn::Logger::info("Pairwise cosine-stretch shift alignment...");
+        qn::Logger::info("Pairwise shift alignment...");
         qn::Logger::trace("Compute device: {}\n"
                           "Cosine stretching: {}\n"
                           "Area match: {}",
@@ -81,7 +80,7 @@ namespace qn {
         for (i64 i = 0; i < slice_count; ++i)
             metadata[i].shifts += global_shifts[static_cast<size_t>(i)].as<f32>();
 
-        qn::Logger::info("Pairwise cosine-stretch shift alignment... done. Took {:.2f}ms\n", timer.elapsed());
+        qn::Logger::info("Pairwise shift alignment... done. Took {:.2f}ms\n", timer.elapsed());
     }
 
     auto PairwiseShift::find_relative_shifts_(

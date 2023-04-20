@@ -1,10 +1,10 @@
 #pragma once
 
 #include "quinoa/core/Metadata.h"
-#include "quinoa/core/PairwiseCosine.h"
+#include "quinoa/core/PairwiseShift.hpp"
 #include "quinoa/core/ProjectionMatching.h"
 #include "quinoa/core/Stack.hpp"
-#include "quinoa/core/YawFinder.h"
+#include "quinoa/core/GlobalRotation.hpp"
 
 namespace qn {
     struct InitialGlobalAlignmentParameters {
@@ -31,7 +31,7 @@ namespace qn {
             const LoadStackParameters& loading_parameters,
             const InitialGlobalAlignmentParameters& alignment_parameters,
             const GlobalRotationParameters& rotation_offset_parameters,
-            const PairwiseShiftParameters& pairwise_cosine_parameters,
+            const PairwiseShiftParameters& pairwise_shift_parameters,
             const ProjectionMatchingParameters& projection_matching_parameters,
             const SaveStackParameters& saving_parameters) {
 
@@ -59,7 +59,7 @@ namespace qn {
         {
             const bool has_initial_rotation = MetadataSlice::UNSET_ROTATION_VALUE != tilt_series_metadata[0].angles[0];
 
-            auto pairwise_cosine =
+            auto pairwise_shift =
                     !alignment_parameters.pairwise_shift ?
                     PairwiseShift() :
                     PairwiseShift(tilt_series.shape(), tilt_series.device());
@@ -76,9 +76,9 @@ namespace qn {
                 // Use area-matching only once we've got big shifts out of the picture.
                 std::array shift_area_match{false, false, true, true};
                 for (auto area_match: shift_area_match) {
-                    pairwise_cosine.update_shifts(
+                    pairwise_shift.update(
                             tilt_series, tilt_series_metadata,
-                            pairwise_cosine_parameters,
+                            pairwise_shift_parameters,
                             /*cosine_stretch=*/ false,
                             /*area_match=*/ area_match);
                 }
@@ -86,33 +86,37 @@ namespace qn {
                 // Once we have estimates for the shifts, do the global rotation search.
                 global_rotation.initialize(tilt_series_metadata, rotation_offset_parameters);
             } else {
-                for ([[maybe_unused]] auto _: noa::irange(2)) {
-                    pairwise_cosine.update_shifts(
+                // If we have an estimate of the rotation from the user, use cosine-stretching
+                // without area-matching to find estimates of the shifts.
+                for (i64 i = 0; i < 2; ++i) {
+                    pairwise_shift.update(
                             tilt_series, tilt_series_metadata,
-                            pairwise_cosine_parameters,
+                            pairwise_shift_parameters,
                             /*cosine_stretch=*/ true,
                             /*area_match=*/ false);
                 }
             }
 
-            // Once we have a first estimate, start again. At each iteration the rotation should be better, improving
-            // the cosine stretching for the shifts. Similarly, the shifts should improve, allowing a better estimate
-            // of the common field-of-view.
+            // Trust the user and only allow a +-2deg offset on the user-provided rotation angle.
             const std::array<f32, 3> user_rotation_bounds{2, 1, 0.5};
             const std::array<f32, 3> estimate_rotation_bounds{10, 4, 0.5};
+
+            // Once we have a first good estimate of the rotation and shifts, start again.
+            // At each iteration the rotation should be better, improving the cosine stretching for the shifts.
+            // Similarly, the shifts should improve, allowing a better estimate of the field-of-view and the rotation.
             for (auto i : noa::irange<size_t>(3)) {
-                pairwise_cosine.update_shifts(
+                pairwise_shift.update(
                         tilt_series, tilt_series_metadata,
-                        pairwise_cosine_parameters,
+                        pairwise_shift_parameters,
                         /*cosine_stretch=*/ true,
                         /*area_match=*/ true);
                 global_rotation.update(
                         tilt_series_metadata, rotation_offset_parameters,
                         has_initial_rotation ? user_rotation_bounds[i] : estimate_rotation_bounds[i]);
             }
-            pairwise_cosine.update_shifts(
+            pairwise_shift.update(
                     tilt_series, tilt_series_metadata,
-                    pairwise_cosine_parameters,
+                    pairwise_shift_parameters,
                     /*cosine_stretch=*/ true,
                     /*area_match=*/ true);
         }

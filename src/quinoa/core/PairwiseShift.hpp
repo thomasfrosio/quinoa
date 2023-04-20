@@ -75,11 +75,11 @@ namespace qn {
         /// \param[in,out] metadata Metadata of \p stack. This is updated with the new shifts.
         /// \param max_shift        Maximum YX shift a slice is allowed to have. If <= 0, it is ignored.
         /// \param center           Whether the average shift (in the microscope reference frame) should be centered.
-        void update_shifts(const Array <f32>& stack,
-                           MetadataStack& metadata,
-                           const PairwiseShiftParameters& parameters,
-                           bool cosine_stretch = true,
-                           bool area_match = true);
+        void update(const Array<f32>& stack,
+                    MetadataStack& metadata,
+                    const PairwiseShiftParameters& parameters,
+                    bool cosine_stretch = true,
+                    bool area_match = true);
 
     private:
         // Compute the conventional-cross-correlation between the reference and target, accounting for the known
