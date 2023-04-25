@@ -17,12 +17,12 @@ namespace qn {
         i32 index{};        // Index [0, N) of the slice within the array.
         i32 index_file{};   // Index [0, N) of the slice within the original file.
 
-        static Vec2<f32> center(i64 height, i64 width) noexcept {
+        static constexpr Vec2<f32> center(i64 height, i64 width) noexcept {
             // Just make it a function to make it less ambiguous
             return {height / 2, width / 2};
         }
 
-        static Vec2<f32> center(const Shape4<i64>& shape) noexcept {
+        static constexpr Vec2<f32> center(const Shape4<i64>& shape) noexcept {
             return center(shape[2], shape[3]);
         }
 

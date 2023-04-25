@@ -53,7 +53,7 @@ namespace qn {
         for (auto& slice: tilt_series_metadata.slices())
             slice.shifts *= pre_scale;
 
-        // TODO tilt offset can be estimated using CC first.
+        // TODO tilt offset can be estimated using CC first. Also try the quick profile projection and COM?
 
         // Initial alignment using neighbouring views as reference.
         {
@@ -118,7 +118,7 @@ namespace qn {
                     tilt_series, tilt_series_metadata,
                     pairwise_shift_parameters,
                     /*cosine_stretch=*/ true,
-                    /*area_match=*/ true);
+                    /*area_match=*/ true); // TODO Double phase?
         }
 
         // TODO Estimate tilt and elevation offset using CTF.
@@ -131,9 +131,14 @@ namespace qn {
             auto projection_matching = qn::ProjectionMatching(
                     tilt_series.shape(), tilt_series.device(),
                     tilt_series_metadata, projection_matching_parameters);
-            projection_matching.update_geometry(
-                    tilt_series, tilt_series_metadata,
-                    projection_matching_parameters);
+
+            for (auto i : noa::irange<size_t>(1)) {
+                projection_matching.update(
+                        tilt_series, tilt_series_metadata,
+                        projection_matching_parameters,
+                        alignment_parameters.projection_matching_shift,
+                        alignment_parameters.projection_matching_rotation);
+            }
         }
 
         // Scale the metadata back to the original resolution.

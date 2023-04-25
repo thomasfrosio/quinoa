@@ -91,13 +91,17 @@ namespace qn {
 
             const auto project_matching_parameters = ProjectionMatchingParameters{
                     {}, // max_shift
-                    0.25f, // smooth_edge_percent
+                    0.15f, // smooth_edge_percent
 
-                    0.0005f, // backward_slice_z_radius
-                    45.f, // backward_tilt_angle_difference
+                    0.0003f, // backward_slice_z_radius
+                    180.f, // backward_tilt_angle_difference
                     true, // backward_use_aligned_only
 
                     0.5f, // forward_cutoff
+
+                    /*highpass_filter=*/ {0.05, 0.05},
+                    /*lowpass_filter=*/ {0.25, 0.1},
+                    noa::signal::CorrelationMode::CONVENTIONAL,
 
                     true, // center_tilt_axis
                     output_directory / "debug_pm" // debug_directory
