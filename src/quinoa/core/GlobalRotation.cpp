@@ -86,7 +86,7 @@ namespace qn {
 
         // Set the rotations to 0 since the search is relative to the rotation saved in the metadata.
         for (auto& slice : metadata.slices())
-            slice.angles[0] = 0.f;
+            slice.angles[0] = 0.;
 
         // Save some info directly in the class. This is used to pass data to the optimizer.
         OptimizerData optimizer_data;
@@ -132,7 +132,7 @@ namespace qn {
         const auto fx_best = static_cast<f32>(fx[best_index]);
 
         // Final rotation, in range [-180, 180] deg.
-        auto x_best = static_cast<f32>(x[best_index]);
+        auto x_best = x[best_index];
         if (x_best > 180)
             x_best -= 360;
 
@@ -145,7 +145,7 @@ namespace qn {
 
     void GlobalRotation::update(MetadataStack& metadata,
                                 const GlobalRotationParameters& parameters,
-                                f32 bound) {
+                                f64 bound) {
         if (m_reference_rfft.is_empty())
             return;
 
@@ -188,8 +188,8 @@ namespace qn {
         Optimizer optimizer(algorithm, 1);
 
         optimizer.set_max_objective(func, &optimizer_data);
-        optimizer.set_bounds(-static_cast<f64>(bound), static_cast<f64>(bound));
-        optimizer.set_initial_step(static_cast<f64>(bound) * 0.1);
+        optimizer.set_bounds(-bound, bound);
+        optimizer.set_initial_step(bound * 0.1);
         optimizer.set_x_tolerance_abs(0.005);
 
         f64 x{0.}; // initial rotation offset relative to whatever is in the metadata
@@ -197,9 +197,8 @@ namespace qn {
         optimizer.optimize(&x, &fx); // returns the best rotation in x
 
         // Update the metadata.
-        const auto rotation_offset = static_cast<f32>(x);
         for (auto& slice : metadata.slices())
-            slice.angles[0] += rotation_offset;
+            slice.angles[0] += x;
 
         qn::Logger::trace("Found global rotation offset of {:.3f} degrees (score={:.3f})", x, fx);
         qn::Logger::info("Global rotation offset alignment... done. Took {}\n", timer.elapsed());
@@ -217,7 +216,7 @@ namespace qn {
         update_stretching_matrices_(metadata, rotation_offset);
         noa::geometry::transform_2d(m_targets, targets_stretched, m_inv_stretching_matrices.view());
 
-        // TODO Normalize?
+        // TODO Normalize? Switch to normalized xmap?
 
         // Cross-correlation between the target and the stretched references.
         noa::fft::r2c(targets_stretched, targets_stretched_rfft);
@@ -263,11 +262,11 @@ namespace qn {
         const auto rotation_offset_rad = static_cast<f64>(noa::math::deg2rad(rotation_offset));
         const auto slice_center = MetadataSlice::center(m_targets.shape()).as<f64>();
         const MetadataSlice& reference_slice = metadata[m_reference_index];
-        const Vec3<f64> reference_angles = noa::math::deg2rad(reference_slice.angles.as<f64>());
+        const Vec3<f64> reference_angles = noa::math::deg2rad(reference_slice.angles);
 
         for (size_t i = 0; i < m_target_indexes.size(); ++i) {
             const MetadataSlice& target_slice = metadata[m_target_indexes[i]];
-            const Vec3<f64> target_angles = noa::math::deg2rad(target_slice.angles.as<f64>());
+            const Vec3<f64> target_angles = noa::math::deg2rad(target_slice.angles);
 
             // Compute the affine matrix to transform the target "onto" the reference.
             // These angles are flipped, since the cos-scaling is perpendicular to the axis of rotation.
@@ -279,11 +278,11 @@ namespace qn {
             // and cancel the difference (if any) in rotation and shift as well.
             // After this point, the target should "overlap" with the reference.
             const Double33 fwd_stretch_target_to_reference =
-                    noa::geometry::translate(slice_center + reference_slice.shifts.as<f64>()) *
+                    noa::geometry::translate(slice_center + reference_slice.shifts) *
                     noa::geometry::linear2affine(noa::geometry::rotate(rotation_offset_rad + reference_angles[0])) *
                     noa::geometry::linear2affine(noa::geometry::scale(cos_factor)) *
                     noa::geometry::linear2affine(noa::geometry::rotate(-rotation_offset_rad -target_angles[0])) *
-                    noa::geometry::translate(-slice_center - target_slice.shifts.as<f64>());
+                    noa::geometry::translate(-slice_center - target_slice.shifts);
             m_inv_stretching_matrices(i, 0, 0, 0) = fwd_stretch_target_to_reference.inverse().as<f32>();
         }
     }

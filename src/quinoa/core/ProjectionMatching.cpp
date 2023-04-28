@@ -17,7 +17,7 @@ namespace {
         // (and therefore projected-reference) to compute.
         i64 target_index{};
         std::vector<i64> reference_indexes;
-        Vec2<f32> final_shift;
+        Vec2<f64> final_shift;
     };
 }
 
@@ -62,78 +62,110 @@ namespace qn {
             const Array<f32>& stack,
             MetadataStack& metadata,
             const ProjectionMatchingParameters& parameters,
-            bool update_rotation,
-            bool update_shifts) {
+            bool shift_only) {
         qn::Logger::trace("Projection matching alignment...");
         noa::Timer timer;
         timer.start();
 
-        OptimizerData optimizer_data;
-        optimizer_data.projector = this;
-        optimizer_data.parameters = &parameters;
-        optimizer_data.metadata = metadata;
-
         auto max_objective_function = [](u32, const f64* x, f64*, void* instance) -> f64 {
             auto* data = static_cast<OptimizerData*>(instance);
-            const auto angle_offset = static_cast<f32>(*x);
 
             const auto [shift, score] = data->projector->project_and_correlate_(
                     data->metadata,
                     data->target_index,
                     data->reference_indexes,
                     *data->parameters,
-                    angle_offset
+                    noa::signal::CorrelationMode::CONVENTIONAL,
+                    *x
             );
-            qn::Logger::debug("rotation offset={:> 7.4f}, score={:> 7.4f}", angle_offset, score);
+            qn::Logger::debug("rotation offset={:> 7.4f}, score={:> 7.4f}", *x, score);
 
             data->final_shift = shift;
             return static_cast<f64>(score);
         };
 
         // Set up the optimizer.
+        OptimizerData optimizer_data;
+        optimizer_data.projector = this;
+        optimizer_data.parameters = &parameters;
+        optimizer_data.metadata = metadata;
+        optimizer_data.metadata.sort("absolute_tilt");
+
         const Optimizer optimizer(NLOPT_LN_SBPLX, 1);
         optimizer.set_max_objective(max_objective_function, &optimizer_data);
         optimizer.set_x_tolerance_abs(0.005);
-
-        const f64 bound = update_rotation ? 1.5 : 0;
+        const f64 bound = !shift_only ? 1.5 : 0;
         optimizer.set_bounds(-bound, bound);
 
-        // For every slice (excluding the lowest tilt which defines the reference-frame), find the best
-        // geometry parameters using the previously aligned slice as reference for alignment. The geometry
-        // parameters are, for each slice, the rotation (i.e. tilt axis rotation) and the (y,x) shifts.
-        optimizer_data.metadata.sort("exposure");
-        const auto slice_count = static_cast<i64>(optimizer_data.metadata.size());
+        // Convergence loop.
+        bool last_iteration = parameters.max_iterations == 1;
+        for (i64 iter = 0; iter < parameters.max_iterations; ++iter) {
 
-        for (i64 target_index = 1; target_index < slice_count; ++target_index) {
-            optimizer_data.target_index = target_index;
+            // Enforce 3rd degree polynomial on the rotation angles.
+            // For the first iteration, this should just fit a line because the rotation is likely
+            // to be constant. In this case, it will simply update the shift, which is what we want anyway.
+            const ThirdDegreePolynomial polynomial = poly_fit_rotation(optimizer_data.metadata);
 
-            // Get the indexes of the reference views for this target view.
-            set_reference_indexes_(
-                    target_index, optimizer_data.metadata,
-                    parameters, optimizer_data.reference_indexes);
+            // Compute the rotation of the global reference using the polynomial. So whilst we cannot align
+            // the global reference, we can still move the average rotation (including the global reference's)
+            // progressively using projection matching.
+            optimizer_data.metadata[0].angles[0] = polynomial(optimizer_data.metadata[0].angles[1]);
 
-            prepare_for_insertion_(
-                    stack.view(), optimizer_data.metadata, target_index,
-                    optimizer_data.reference_indexes, parameters);
+            // For every slice (excluding the lowest tilt which defines the reference-frame), find the best
+            // geometry parameters using the previously aligned slice(s) as reference for alignment. The geometry
+            // parameters are, for each slice, the rotation and the (y,x) shifts.
+            const auto slice_count = static_cast<i64>(optimizer_data.metadata.size());
+            for (i64 target_index = 1; target_index < slice_count; ++target_index) {
 
-            f64 x{0};
-            f64 fx;
-            optimizer.optimize(&x, &fx);
+                // The target.
+                optimizer_data.target_index = target_index;
+                auto& slice = optimizer_data.metadata[target_index];
 
-            qn::Logger::debug("{:>02}: rotation offset={:> 6.3f}, score={:.6g}, shift={::> 6.3f}",
-                              target_index, x, fx, optimizer_data.final_shift);
+                // Get the indexes of the reference views for this target view.
+                set_reference_indexes_(
+                        target_index, optimizer_data.metadata,
+                        parameters, optimizer_data.reference_indexes);
 
-            // Update the metadata.
-            auto& slice = optimizer_data.metadata[target_index];
-            slice.angles[0] += static_cast<f32>(x);
-            slice.shifts += optimizer_data.final_shift;
+                // Prepare the target and references for Fourier insertion.
+                prepare_for_insertion_(
+                        stack.view(), optimizer_data.metadata, target_index,
+                        optimizer_data.reference_indexes, parameters);
+
+                // Enforce polynomial curve.
+                const f64 rotation_offset_to_polynomial_curve = polynomial(slice.angles[1]) - slice.angles[0];
+                const auto [shift, _] = project_and_correlate_(
+                        optimizer_data.metadata,
+                        optimizer_data.target_index,
+                        optimizer_data.reference_indexes,
+                        *optimizer_data.parameters,
+                        noa::signal::CorrelationMode::DOUBLE_PHASE,
+                        rotation_offset_to_polynomial_curve
+                );
+                slice.angles[0] += rotation_offset_to_polynomial_curve;
+                slice.shifts += shift.as<f64>();
+
+                // Find the best rotation offset (and its corresponding shift) by maximising the
+                // cross-correlation between the target and the projected-reference. This is turned
+                // off for the last iteration, since at this point we want to keep the rotations on
+                // the polynomial curve.
+                if (!shift_only && !last_iteration) {
+                    f64 x{0};
+                    f64 fx;
+                    optimizer.optimize(&x, &fx);
+                    slice.angles[0] += x;
+                    slice.shifts += optimizer_data.final_shift;
+
+                    qn::Logger::debug("{:>02}: rotation offset={:> 6.3f}, score={:.6g}, shift={::> 6.3f}",
+                                      target_index, x, fx, optimizer_data.final_shift);
+                }
+            }
+
+            // TODO Check convergence.
+            last_iteration = iter == (parameters.max_iterations - 1);
+
+            if (parameters.center_tilt_axis)
+                center_tilt_axis_(optimizer_data.metadata);
         }
-
-        // TODO Fit polynomial on rotation? Then center rotation.
-        // TODO Recompute shifts using these rotations?
-
-        if (parameters.center_tilt_axis)
-            center_tilt_axis_(optimizer_data.metadata);
 
         // Update the metadata.
         for (const auto& updated_metadata: optimizer_data.metadata.slices()) {
@@ -165,16 +197,16 @@ namespace qn {
             const ProjectionMatchingParameters& parameters,
             std::vector<i64>& output_reference_indexes
     ) {
-        const f32 target_tilt_angle = metadata[target_index].angles[1];
-        const f32 max_tilt_difference = parameters.backward_tilt_angle_difference;
+        const f64 target_tilt_angle = metadata[target_index].angles[1];
+        const f64 max_tilt_difference = parameters.backward_tilt_angle_difference;
         const i64 max_index = parameters.backward_use_aligned_only ? target_index : static_cast<i64>(metadata.size());
 
         output_reference_indexes.clear();
         output_reference_indexes.reserve(static_cast<size_t>(max_index));
 
         for (i64 reference_index = 0; reference_index < max_index; ++reference_index) {
-            const f32 reference_tilt_angle = metadata[reference_index].angles[1];
-            const f32 tilt_difference = noa::math::abs(target_tilt_angle - reference_tilt_angle);
+            const f64 reference_tilt_angle = metadata[reference_index].angles[1];
+            const f64 tilt_difference = noa::math::abs(target_tilt_angle - reference_tilt_angle);
 
             // Of course, do not include the target in the projected-reference.
             if (reference_index != target_index && tilt_difference <= max_tilt_difference)
@@ -196,14 +228,14 @@ namespace qn {
 
         // This is O(N^2), but it's fine because N is small (<60), and we do it once in the constructor.
         for (i64 target_index = 0; target_index < slice_count; ++target_index) {
-            const f32 target_tilt_angle = metadata[target_index].angles[1];
+            const f64 target_tilt_angle = metadata[target_index].angles[1];
             const i64 max_index = parameters.backward_use_aligned_only ? target_index : slice_count;
 
             // Count how many references are needed for the current target.
             i64 count = 0;
             for (i64 reference_index = 0; reference_index < max_index; ++reference_index) {
-                const f32 reference_tilt_angle = metadata[reference_index].angles[1];
-                const f32 tilt_difference = noa::math::abs(target_tilt_angle - reference_tilt_angle);
+                const f64 reference_tilt_angle = metadata[reference_index].angles[1];
+                const f64 tilt_difference = noa::math::abs(target_tilt_angle - reference_tilt_angle);
                 if (reference_index != target_index && tilt_difference <= parameters.backward_tilt_angle_difference)
                     ++count;
             }
@@ -221,8 +253,8 @@ namespace qn {
             const ProjectionMatchingParameters& parameters
     ) {
         const Vec2<f32> center = MetadataSlice::center(input.shape());
-        const Vec3<f32> angles = noa::math::deg2rad(metadata.angles);
-        const Vec2<f32> shifts = metadata.shifts;
+        const Vec3<f32> angles = noa::math::deg2rad(metadata.angles).as<f32>();
+        const Vec2<f32> shifts = metadata.shifts.as<f32>();
 
         const auto hw = input.shape().pop_front<2>();
         const auto smooth_edge_size =
@@ -281,18 +313,18 @@ namespace qn {
         const auto reference_shifts_center2origin = m_reference_shifts_center2origin.view().subregion(references_range);
         const auto insert_inv_references_rotation = m_insert_inv_references_rotation.view().subregion(references_range);
 
-        const f32 target_tilt = noa::math::deg2rad(metadata[target_index].angles[1]);
+        const f64 target_tilt = noa::math::deg2rad(metadata[target_index].angles[1]);
 
         for (i64 i = 0; i < references_count; ++i) {
             const i64 reference_index = reference_indexes[static_cast<size_t>(i)];
-            const Vec2<f32>& reference_shifts = metadata[reference_index].shifts;
-            const Vec3<f32> reference_angles = noa::math::deg2rad(metadata[reference_index].angles);
+            const Vec2<f64>& reference_shifts = metadata[reference_index].shifts;
+            const Vec3<f64> reference_angles = noa::math::deg2rad(metadata[reference_index].angles);
 
             // TODO Weighting based on the order of collection? Or use exposure weighting?
             // Multiplicity and weight.
             // How much the slice should contribute to the final projected-reference.
-            [[maybe_unused]] constexpr auto PI = noa::math::Constant<f32>::PI;
-            [[maybe_unused]] const f32 tilt_difference = std::abs(target_tilt - reference_angles[1]);
+            [[maybe_unused]] constexpr auto PI = noa::math::Constant<f64>::PI;
+            [[maybe_unused]] const f64 tilt_difference = std::abs(target_tilt - reference_angles[1]);
             const f32 weight = 1; //noa::math::sinc(tilt_difference * PI / parameters.backward_tilt_angle_difference);
             reference_weights(i, 0, 0, 0) = 1 / weight; // FIXME?
 
@@ -300,12 +332,12 @@ namespace qn {
             reference_batch_indexes(i, 0, 0, 0) = {metadata[reference_index].index, 0, 0, 0};
 
             // Shifts to phase-shift the rotation center at the array origin.
-            reference_shifts_center2origin(i, 0, 0, 0) = -slice_padded_center() - reference_shifts;
+            reference_shifts_center2origin(i, 0, 0, 0) = -slice_padded_center() - reference_shifts.as<f32>();
 
             // For the Fourier insertion, noa needs the inverse rotation matrix, hence the transposition.
             insert_inv_references_rotation(i, 0, 0, 0) = noa::geometry::euler2matrix(
-                    Vec3<f32>{-reference_angles[0], reference_angles[1], reference_angles[2]},
-                    "ZYX", false).transpose();
+                    Vec3<f64>{-reference_angles[0], reference_angles[1], reference_angles[2]},
+                    "ZYX", false).transpose().as<f32>();
         }
 
         // We are going to store the target and the references next to each other.
@@ -337,10 +369,10 @@ namespace qn {
 
         // Zero-pad and fft both.
         noa::memory::resize(target_references, target_references_padded);
-        {
-            noa::io::save(target_references_padded,
-                          "/home/thomas/Projects/quinoa/tests/tilt2_v2/debug_pm/target_references_padded.mrc");
-        }
+//        {
+//            noa::io::save(target_references_padded,
+//                          "/home/thomas/Projects/quinoa/tests/tilt2_v2/debug_pm/target_references_padded.mrc");
+//        }
         noa::fft::r2c(target_references_padded, target_references_padded_fft);
 
         // Prepare the references for Fourier insertion.
@@ -362,7 +394,7 @@ namespace qn {
     void ProjectionMatching::compute_target_reference_(
             const MetadataStack& metadata,
             i64 target_index,
-            f32 target_rotation_offset,
+            f64 target_rotation_offset,
             const std::vector<i64>& reference_indexes,
             const ProjectionMatchingParameters& parameters
     ) {
@@ -388,13 +420,13 @@ namespace qn {
         // Target geometry:
         // The yaw is the CCW angle of the tilt-axis in the slices. For the projection, we want to align
         // the tilt-axis along the Y axis, so subtract this angle and then apply the tilt and pitch.
-        const Vec2<f32>& target_shifts = metadata[target_index].shifts;
-        const Vec3<f32> target_angles = noa::math::deg2rad(
+        const Vec2<f64>& target_shifts = metadata[target_index].shifts;
+        const Vec3<f64> target_angles = noa::math::deg2rad(
                 metadata[target_index].angles +
-                Vec3<f32>{target_rotation_offset, 0, 0});
+                Vec3<f64>{target_rotation_offset, 0, 0});
         const Float33 extract_fwd_target_rotation = noa::geometry::euler2matrix(
-                Vec3<f32>{-target_angles[0], target_angles[1], target_angles[2]},
-                "zyx", /*intrinsic=*/ false);
+                Vec3<f64>{-target_angles[0], target_angles[1], target_angles[2]},
+                "zyx", /*intrinsic=*/ false).as<f32>();
 
         // Projection:
         // - The projected reference (and its corresponding sampling function) is reconstructed
@@ -409,7 +441,7 @@ namespace qn {
                 Float22{}, insert_inv_references_rotation,
                 Float22{}, extract_fwd_target_rotation,
                 parameters.backward_slice_z_radius, false,
-                parameters.forward_cutoff);
+                parameters.projection_cutoff);
         noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
                 noa::indexing::broadcast(reference_weights, references_padded_shape.fft()),
                 references_padded_shape,
@@ -417,12 +449,12 @@ namespace qn {
                 Float22{}, insert_inv_references_rotation,
                 Float22{}, extract_fwd_target_rotation,
                 parameters.backward_slice_z_radius, false,
-                parameters.forward_cutoff);
+                parameters.projection_cutoff);
 
         // Center projection back and shift onto the target.
         noa::signal::fft::phase_shift_2d<noa::fft::H2H>(
                 reference_padded_fft, reference_padded_fft,
-                slice_padded_shape, slice_padded_center() + target_shifts);
+                slice_padded_shape, slice_padded_center() + target_shifts.as<f32>());
 
         // Correct for the multiplicity.
         // If weight is 0 (i.e. less than machine epsilon), the frequency is set to 0.
@@ -433,6 +465,7 @@ namespace qn {
         // For normalization, binary mask the target with the multiplicity to only keep
         // the shared frequencies between the target and the projected reference.
         // TODO Create new operator to merge these two calls.
+        // FIXME I think we should normalize to get a sampling function, and then multiply with the target.
         noa::ewise_binary(multiplicity_padded_fft, 1e-6f, multiplicity_padded_fft, noa::greater_t{});
         noa::ewise_binary(multiplicity_padded_fft, input_target_references_padded_fft.subregion(0),
                           target_padded_fft, noa::multiply_t{});
@@ -460,8 +493,9 @@ namespace qn {
             i64 target_index,
             const std::vector<i64>& reference_indexes,
             const ProjectionMatchingParameters& parameters,
-            f32 angle_offset
-    ) -> std::pair<Vec2<f32>, f32> {
+            noa::signal::CorrelationMode correlation_mode,
+            f64 angle_offset
+    ) -> std::pair<Vec2<f64>, f64> {
         // First, compute the target and projected-reference slice.
         compute_target_reference_(metadata, target_index, angle_offset, reference_indexes, parameters);
         const auto target_reference = m_slices.subregion(noa::indexing::slice_t{0, 2});
@@ -494,14 +528,15 @@ namespace qn {
         noa::signal::fft::xmap<noa::fft::H2FC>(
                 target_reference_fft.subregion(0),
                 target_reference_fft.subregion(1),
-                xmap, parameters.correlation_mode);
-        if (!parameters.debug_directory.empty())
+                xmap, correlation_mode);
+        if (!parameters.debug_directory.empty()) {
             noa::io::save(xmap, parameters.debug_directory /
                                 noa::string::format("xmap_{:>02}.mrc", target_index));
+        }
 
         // transform_2d will only render this small peak_window, which should
         // end up making the transformation and the picking very cheap to compute.
-        const bool is_double_phase = parameters.correlation_mode == noa::signal::CorrelationMode::DOUBLE_PHASE;
+        const bool is_double_phase = correlation_mode == noa::signal::CorrelationMode::DOUBLE_PHASE;
         const auto max_shift = noa::math::clamp(parameters.max_shift, Vec2<f32>{32}, Vec2<f32>{128});
         const View<f32> peak_window = extract_peak_window_(is_double_phase ? max_shift * 2 : max_shift);
         const Vec2<f32> peak_window_center = MetadataSlice::center(peak_window.shape());
@@ -510,48 +545,88 @@ namespace qn {
         // To help the picking, rotate so that the distortion is along the X-axis.
         const auto rotation = noa::math::deg2rad(metadata[target_index].angles[0]);
         const Float33 xmap_inv_transform(
-                noa::geometry::translate(slice_center()) *
+                noa::geometry::translate(slice_center().as<f64>()) *
                 noa::geometry::linear2affine(noa::geometry::rotate(rotation)) *
-                noa::geometry::translate(-peak_window_center));
+                noa::geometry::translate(-peak_window_center.as<f64>()));
         noa::geometry::transform_2d(xmap, peak_window, xmap_inv_transform);
 
         // TODO Better fitting of the peak. 2D parabola?
         auto [peak_coordinate, peak_value] = noa::signal::fft::xpeak_2d<noa::fft::FC2FC>(peak_window);
-        if (parameters.correlation_mode == noa::signal::CorrelationMode::DOUBLE_PHASE)
+        if (is_double_phase)
             peak_coordinate /= 2;
         const Vec2<f32> shift_rotated = peak_coordinate - peak_window_center;
-        const Vec2<f32> shift = noa::geometry::rotate(rotation) * shift_rotated;
+        const Vec2<f64> shift = noa::geometry::rotate(rotation) * shift_rotated.as<f64>();
 
-        // Normalize the peak. This doesn't work for the mutual cross-correlation.
+        // Normalize the peak. This doesn't work for mutual cross-correlation.
         // TODO Check that this is equivalent to dividing by the auto-correlation peak.
-        peak_value /= noa::math::sqrt(energy_target * energy_reference);
+        const auto score = static_cast<f64>(peak_value) /
+                           noa::math::sqrt(static_cast<f64>(energy_target) *
+                                           static_cast<f64>(energy_reference));
 
-        return {shift, peak_value};
+        return {shift, score};
+    }
+
+    auto ProjectionMatching::poly_fit_rotation(
+            const MetadataStack& metadata
+    ) -> ThirdDegreePolynomial {
+        // Exclude the first view, assuming it's the global reference.
+        const auto rows = static_cast<i64>(metadata.size()) - 1;
+
+        // Find x in Ax=b. Shapes: A(M.N) * x(N.1) = b(M.1)
+        const Array<f64> A({1, 1, rows, 4});
+        const Array<f64> b({1, 1, rows, 1});
+        const auto A_ = A.accessor_contiguous<f64, 2>();
+        const auto b_ = b.accessor_contiguous_1d();
+
+        // d + cx + bx^2 + ax^3 = 0
+        for (i64 row = 1; row < rows + 1; ++row) { // skip 0
+            const MetadataSlice& slice = metadata[row];
+            const auto rotation = static_cast<f64>(slice.angles[0]);
+            const auto tilt = static_cast<f64>(slice.angles[1]);
+            A_(row, 0) = 1;
+            A_(row, 1) = tilt;
+            A_(row, 2) = tilt * tilt;
+            A_(row, 3) = tilt * tilt * tilt;
+            b_(row) = rotation;
+        }
+
+        // Least-square solution using SVD.
+        std::array<f64, 4> svd{};
+        std::array<f64, 4> x{};
+        noa::math::lstsq(
+                A.view(),
+                b.view(),
+                View<f64>(x.data(), {1, 1, 4, 1}),
+                0.,
+                View<f64>(svd.data(), 4)
+        );
+
+        return ThirdDegreePolynomial{x[3], x[2], x[1], x[0]};
     }
 
     void ProjectionMatching::center_tilt_axis_(MetadataStack& metadata) {
         Vec2<f64> mean{0};
         auto mean_scale = 1 / static_cast<f64>(metadata.size());
         for (size_t i = 0; i < metadata.size(); ++i) {
-            const Vec3<f64> angles = noa::math::deg2rad(metadata[i].angles).as<f64>();
+            const Vec3<f64> angles = noa::math::deg2rad(metadata[i].angles);
             const Vec2<f64> pitch_tilt = angles.filter(2, 1);
             const Double22 stretch_to_0deg{
                     noa::geometry::rotate(angles[0]) *
                     noa::geometry::scale(1 / noa::math::cos(pitch_tilt)) * // 1 = cos(0deg)
                     noa::geometry::rotate(-angles[0])
             };
-            const Vec2<f64> shift_at_0deg = stretch_to_0deg * metadata[i].shifts.as<f64>();
+            const Vec2<f64> shift_at_0deg = stretch_to_0deg * metadata[i].shifts;
             mean += shift_at_0deg * mean_scale;
         }
         for (size_t i = 0; i < metadata.size(); ++i) {
-            const Vec3<f64> angles = noa::math::deg2rad(metadata[i].angles).as<f64>();
+            const Vec3<f64> angles = noa::math::deg2rad(metadata[i].angles);
             const Vec2<f64> pitch_tilt = angles.filter(2, 1);
             const Double22 shrink_matrix{
                     noa::geometry::rotate(angles[0]) *
                     noa::geometry::scale(noa::math::cos(pitch_tilt)) *
                     noa::geometry::rotate(-angles[0])
             };
-            metadata[i].shifts -= (shrink_matrix * mean).as<f32>();
+            metadata[i].shifts -= shrink_matrix * mean;
         }
     }
 }

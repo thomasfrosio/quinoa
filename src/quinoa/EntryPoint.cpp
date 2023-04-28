@@ -4,7 +4,6 @@
 #include "quinoa/Exception.h"
 #include "quinoa/io/Logging.h"
 #include "quinoa/io/Options.h"
-#include "quinoa/core/Preprocessing.hpp"
 #include "quinoa/core/Alignment.h"
 #include "quinoa/core/Metadata.h"
 //#include "quinoa/core/Reconstruction.h"
@@ -73,7 +72,7 @@ namespace qn {
             const auto rotation_parameters = GlobalRotationParameters{
                     /*highpass_filter=*/ {0.05, 0.05},
                     /*lowpass_filter=*/ {0.25, 0.15},
-                    /*absolute_max_tilt_difference=*/ 70.f,
+                    /*absolute_max_tilt_difference=*/ 70,
                     /*solve_using_estimated_gradient=*/ false,
                     /*interpolation_mode=*/ noa::InterpMode::LINEAR_FAST
             };
@@ -94,17 +93,17 @@ namespace qn {
                     0.15f, // smooth_edge_percent
 
                     0.0003f, // backward_slice_z_radius
-                    180.f, // backward_tilt_angle_difference
+                    180, // backward_tilt_angle_difference
                     true, // backward_use_aligned_only
 
                     0.5f, // forward_cutoff
 
                     /*highpass_filter=*/ {0.05, 0.05},
                     /*lowpass_filter=*/ {0.25, 0.1},
-                    noa::signal::CorrelationMode::CONVENTIONAL,
 
+                   /*max_iterations=*/ 5,
                     true, // center_tilt_axis
-                    output_directory / "debug_pm" // debug_directory
+                    ""//output_directory / "debug_pm" // debug_directory
             };
 
             const auto alignment_parameters = InitialGlobalAlignmentParameters{
@@ -113,8 +112,8 @@ namespace qn {
                     options["alignment_elevation_offset"].as<bool>(true),
 
                     options["alignment_pairwise_shift"].as<bool>(true),
-                    options["alignment_projection_matching_shift"].as<bool>(true),
-                    options["alignment_projection_matching_rotation"].as<bool>(true),
+                    options["alignment_projection_matching"].as<bool>(true),
+                    options["alignment_projection_matching_shift_only"].as<bool>(false),
 
                     options["alignment_save_input_stack"].as<bool>(false),
                     options["alignment_save_aligned_stack"].as<bool>(true),

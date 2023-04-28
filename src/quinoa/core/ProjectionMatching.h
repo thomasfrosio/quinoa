@@ -17,21 +17,26 @@
 namespace qn {
     struct ProjectionMatchingParameters {
         Vec2<f32> max_shift = {};
-        f32 area_match_taper = 0.5f;
+        f32 area_match_taper = 0.1f;
 
         f32 backward_slice_z_radius = 0.0005f;
-        f32 backward_tilt_angle_difference = 30.f;
+        f64 backward_tilt_angle_difference = 30;
         bool backward_use_aligned_only = false;
 
-        f32 forward_cutoff = 0.5f;
-
+        f32 projection_cutoff = 0.5f;
         Vec2<f32> highpass_filter{};
         Vec2<f32> lowpass_filter{};
-        noa::signal::CorrelationMode correlation_mode =
-                noa::signal::CorrelationMode::CONVENTIONAL;
 
+        i64 max_iterations = 5;
         bool center_tilt_axis = true;
         Path debug_directory;
+    };
+
+    struct ThirdDegreePolynomial {
+        f64 a, b, c, d;
+        constexpr f64 operator()(f64 x) const noexcept {
+            return a * x * x * x + b * x * x + c * x + d;
+        }
     };
 
     class ProjectionMatching {
@@ -45,8 +50,7 @@ namespace qn {
         void update(const Array<float>& stack,
                     MetadataStack& metadata,
                     const ProjectionMatchingParameters& parameters,
-                    bool update_rotation,
-                    bool update_shifts);
+                    bool shift_only);
 
     private:
         [[nodiscard]] auto extract_peak_window_(const Vec2<f32>& max_shift) -> View<f32>;
@@ -91,7 +95,7 @@ namespace qn {
         void compute_target_reference_(
                 const MetadataStack& metadata,
                 i64 target_index,
-                f32 target_rotation_offset,
+                f64 target_rotation_offset,
                 const std::vector<i64>& reference_indexes,
                 const ProjectionMatchingParameters& parameters);
 
@@ -101,8 +105,12 @@ namespace qn {
                 i64 target_index,
                 const std::vector<i64>& reference_indexes,
                 const ProjectionMatchingParameters& parameters,
-                f32 angle_offset
-        ) -> std::pair<Vec2<f32>, f32>;
+                noa::signal::CorrelationMode correlation_mode,
+                f64 angle_offset
+        ) -> std::pair<Vec2<f64>, f64>;
+
+        // Fit a 3rd degree polynomial on the rotation.
+        [[nodiscard]] static ThirdDegreePolynomial poly_fit_rotation(const MetadataStack& metadata);
 
         // Center the shifts. The mean should be computed and subtracted using a common reference frame.
         // Here, stretch the shifts to the 0deg reference frame and compute the mean there. Then transform

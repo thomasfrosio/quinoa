@@ -18,7 +18,7 @@ namespace qn {
     struct GlobalRotationParameters {
         Vec2<f32> highpass_filter{0.1f, 0.08f};
         Vec2<f32> lowpass_filter{0.4f, 0.05f};
-        f32 absolute_max_tilt_difference{40.f};
+        f64 absolute_max_tilt_difference{40};
         bool solve_using_estimated_gradient{false};
         noa::InterpMode interpolation_mode = noa::InterpMode::LINEAR_FAST;
     };
@@ -47,7 +47,7 @@ namespace qn {
 
         void update(MetadataStack& metadata,
                     const GlobalRotationParameters& parameters,
-                    f32 bound);
+                    f64 bound);
 
     private:
         [[nodiscard]] f32 max_objective_fx_(

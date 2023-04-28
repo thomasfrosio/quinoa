@@ -24,8 +24,6 @@ set(QUINOA_SOURCES
         src/quinoa/core/ProjectionMatching.h
         src/quinoa/core/ProjectionMatching.cpp
 
-        src/quinoa/core/Preprocessing.hpp
-
 #        src/quinoa/core/Reconstruction.h
 
         )

@@ -13,8 +13,8 @@ namespace qn {
         bool elevation_offset{true};
 
         bool pairwise_shift{true};
-        bool projection_matching_shift{true};
-        bool projection_matching_rotation{true};
+        bool projection_matching{true};
+        bool projection_matching_shift_only{false};
 
         bool save_input_stack{false};
         bool save_aligned_stack{false};
@@ -49,7 +49,7 @@ namespace qn {
         }
 
         // Scale the metadata shifts to the alignment resolution.
-        const auto pre_scale = (original_pixel_size / preprocessed_pixel_size).as<f32>();
+        const auto pre_scale = original_pixel_size / preprocessed_pixel_size;
         for (auto& slice: tilt_series_metadata.slices())
             slice.shifts *= pre_scale;
 
@@ -98,8 +98,8 @@ namespace qn {
             }
 
             // Trust the user and only allow a +-2deg offset on the user-provided rotation angle.
-            const std::array<f32, 3> user_rotation_bounds{2, 1, 0.5};
-            const std::array<f32, 3> estimate_rotation_bounds{10, 4, 0.5};
+            const std::array<f64, 3> user_rotation_bounds{2, 1, 0.5};
+            const std::array<f64, 3> estimate_rotation_bounds{10, 4, 0.5};
 
             // Once we have a first good estimate of the rotation and shifts, start again.
             // At each iteration the rotation should be better, improving the cosine stretching for the shifts.
@@ -126,19 +126,15 @@ namespace qn {
 
         // Projection matching alignment.
         // At this point, the global geometry should be pretty much on point.
-        if (alignment_parameters.projection_matching_shift ||
-            alignment_parameters.projection_matching_rotation) {
+        if (alignment_parameters.projection_matching) {
             auto projection_matching = qn::ProjectionMatching(
                     tilt_series.shape(), tilt_series.device(),
                     tilt_series_metadata, projection_matching_parameters);
 
-            for (auto i : noa::irange<size_t>(1)) {
-                projection_matching.update(
-                        tilt_series, tilt_series_metadata,
-                        projection_matching_parameters,
-                        alignment_parameters.projection_matching_shift,
-                        alignment_parameters.projection_matching_rotation);
-            }
+            projection_matching.update(
+                    tilt_series, tilt_series_metadata,
+                    projection_matching_parameters,
+                    alignment_parameters.projection_matching_shift_only);
         }
 
         // Scale the metadata back to the original resolution.

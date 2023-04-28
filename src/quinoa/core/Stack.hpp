@@ -307,7 +307,7 @@ namespace qn {
         // The metadata should be unscaled, so shifts are at the original pixel size.
         // Here we apply the shifts on the fourier cropped slices, so we need to scale
         // the shifts from the metadata down before applying them.
-        const auto shift_scale_factor = (input_pixel_size / output_pixel_size).as<f32>();
+        const auto shift_scale_factor = input_pixel_size / output_pixel_size;
 
         for (const MetadataSlice& slice_metadata: input_tilt_series_metadata.slices()) {
             const i64 input_slice_index = slice_metadata.index_file;
@@ -360,11 +360,11 @@ namespace qn {
             output_slice_texture.update(output_slice);
             const auto slice_shifts = slice_metadata.shifts * shift_scale_factor;
             const auto inv_transform = noa::math::inverse(
-                    noa::geometry::translate(output_slice_center) *
+                    noa::geometry::translate(output_slice_center.as<f64>()) *
                     noa::geometry::linear2affine(noa::geometry::rotate(noa::math::deg2rad(-slice_metadata.angles[0]))) *
-                    noa::geometry::translate(-output_slice_center - slice_shifts)
+                    noa::geometry::translate(-output_slice_center.as<f64>() - slice_shifts)
             );
-            noa::geometry::transform_2d(output_slice_texture, output_slice_buffer, inv_transform);
+            noa::geometry::transform_2d(output_slice_texture, output_slice_buffer, inv_transform.as<f32>());
 
             if (use_gpu)
                 noa::memory::copy(output_slice_buffer, output_slice_buffer_io);

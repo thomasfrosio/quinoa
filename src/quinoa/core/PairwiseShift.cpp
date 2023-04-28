@@ -78,7 +78,7 @@ namespace qn {
 
         // Update the metadata.
         for (i64 i = 0; i < slice_count; ++i)
-            metadata[i].shifts += global_shifts[static_cast<size_t>(i)].as<f32>();
+            metadata[i].shifts += global_shifts[static_cast<size_t>(i)];
 
         qn::Logger::info("Pairwise shift alignment... done. Took {:.2f}ms\n", timer.elapsed());
     }
@@ -228,8 +228,8 @@ namespace qn {
             const PairwiseShiftParameters& parameters
             ) {
         const Vec2<f32> center = MetadataSlice::center(input.shape());
-        const Vec3<f32> angles = noa::math::deg2rad(metadata.angles);
-        const Vec2<f32> shifts = metadata.shifts;
+        const Vec3<f32> angles = noa::math::deg2rad(metadata.angles).as<f32>();
+        const Vec2<f32> shifts = metadata.shifts.as<f32>();
 
         const auto hw = input.shape().pop_front<2>();
         const auto smooth_edge_size =

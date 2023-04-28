@@ -11,8 +11,8 @@ namespace qn {
     // The shifts are applied before the rotations.
     struct MetadataSlice {
     public:
-        Vec3<f32> angles{}; // Euler angles, in degrees, of the slice. zyx extrinsic (rotation, tilt, elevation)
-        Vec2<f32> shifts{}; // yx shifts, in pixels, of the slice.
+        Vec3<f64> angles{}; // Euler angles, in degrees, of the slice. zyx extrinsic (rotation, tilt, elevation)
+        Vec2<f64> shifts{}; // yx shifts, in pixels, of the slice.
         f32 exposure{};     // Cumulated exposure, in e-/A2.
         i32 index{};        // Index [0, N) of the slice within the array.
         i32 index_file{};   // Index [0, N) of the slice within the original file.
@@ -26,7 +26,7 @@ namespace qn {
             return center(shape[2], shape[3]);
         }
 
-        static constexpr f32 UNSET_ROTATION_VALUE = std::numeric_limits<f32>::max();
+        static constexpr f64 UNSET_ROTATION_VALUE = std::numeric_limits<f64>::max();
     };
 
     struct TiltScheme {
