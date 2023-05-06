@@ -96,6 +96,7 @@ namespace qn {
         optimizer.set_x_tolerance_abs(0.005);
         const f64 bound = !shift_only ? 1.5 : 0;
         optimizer.set_bounds(-bound, bound);
+        optimizer.set_initial_step(0.1); // 1.5/2 -> 0.75.
 
         // Convergence loop.
         bool last_iteration = parameters.max_iterations == 1;
@@ -138,11 +139,13 @@ namespace qn {
                         optimizer_data.target_index,
                         optimizer_data.reference_indexes,
                         *optimizer_data.parameters,
-                        noa::signal::CorrelationMode::DOUBLE_PHASE,
+                        noa::signal::CorrelationMode::CONVENTIONAL,
                         rotation_offset_to_polynomial_curve
                 );
                 slice.angles[0] += rotation_offset_to_polynomial_curve;
                 slice.shifts += shift.as<f64>();
+                qn::Logger::debug("DOUBLE {:>02}: rotation offset={:> 6.3f},  shift={::> 6.3f}",
+                                  target_index, rotation_offset_to_polynomial_curve, shift.as<f64>());
 
                 // Find the best rotation offset (and its corresponding shift) by maximising the
                 // cross-correlation between the target and the projected-reference. This is turned
@@ -160,17 +163,30 @@ namespace qn {
                 }
             }
 
-            // TODO Check convergence.
-            last_iteration = iter == (parameters.max_iterations - 1);
+            // print for python debug
+            for (i64 target_index = 0; target_index < slice_count; ++target_index) {
+                qn::Logger::trace("{:>02},{},{}",
+                                  target_index,
+                                  optimizer_data.metadata[target_index].angles[0],
+                                  optimizer_data.metadata[target_index].angles[1]);
+            }
 
-            if (parameters.center_tilt_axis)
-                center_tilt_axis_(optimizer_data.metadata);
+            // TODO Check convergence.
+            last_iteration = iter >= (parameters.max_iterations - 2);
+
+//            if (parameters.center_tilt_axis)
+//                center_tilt_axis_(optimizer_data.metadata);
         }
 
         // Update the metadata.
         for (const auto& updated_metadata: optimizer_data.metadata.slices()) {
             for (auto& original_slice: metadata.slices()) {
                 if (original_slice.index == updated_metadata.index) {
+                    qn::Logger::trace("{:>02},{},{}",
+                                      original_slice.index,
+                                      original_slice.angles - updated_metadata.angles,
+                                      original_slice.shifts - updated_metadata.shifts
+                    );
                     original_slice.angles = updated_metadata.angles;
                     original_slice.shifts = updated_metadata.shifts;
                 }
@@ -198,18 +214,18 @@ namespace qn {
             std::vector<i64>& output_reference_indexes
     ) {
         const f64 target_tilt_angle = metadata[target_index].angles[1];
-        const f64 max_tilt_difference = parameters.backward_tilt_angle_difference;
-        const i64 max_index = parameters.backward_use_aligned_only ? target_index : static_cast<i64>(metadata.size());
+        const f64 max_tilt_difference = parameters.projection_max_tilt_angle;
+        const i64 max_index = target_index;
 
         output_reference_indexes.clear();
         output_reference_indexes.reserve(static_cast<size_t>(max_index));
 
         for (i64 reference_index = 0; reference_index < max_index; ++reference_index) {
-            const f64 reference_tilt_angle = metadata[reference_index].angles[1];
-            const f64 tilt_difference = noa::math::abs(target_tilt_angle - reference_tilt_angle);
 
             // Of course, do not include the target in the projected-reference.
-            if (reference_index != target_index && tilt_difference <= max_tilt_difference)
+            // The weighting is 0 at the max tilt angle, so don't include it.
+            if (reference_index != target_index &&
+                noa::math::abs(metadata[reference_index].angles[1]) < parameters.projection_max_tilt_angle)
                 output_reference_indexes.emplace_back(reference_index);
         }
     }
@@ -229,14 +245,13 @@ namespace qn {
         // This is O(N^2), but it's fine because N is small (<60), and we do it once in the constructor.
         for (i64 target_index = 0; target_index < slice_count; ++target_index) {
             const f64 target_tilt_angle = metadata[target_index].angles[1];
-            const i64 max_index = parameters.backward_use_aligned_only ? target_index : slice_count;
+            const i64 max_index = target_index;
 
             // Count how many references are needed for the current target.
             i64 count = 0;
             for (i64 reference_index = 0; reference_index < max_index; ++reference_index) {
-                const f64 reference_tilt_angle = metadata[reference_index].angles[1];
-                const f64 tilt_difference = noa::math::abs(target_tilt_angle - reference_tilt_angle);
-                if (reference_index != target_index && tilt_difference <= parameters.backward_tilt_angle_difference)
+                if (reference_index != target_index &&
+                    noa::math::abs(metadata[reference_index].angles[1]) < parameters.projection_max_tilt_angle)
                     ++count;
             }
 
@@ -250,7 +265,8 @@ namespace qn {
             const View<f32>& input,
             const View<f32>& output,
             const MetadataSlice& metadata,
-            const ProjectionMatchingParameters& parameters
+            const ProjectionMatchingParameters& parameters,
+            bool apply_weight
     ) {
         const Vec2<f32> center = MetadataSlice::center(input.shape());
         const Vec3<f32> angles = noa::math::deg2rad(metadata.angles).as<f32>();
@@ -264,7 +280,7 @@ namespace qn {
         // Find the ellipse radius.
         // We start by a sphere to make sure it fits regardless of the shape and rotation angle.
         // The elevation shrinks the height of the ellipse. The tilt shrinks the width of the ellipse.
-        const auto radius = static_cast<f32>(noa::math::min(hw)) / 2;
+        const auto radius = hw.vec().as<f32>() / 2; //static_cast<f32>(noa::math::min(hw)) / 2;
         const Vec2<f32> ellipse_radius = radius * noa::math::abs(noa::math::cos(angles.filter(2, 1)));
 
         // Then center the ellipse and rotate to have its height aligned with the tilt-axis.
@@ -273,13 +289,22 @@ namespace qn {
                 noa::geometry::linear2affine(noa::geometry::rotate(-angles[0])) *
                 noa::geometry::translate(-(center + shifts));
 
+        // We also apply a per-view real-space weighting, so that the low-tilt views contribute
+        // more to the projected reference.
+        constexpr f32 ANGLE_LIMIT = noa::math::deg2rad(50.f);
+        constexpr f32 PI = noa::math::Constant<f32>::PI;
+        const f32 weight = apply_weight ?
+                noa::math::max(noa::math::sinc(noa::math::abs(angles[1]) * PI / ANGLE_LIMIT), 0.f) : 1.f;
+
         // Multiply the view with the ellipse. Everything outside is set to 0.
         noa::geometry::ellipse(
                 input, output,
                 /*center=*/ center,
                 /*radius=*/ ellipse_radius - smooth_edge_size,
                 /*edge_size=*/ smooth_edge_size,
-                inv_transform);
+                /*inv_matrix=*/ inv_transform,
+                /*functor=*/ noa::multiply_t{},
+                /*cvalue=*/ weight);
     }
 
     void ProjectionMatching::apply_area_mask_(
@@ -287,14 +312,15 @@ namespace qn {
             const View<f32>& output,
             const MetadataStack& metadata,
             const std::vector<i64>& indexes,
-            const ProjectionMatchingParameters& parameters
+            const ProjectionMatchingParameters& parameters,
+            bool apply_weight
     ) {
         // TODO Batch this using a spherical mask and stretch it to create the ellipse.
         //      This will also stretch/shrink the taper, which isn't great, but it should be ok.
         for (size_t i = 0; i < indexes.size(); ++i) {
             // Assume the order in input/output/indexes match.
             apply_area_mask_(input.subregion(i), output.subregion(i),
-                             metadata[indexes[i]], parameters);
+                             metadata[indexes[i]], parameters, apply_weight);
         }
     }
 
@@ -322,11 +348,7 @@ namespace qn {
 
             // TODO Weighting based on the order of collection? Or use exposure weighting?
             // Multiplicity and weight.
-            // How much the slice should contribute to the final projected-reference.
-            [[maybe_unused]] constexpr auto PI = noa::math::Constant<f64>::PI;
-            [[maybe_unused]] const f64 tilt_difference = std::abs(target_tilt - reference_angles[1]);
-            const f32 weight = 1; //noa::math::sinc(tilt_difference * PI / parameters.backward_tilt_angle_difference);
-            reference_weights(i, 0, 0, 0) = 1 / weight; // FIXME?
+            reference_weights(i, 0, 0, 0) = 1; // FIXME?
 
             // Get the references indexes. These are the indexes of the reference slices within the input stack.
             reference_batch_indexes(i, 0, 0, 0) = {metadata[reference_index].index, 0, 0, 0};
@@ -352,7 +374,8 @@ namespace qn {
 
         // Get the target and mask it.
         apply_area_mask_(stack.subregion(metadata[target_index].index),
-                         target_references.subregion(0), metadata[target_index], parameters);
+                         target_references.subregion(0), metadata[target_index],
+                         parameters, /*apply_weight=*/ false);
 
         // Get the reference slices and mask them.
         View<f32> input_reference_slices;
@@ -365,7 +388,8 @@ namespace qn {
             noa::memory::extract_subregions(stack, references, reference_batch_indexes, noa::BorderMode::NOTHING);
             input_reference_slices = references;
         }
-        apply_area_mask_(input_reference_slices, references, metadata, reference_indexes, parameters);
+        apply_area_mask_(input_reference_slices, references, metadata, reference_indexes,
+                         parameters, /*apply_weight=*/ true);
 
         // Zero-pad and fft both.
         noa::memory::resize(target_references, target_references_padded);
@@ -373,7 +397,8 @@ namespace qn {
 //            noa::io::save(target_references_padded,
 //                          "/home/thomas/Projects/quinoa/tests/tilt2_v2/debug_pm/target_references_padded.mrc");
 //        }
-        noa::fft::r2c(target_references_padded, target_references_padded_fft);
+        noa::fft::r2c(target_references_padded, target_references_padded_fft,
+                      noa::fft::NORM_DEFAULT, /*cache_plan=*/false);
 
         // Prepare the references for Fourier insertion.
         // The shift of the reference slices should be removed to have the rotation center at the origin.
@@ -440,7 +465,7 @@ namespace qn {
                 reference_padded_fft, slice_padded_shape,
                 Float22{}, insert_inv_references_rotation,
                 Float22{}, extract_fwd_target_rotation,
-                parameters.backward_slice_z_radius, false,
+                parameters.projection_slice_z_radius, false,
                 parameters.projection_cutoff);
         noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
                 noa::indexing::broadcast(reference_weights, references_padded_shape.fft()),
@@ -448,7 +473,7 @@ namespace qn {
                 multiplicity_padded_fft, slice_padded_shape,
                 Float22{}, insert_inv_references_rotation,
                 Float22{}, extract_fwd_target_rotation,
-                parameters.backward_slice_z_radius, false,
+                parameters.projection_slice_z_radius, false,
                 parameters.projection_cutoff);
 
         // Center projection back and shift onto the target.
@@ -479,9 +504,9 @@ namespace qn {
 
         // Apply the area mask again.
         apply_area_mask_(target_reference.subregion(0), target_reference.subregion(0),
-                         metadata[target_index], parameters);
+                         metadata[target_index], parameters, /*apply_weight=*/ false);
         apply_area_mask_(target_reference.subregion(1), target_reference.subregion(1),
-                         metadata[target_index], parameters);
+                         metadata[target_index], parameters, /*apply_weight=*/ false);
 
         // ...At this point
         // - The real-space target and projected reference are in the first two slice of m_slices.
@@ -552,10 +577,10 @@ namespace qn {
 
         // TODO Better fitting of the peak. 2D parabola?
         auto [peak_coordinate, peak_value] = noa::signal::fft::xpeak_2d<noa::fft::FC2FC>(peak_window);
-        if (is_double_phase)
-            peak_coordinate /= 2;
         const Vec2<f32> shift_rotated = peak_coordinate - peak_window_center;
-        const Vec2<f64> shift = noa::geometry::rotate(rotation) * shift_rotated.as<f64>();
+        Vec2<f64> shift = noa::geometry::rotate(rotation) * shift_rotated.as<f64>();
+        if (is_double_phase)
+            shift /= 2;
 
         // Normalize the peak. This doesn't work for mutual cross-correlation.
         // TODO Check that this is equivalent to dividing by the auto-correlation peak.
@@ -579,8 +604,8 @@ namespace qn {
         const auto b_ = b.accessor_contiguous_1d();
 
         // d + cx + bx^2 + ax^3 = 0
-        for (i64 row = 1; row < rows + 1; ++row) { // skip 0
-            const MetadataSlice& slice = metadata[row];
+        for (i64 row = 0; row < rows; ++row) { // skip 0
+            const MetadataSlice& slice = metadata[row + 1];
             const auto rotation = static_cast<f64>(slice.angles[0]);
             const auto tilt = static_cast<f64>(slice.angles[1]);
             A_(row, 0) = 1;

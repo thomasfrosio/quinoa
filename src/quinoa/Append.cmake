@@ -16,6 +16,7 @@ set(QUINOA_SOURCES
         src/quinoa/core/Stack.hpp
         src/quinoa/core/Optimizer.hpp
         src/quinoa/core/Utilities.h
+        src/quinoa/core/CommonArea.hpp
 
         src/quinoa/core/PairwiseShift.hpp
         src/quinoa/core/PairwiseShift.cpp

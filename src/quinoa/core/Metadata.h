@@ -37,7 +37,7 @@ namespace qn {
         bool exclude_start{};       // Exclude the first image from the first group.
         f32 per_view_exposure{};    // Per view exposure, in e-/A^2.
 
-        [[nodiscard]] std::vector<MetadataSlice> generate(i32 count, f32 rotation_angle = 0.f) const;
+        [[nodiscard]] std::vector<MetadataSlice> generate(i32 count, f64 rotation_angle = 0.f) const;
     };
 
     /// Metadata of a stack of 2D slices.
@@ -55,12 +55,12 @@ namespace qn {
         /// Creates the metadata from a tlt and exposure file.
         MetadataStack(const Path& tlt_filename,
                       const Path& exposure_filename,
-                      f32 rotation_angle = 0);
+                      f64 rotation_angle = 0);
 
         /// Creates the metadata from the tilt scheme.
         MetadataStack(TiltScheme tilt_scheme,
                       i32 order_count,
-                      f32 rotation_angle = 0);
+                      f64 rotation_angle = 0);
 
     public: // Stack manipulations
         /// Excludes the slice(s) according to their "index" field.

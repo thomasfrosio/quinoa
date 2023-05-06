@@ -15,7 +15,7 @@ namespace qn {
     ) {
         // The "target" is the higher (absolute) tilt image that we want to align onto the "reference".
         // Performance-wise, using out-of-place FFTs could be slightly better, but here, prefer the safer
-        // option to use less memory and in-place FFTs.
+        // option to use less memory and in-place FFTs, since we are not constrained by performance at this step.
         const auto options = noa::ArrayOption(compute_device, allocator);
         m_buffer_rfft = noa::memory::empty<c32>({3, 1, shape[2], shape[3] / 2 + 1}, options);
         m_xmap = noa::memory::empty<f32>({1, 1, shape[2], shape[3]}, options);
@@ -26,7 +26,10 @@ namespace qn {
             MetadataStack& metadata,
             const PairwiseShiftParameters& parameters,
             bool cosine_stretch,
-            bool area_match
+            bool area_match,
+            f64 smooth_edge_percent,
+            f64 max_area_loss_percent,
+            f64 max_shift_percent
     ) {
         if (m_buffer_rfft.is_empty())
             return;
@@ -34,8 +37,11 @@ namespace qn {
         qn::Logger::info("Pairwise shift alignment...");
         qn::Logger::trace("Compute device: {}\n"
                           "Cosine stretching: {}\n"
-                          "Area match: {}",
-                          m_xmap.device(), cosine_stretch, area_match);
+                          "Area match: {}{}\n"
+                          "Smooth edge: {}%",
+                          m_xmap.device(), cosine_stretch, area_match,
+                          area_match ? noa::string::format(" (max area loss: {:.3f})", max_area_loss_percent) : "",
+                          smooth_edge_percent * 100);
         noa::Timer timer;
         timer.start();
 
@@ -43,6 +49,10 @@ namespace qn {
         metadata.sort("tilt");
         const i64 index_lowest_tilt = metadata.find_lowest_tilt_index();
         const i64 slice_count = static_cast<i64>(metadata.size());
+
+        // The metadata won't be updated in the loop, we can compute the common area once here.
+        if (area_match)
+            m_common_area.set_geometry(stack.shape().filter(2, 3), metadata, max_area_loss_percent);
 
         // The main processing loop. From the lowest to the highest tilt, find the relative shifts.
         // These shifts are the slice-to-slice shifts, i.e. the shift to apply to the target to align
@@ -66,15 +76,15 @@ namespace qn {
             // Compute the shifts.
             const Vec2<f64> slice_to_slice_shift = find_relative_shifts_(
                     stack, metadata[idx_reference], metadata[idx_target],
-                    parameters, cosine_stretch, area_match);
+                    parameters, cosine_stretch, area_match,
+                    smooth_edge_percent, max_shift_percent);
             slice_to_slice_shifts.emplace_back(slice_to_slice_shift);
         }
 
         // This is the main drawback of this method. We need to compute the global shifts from the relative
         // shifts, so the high tilt slices end up accumulating the errors of the lower tilts.
         const std::vector<Vec2<f64>> global_shifts =
-                relative2global_shifts_(slice_to_slice_shifts, metadata, index_lowest_tilt,
-                                        parameters.center_shifts);
+                relative2global_shifts_(slice_to_slice_shifts, metadata, index_lowest_tilt);
 
         // Update the metadata.
         for (i64 i = 0; i < slice_count; ++i)
@@ -89,16 +99,14 @@ namespace qn {
             const MetadataSlice& target_slice,
             const PairwiseShiftParameters& parameters,
             bool cosine_stretch,
-            bool area_match
+            bool area_match,
+            f64 smooth_edge_percent,
+            f64 max_shift_percent
     ) -> Vec2<f64> {
-        const auto buffer_shape = m_xmap.shape().pop_front().push_front(3);
-        const auto buffer_rfft = m_buffer_rfft.view();
-        const auto buffer = noa::fft::alias_to_real(buffer_rfft, buffer_shape);
-
         // Compute the affine matrix to transform the target "onto" the reference.
-        const Vec3<f64> target_angles = noa::math::deg2rad(target_slice.angles.as<f64>());
-        const Vec3<f64> reference_angles = noa::math::deg2rad(reference_slice.angles.as<f64>());
-        const Vec2<f32> slice_center = MetadataSlice::center(buffer_shape);
+        const Vec3<f64> target_angles = noa::math::deg2rad(target_slice.angles);
+        const Vec3<f64> reference_angles = noa::math::deg2rad(reference_slice.angles);
+        const Vec2<f32> slice_center = MetadataSlice::center(m_xmap.shape());
 
         // First, compute the cosine stretching to estimate the tilt (and technically elevation) difference.
         // These angles are flipped, since the cos-scaling is perpendicular to the axis of rotation.
@@ -111,38 +119,53 @@ namespace qn {
 
         // Cancel the difference (if any) in rotation and shift as well.
         const Double33 fwd_stretch_target_to_reference_d =
-                noa::geometry::translate(slice_center.as<f64>() + reference_slice.shifts.as<f64>()) *
+                noa::geometry::translate(slice_center.as<f64>() + reference_slice.shifts) *
                 noa::geometry::linear2affine(noa::geometry::rotate(reference_angles[0])) *
                 noa::geometry::linear2affine(noa::geometry::scale(cos_factor)) *
                 noa::geometry::linear2affine(noa::geometry::rotate(-target_angles[0])) *
-                noa::geometry::translate(-slice_center.as<f64>() - target_slice.shifts.as<f64>());
+                noa::geometry::translate(-slice_center.as<f64>() - target_slice.shifts);
         const auto fwd_stretch_target_to_reference = fwd_stretch_target_to_reference_d.as<f32>();
         const auto inv_stretch_target_to_reference = fwd_stretch_target_to_reference_d.inverse().as<f32>();
 
         // Get the views from the buffer.
+        const auto buffer_shape = m_xmap.shape().pop_front().push_front(3);
+        const auto buffer_rfft = m_buffer_rfft.view();
+        const auto buffer = noa::fft::alias_to_real(buffer_rfft, buffer_shape);
+
         const auto target_stretched = buffer.subregion(0);
         const auto reference = buffer.subregion(1);
         const auto target = buffer.subregion(2);
 
         // Real-space masks to guide the alignment and not compare things that cannot or shouldn't be compared.
         // This is relevant for large shifts between images and high tilt angles, but also to restrict the
-        // alignment to a specific region.
+        // alignment to a specific region, i.e. the center of the image.
         if (area_match) {
+            // Copy if stack isn't on the compute device.
+            View<f32> input_reference = stack.view().subregion(reference_slice.index);
+            View<f32> input_target = stack.view().subregion(target_slice.index);
+            if (stack.device() != buffer.device()) {
+                input_reference.to(reference);
+                input_target.to(target);
+                input_reference = reference;
+                input_target = target;
+            }
+
             // Enforce a common area across the tilt series.
             // This is more restrictive and removes regions from the higher tilts that aren't in the 0deg view.
             // This is quite good to remove the regions in the higher tilts that varies a lot from one tilt to the
             // next, and where cosine stretching isn't a good approximation of what is happening in 3d space.
-            apply_area_match_(stack.view().subregion(reference_slice.index), reference, reference_slice, parameters);
-            apply_area_match_(stack.view().subregion(target_slice.index), target, target_slice, parameters);
+            m_common_area.mask_view(input_reference, reference, reference_slice, smooth_edge_percent);
+            m_common_area.mask_view(input_target, target, target_slice, smooth_edge_percent);
+
         } else {
             // The area match can be very restrictive in the high tilts. When the shifts are not known and
             // large shifts are present, it is best to turn off the area match and enforce a common FOV only between
             // the two images that are being compared.
             const auto reference_target = buffer.subregion(noa::indexing::slice_t{1, 3});
             const auto hw = reference_target.shape().pop_front<2>();
-            const auto smooth_edge_size =
-                    static_cast<f32>(noa::math::max(hw)) *
-                    parameters.pairwise_fov_taper;
+            const auto smooth_edge_size = static_cast<f32>(
+                    static_cast<f64>(noa::math::max(hw)) *
+                    smooth_edge_percent);
 
             std::array indexes{reference_slice.index, target_slice.index};
             noa::memory::copy_batches(stack.view(), reference_target, View<i32>(indexes.data(), 2));
@@ -176,7 +199,7 @@ namespace qn {
                           parameters.debug_directory / target_reference_filename);
         }
 
-        // (Conventional) cross-correlation:
+        // (Conventional) cross-correlation. There's no need to normalize here, we just need the shift.
         noa::fft::r2c(target_stretched_and_reference, target_stretched_and_reference_rfft);
         noa::signal::fft::bandpass<noa::fft::H2H>(
                 target_stretched_and_reference_rfft,
@@ -197,10 +220,14 @@ namespace qn {
             noa::io::save(target, parameters.debug_directory / xmap_filename);
         }
 
+        // Possibly restrict the shifts by masking the xmap.
+        max_shift_percent = max_shift_percent >= 0.99 ? -1 : max_shift_percent; // if negative, it will be ignored
+        const Vec2<f64> max_shift = max_shift_percent * xmap.shape().vec().filter(2, 3).as<f64>();
+
         // Computes the YX shift of the target. To shift-align the stretched target onto the reference,
         // we would then need to subtract this shift to the stretched target.
         const auto [peak_coordinate, peak_value] = noa::signal::fft::xpeak_2d<noa::fft::F2F>(
-                xmap, parameters.max_shift, noa::signal::PeakMode::PARABOLA_1D, Vec2<i64>{1});
+                xmap, max_shift.as<f32>(), noa::signal::PeakMode::PARABOLA_1D, Vec2<i64>{1});
         const auto shift_reference = (peak_coordinate - slice_center).as<f64>();
         qn::Logger::debug("{:>2} peak: pos={::> 8.3f}, value={:.6g}",
                           reference_slice.index, shift_reference, peak_value);
@@ -210,51 +237,15 @@ namespace qn {
         // to accumulate the shifts of the lower views while accounting for their own scaling.
         // Instead, it is simpler to scale all the slice-to-slice shifts to the same reference
         // frame, process everything there, and then go back to whatever higher tilt reference at
-        // the end. Here, this common reference frame is the effectively planar specimen (no tilt, no elevation).
-        const Vec2<f64> reference_no_elevation_no_tilt{reference_angles[2], reference_angles[1]};
+        // the end. Here, this global reference frame is the planar specimen (no tilt, no elevation).
+        const Vec2<f64> reference_to_no_elevation_no_tilt{reference_angles[2], reference_angles[1]};
         const Double22 fwd_stretch_reference_to_0deg{
                 noa::geometry::rotate(reference_angles[0]) *
-                noa::geometry::scale(1 / math::cos(reference_no_elevation_no_tilt)) * // 1 = cos(0deg)
+                noa::geometry::scale(1 / math::cos(reference_to_no_elevation_no_tilt)) * // 1 = cos(0deg)
                 noa::geometry::rotate(-reference_angles[0])
         };
         const Vec2<f64> shift_0deg = fwd_stretch_reference_to_0deg * shift_reference;
         return shift_0deg;
-    }
-
-    void PairwiseShift::apply_area_match_(
-            const View<f32>& input,
-            const View<f32>& output,
-            const MetadataSlice& metadata,
-            const PairwiseShiftParameters& parameters
-            ) {
-        const Vec2<f32> center = MetadataSlice::center(input.shape());
-        const Vec3<f32> angles = noa::math::deg2rad(metadata.angles).as<f32>();
-        const Vec2<f32> shifts = metadata.shifts.as<f32>();
-
-        const auto hw = input.shape().pop_front<2>();
-        const auto smooth_edge_size =
-                static_cast<f32>(noa::math::max(hw)) *
-                parameters.area_match_taper;
-
-        // Find the ellipse radius.
-        // We start by a sphere to make sure it fits regardless of the shape and rotation angle.
-        // The elevation shrinks the height of the ellipse. The tilt shrinks the width of the ellipse.
-        const auto radius = static_cast<f32>(noa::math::min(hw)) / 2;
-        const Vec2<f32> ellipse_radius = radius * noa::math::abs(noa::math::cos(angles.filter(2, 1)));
-
-        // Then center the ellipse and rotate to have its height aligned with the tilt-axis.
-        const Float33 inv_transform =
-                noa::geometry::translate(center) *
-                noa::geometry::linear2affine(noa::geometry::rotate(-angles[0])) *
-                noa::geometry::translate(-(center + shifts));
-
-        // Multiply the view with the ellipse. Everything outside is set to 0.
-        noa::geometry::ellipse(
-                input, output,
-                /*center=*/ center,
-                /*radius=*/ ellipse_radius - smooth_edge_size,
-                /*edge_size=*/ smooth_edge_size,
-                inv_transform);
     }
 
     // Compute the global shifts, i.e. the shifts to apply to a slice so that it becomes aligned with the
@@ -264,8 +255,7 @@ namespace qn {
     auto PairwiseShift::relative2global_shifts_(
             const std::vector<Vec2<f64>>& relative_shifts,
             const MetadataStack& metadata,
-            i64 index_lowest_tilt,
-            bool center_tilt_axis
+            i64 index_lowest_tilt
     ) -> std::vector<Vec2<f64>> {
         // Compute the global shifts and the mean.
         const size_t count = relative_shifts.size();
@@ -289,8 +279,6 @@ namespace qn {
                             scan_op);
 
         qn::Logger::trace("Average shift: {::.3f}", mean);
-        if (!center_tilt_axis)
-            mean = 0;
 
         // Center the global shifts (optional) and scale them back to the original reference frame
         // of their respective slice, i.e. shrink the shifts to account for the slice's tilt and pitch.

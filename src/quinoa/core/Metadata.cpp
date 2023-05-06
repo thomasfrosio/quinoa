@@ -6,7 +6,7 @@
 #include "quinoa/Exception.h"
 
 namespace qn {
-    std::vector<MetadataSlice> TiltScheme::generate(i32 count, f32 rotation_angle) const {
+    std::vector<MetadataSlice> TiltScheme::generate(i32 count, f64 rotation_angle) const {
         std::vector<MetadataSlice> slices;
         slices.reserve(static_cast<size_t>(count));
 
@@ -51,7 +51,7 @@ namespace qn {
                    !options["stack_exposure"].IsNull()) {
             *this = MetadataStack(options["stack_tlt"].as<Path>(),
                                   options["stack_exposure"].as<Path>(),
-                                  options["rotation_angle"].as<f32>(MetadataSlice::UNSET_ROTATION_VALUE));
+                                  options["rotation_angle"].as<f64>(MetadataSlice::UNSET_ROTATION_VALUE));
 
         } else if (!options["order_starting_angle"].IsNull() &&
                    !options["order_starting_direction"].IsNull() &&
@@ -68,9 +68,9 @@ namespace qn {
                     options["order_angle_increment"].as<f32>(),
                     options["order_group"].as<i32>(),
                     options["order_exclude_start"].as<bool>(),
-                    options["order_per_view_exposure"].as<f32>(MetadataSlice::UNSET_ROTATION_VALUE),
+                    options["order_per_view_exposure"].as<f32>(0.f),
             };
-            *this = MetadataStack(scheme, count, options["rotation_angle"].as<f32>(MetadataSlice::UNSET_ROTATION_VALUE));
+            *this = MetadataStack(scheme, count, options["rotation_angle"].as<f64>(MetadataSlice::UNSET_ROTATION_VALUE));
 
         } else {
             QN_THROW("Missing option(s). Could not find enough information regarding the tilt geometry");
@@ -83,7 +83,7 @@ namespace qn {
 
     MetadataStack::MetadataStack(const Path& tlt_filename,
                                  const Path& exposure_filename,
-                                 f32 rotation_angle) {
+                                 f64 rotation_angle) {
         auto is_empty = [](const auto& str) { return str.empty(); };
         std::string file;
         std::vector<std::string> lines;
@@ -113,7 +113,7 @@ namespace qn {
         }
     }
 
-    MetadataStack::MetadataStack(TiltScheme scheme, i32 count, f32 rotation_angle) {
+    MetadataStack::MetadataStack(TiltScheme scheme, i32 count, f64 rotation_angle) {
         m_slices = scheme.generate(count, rotation_angle);
     }
 

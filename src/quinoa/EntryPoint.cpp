@@ -45,6 +45,8 @@ namespace qn {
                     QN_THROW("The value of \"{}\" is not recognized", exclude_key);
                 metadata.exclude(exclude_views_idx);
             }
+
+            // TODO Exclude views based on initial pairwise shift (no cosine
         }
 
         // Initial alignment.
@@ -69,6 +71,19 @@ namespace qn {
                     true, // bool zero_pad_to_fast_fft_shape
             };
 
+            const auto saving_parameters = SaveStackParameters{
+                    compute_device, // Device compute_device
+                    int32_t{0}, // int32_t median_filter_window
+                    options["alignment_save_aligned_stack_resolution"].as<f64>(alignment_resolution),
+                    false, // bool exposure_filter
+                    {0.03, 0.03}, // float2_t highpass_parameters
+                    {0.5, 0.05}, // float2_t lowpass_parameters
+                    true, // bool normalize_and_standardize
+                    0.02f, // float smooth_edge_percent
+                    noa::InterpMode::LINEAR,
+                    noa::BorderMode::ZERO,
+            };
+
             const auto rotation_parameters = GlobalRotationParameters{
                     /*highpass_filter=*/ {0.05, 0.05},
                     /*lowpass_filter=*/ {0.25, 0.15},
@@ -78,59 +93,19 @@ namespace qn {
             };
 
             const auto pairwise_cosine_parameters = PairwiseShiftParameters{
-                    /*max_shift=*/ {},
-                    /*pairwise_fov_taper=*/ 0.3f,
-                    /*area_match_taper=*/ 0.1f,
                     /*highpass_filter=*/ {0.03, 0.03},
                     /*lowpass_filter=*/ {0.25, 0.1},
-                    /*center_shifts=*/ true,
                     /*interpolation_mode=*/ noa::InterpMode::LINEAR_FAST,
-                    /*debug_directory=*/ "" //output_directory / "debug_pairwise_shift"
-            };
-
-            const auto project_matching_parameters = ProjectionMatchingParameters{
-                    {}, // max_shift
-                    0.15f, // smooth_edge_percent
-
-                    0.0003f, // backward_slice_z_radius
-                    180, // backward_tilt_angle_difference
-                    true, // backward_use_aligned_only
-
-                    0.5f, // forward_cutoff
-
-                    /*highpass_filter=*/ {0.05, 0.05},
-                    /*lowpass_filter=*/ {0.25, 0.1},
-
-                   /*max_iterations=*/ 5,
-                    true, // center_tilt_axis
-                    ""//output_directory / "debug_pm" // debug_directory
+                    /*debug_directory=*/ output_directory / "debug_pairwise_shift"
             };
 
             const auto alignment_parameters = InitialGlobalAlignmentParameters{
                     options["alignment_rotation_offset"].as<bool>(true),
                     options["alignment_tilt_offset"].as<bool>(true),
-                    options["alignment_elevation_offset"].as<bool>(true),
-
                     options["alignment_pairwise_shift"].as<bool>(true),
-                    options["alignment_projection_matching"].as<bool>(true),
-                    options["alignment_projection_matching_shift_only"].as<bool>(false),
-
                     options["alignment_save_input_stack"].as<bool>(false),
                     options["alignment_save_aligned_stack"].as<bool>(true),
                     output_directory
-            };
-
-            const auto saving_parameters = SaveStackParameters{
-                    compute_device, // Device compute_device
-                    int32_t{0}, // int32_t median_filter_window
-                    options["alignment_save_aligned_stack_resolution"].as<f64>(alignment_resolution),
-                    false, // bool exposure_filter
-                    {0.10, 0.10}, // float2_t highpass_parameters
-                    {0.45, 0.05}, // float2_t lowpass_parameters
-                    true, // bool normalize_and_standardize
-                    0.04f, // float smooth_edge_percent
-                    noa::InterpMode::LINEAR,
-                    noa::BorderMode::ZERO,
             };
 
             initial_global_alignment(original_stack_filename, metadata,
@@ -138,14 +113,29 @@ namespace qn {
                                      alignment_parameters,
                                      rotation_parameters,
                                      pairwise_cosine_parameters,
-                                     project_matching_parameters,
                                      saving_parameters);
+
+            const auto project_matching_parameters = ProjectionMatchingParameters{
+                    {}, // max_shift
+                    0.1f, // smooth_edge_percent
+
+                    /*projection_slice_z_radius=*/ 0.0005f,
+                    /*projection_cutoff=*/ 0.5f,
+                    /*projection_max_tilt_angle=*/ 45,
+
+                    /*highpass_filter=*/ {0.1, 0.05},
+                    /*lowpass_filter=*/ {0.35, 0.1},
+
+                    /*max_iterations=*/ 2,
+                    true, // center_shifts
+                    output_directory / "debug_pm" // debug_directory
+            };
         }
 
-        // Refinement and deformations.
-        if (options["refinement_run"].as<bool>(true)) {
-            // TODO
-        }
+        // TODO CTF, update tilt and elevation offset.
+        // TODO Another initial global alignment
+
+        // TODO Projection global alignment
 
 //        if (options["reconstruction_run"].as<bool>(true)) {
 //            const auto reconstruction_resolution = options["reconstruction_resolution"].as<double>(14);
@@ -190,6 +180,8 @@ int main(int argc, char* argv[]) {
     noa::Session session("quinoa", "quinoa.log", noa::Logger::VERBOSE); // TODO set verbosity
     // TODO Set CUDA memory buffer
     // TODO Set number of cached cufft plans.
+
+//    noa::cuda::fft::PlanCache::set_limit(1);
 
     try {
         qn::Options options(argc, argv);

@@ -10,21 +10,17 @@ namespace qn {
     struct InitialGlobalAlignmentParameters {
         bool rotation_offset{true};
         bool tilt_offset{true};
-        bool elevation_offset{true};
-
-        bool pairwise_shift{true};
-        bool projection_matching{true};
-        bool projection_matching_shift_only{false};
+        bool shifts{true};
 
         bool save_input_stack{false};
         bool save_aligned_stack{false};
         Path output_directory;
     };
 
-    /// Initial global alignment.
-    /// \details Updates the tilt-series geometry. The tilt-series should come with a good first
-    ///          estimate of the angles, since this function can only slightly refine around
-    ///          these first estimates.
+    // Initial global alignment.
+    // Updates the tilt-series geometry:
+    //  - The rotation offset can be either measured or refined if a value is already set.
+    //  - The shifts are measured using pairwise comparisons.
     void initial_global_alignment(
             const Path& tilt_series_filename,
             MetadataStack& tilt_series_metadata,
@@ -32,32 +28,32 @@ namespace qn {
             const InitialGlobalAlignmentParameters& alignment_parameters,
             const GlobalRotationParameters& rotation_offset_parameters,
             const PairwiseShiftParameters& pairwise_shift_parameters,
-            const ProjectionMatchingParameters& projection_matching_parameters,
             const SaveStackParameters& saving_parameters) {
 
-        // TODO load stack in the "exposure" order.
-        const auto [tilt_series, preprocessed_pixel_size, original_pixel_size] =
+        // These alignments are quite robust, and we shouldn't need to
+        // run multiple resolution cycles. Just load the stack once and align it.
+        const auto [tilt_series, current_pixel_size, original_pixel_size] =
                 load_stack(tilt_series_filename, tilt_series_metadata, loading_parameters);
 
         if (alignment_parameters.save_input_stack) {
             const auto cropped_stack_filename =
                     alignment_parameters.output_directory /
-                    noa::string::format("{}_preprocessed{}",
+                    noa::string::format("{}_preprocessed_0{}",
                                         tilt_series_filename.stem().string(),
                                         tilt_series_filename.extension().string());
-            noa::io::save(tilt_series, preprocessed_pixel_size.as<f32>(), cropped_stack_filename);
+            noa::io::save(tilt_series, current_pixel_size.as<f32>(), cropped_stack_filename);
         }
 
-        // Scale the metadata shifts to the alignment resolution.
-        const auto pre_scale = original_pixel_size / preprocessed_pixel_size;
+        // Scale the metadata shifts to the current sampling rate.
+        const auto pre_scale = original_pixel_size / current_pixel_size;
         for (auto& slice: tilt_series_metadata.slices())
             slice.shifts *= pre_scale;
 
         // TODO tilt offset can be estimated using CC first. Also try the quick profile projection and COM?
 
-        // Initial alignment using neighbouring views as reference.
         {
-            const bool has_initial_rotation = MetadataSlice::UNSET_ROTATION_VALUE != tilt_series_metadata[0].angles[0];
+            const bool has_initial_rotation = noa::math::are_almost_equal(
+                    MetadataSlice::UNSET_ROTATION_VALUE, tilt_series_metadata[0].angles[0]);
 
             auto pairwise_shift =
                     !alignment_parameters.pairwise_shift ?
@@ -73,14 +69,15 @@ namespace qn {
 
             if (!has_initial_rotation) {
                 // Find a good estimate of the shifts, without cosine-stretching.
-                // Use area-matching only once we've got big shifts out of the picture.
-                std::array shift_area_match{false, false, true, true};
-                for (auto area_match: shift_area_match) {
+                // Similarly, we cannot use area match because we don't have the rotation.
+                std::array smooth_edge_percents{0.08, 0.3};
+                for (auto smooth_edge_percent: smooth_edge_percents) {
                     pairwise_shift.update(
                             tilt_series, tilt_series_metadata,
                             pairwise_shift_parameters,
                             /*cosine_stretch=*/ false,
-                            /*area_match=*/ area_match);
+                            /*area_match=*/ false,
+                            /*smooth_edge_percent=*/ smooth_edge_percent);
                 }
 
                 // Once we have estimates for the shifts, do the global rotation search.
@@ -88,54 +85,43 @@ namespace qn {
             } else {
                 // If we have an estimate of the rotation from the user, use cosine-stretching
                 // without area-matching to find estimates of the shifts.
-                for (i64 i = 0; i < 2; ++i) {
+                std::array smooth_edge_percents{0.08, 0.3};
+                for (auto smooth_edge_percent: smooth_edge_percents) {
                     pairwise_shift.update(
                             tilt_series, tilt_series_metadata,
                             pairwise_shift_parameters,
                             /*cosine_stretch=*/ true,
-                            /*area_match=*/ false);
+                            /*area_match=*/ false,
+                            /*smooth_edge_percent=*/ smooth_edge_percent);
                 }
             }
-
-            // Trust the user and only allow a +-2deg offset on the user-provided rotation angle.
-            const std::array<f64, 3> user_rotation_bounds{2, 1, 0.5};
-            const std::array<f64, 3> estimate_rotation_bounds{10, 4, 0.5};
 
             // Once we have a first good estimate of the rotation and shifts, start again.
             // At each iteration the rotation should be better, improving the cosine stretching for the shifts.
             // Similarly, the shifts should improve, allowing a better estimate of the field-of-view and the rotation.
-            for (auto i : noa::irange<size_t>(3)) {
+            const std::array rotation_bounds{5., 2., 0.5};
+            for (auto rotation_bound : rotation_bounds) {
                 pairwise_shift.update(
                         tilt_series, tilt_series_metadata,
                         pairwise_shift_parameters,
                         /*cosine_stretch=*/ true,
-                        /*area_match=*/ true);
+                        /*area_match=*/ true,
+                        /*smooth_edge_percent=*/ 0.1,
+                        /*max_size_loss_percent=*/ 0.1);
                 global_rotation.update(
-                        tilt_series_metadata, rotation_offset_parameters,
-                        has_initial_rotation ? user_rotation_bounds[i] : estimate_rotation_bounds[i]);
+                        tilt_series_metadata, rotation_offset_parameters, rotation_bound);
             }
             pairwise_shift.update(
                     tilt_series, tilt_series_metadata,
                     pairwise_shift_parameters,
                     /*cosine_stretch=*/ true,
-                    /*area_match=*/ true); // TODO Double phase?
+                    /*area_match=*/ true,
+                    /*smooth_edge_percent=*/ 0.1,
+                    /*max_size_loss_percent=*/ 0.1); // TODO Double phase?
         }
 
         // TODO Estimate tilt and elevation offset using CTF.
         // TODO Rerun pairwise shift and rotation offset.
-
-        // Projection matching alignment.
-        // At this point, the global geometry should be pretty much on point.
-        if (alignment_parameters.projection_matching) {
-            auto projection_matching = qn::ProjectionMatching(
-                    tilt_series.shape(), tilt_series.device(),
-                    tilt_series_metadata, projection_matching_parameters);
-
-            projection_matching.update(
-                    tilt_series, tilt_series_metadata,
-                    projection_matching_parameters,
-                    alignment_parameters.projection_matching_shift_only);
-        }
 
         // Scale the metadata back to the original resolution.
         const auto post_scale = 1 / pre_scale;
@@ -150,5 +136,42 @@ namespace qn {
                                         tilt_series_filename.extension().string());
             qn::save_stack(tilt_series_filename, tilt_series_metadata, aligned_stack_filename, saving_parameters);
         }
+    }
+
+    struct ProjectionMatchingAlignmentParameters {
+        bool shift_only{false};
+        bool save_input_stack{false};
+        bool save_aligned_stack{false};
+        Path output_directory;
+    };
+
+    void projection_matching_alignment(
+            const Path& tilt_series_filename,
+            MetadataStack& tilt_series_metadata,
+            const LoadStackParameters& loading_parameters,
+            const ProjectionMatchingParameters& projection_matching_parameters,
+            const SaveStackParameters& saving_parameters) {
+
+        // TODO Clean fft cache
+        // TODO Move stack back to CPU to save GPU memory
+
+        // TODO Loop in resolution. As resolution increases, decrease global reference rotation range.
+        //      20A: +-2, step 0.5,
+        //      15A: +-0.75, step 0.25
+        //      10A: +- 0.25, step 0.1
+        // TODO Maybe don't update the shifts at low res?
+
+        // Projection matching alignment.
+        // At this point, the global geometry should be pretty much on point.
+//        if (alignment_parameters.projection_matching) {
+//            auto projection_matching = qn::ProjectionMatching(
+//                    tilt_series.shape(), tilt_series.device(),
+//                    tilt_series_metadata, projection_matching_parameters);
+//
+//            projection_matching.update(
+//                    tilt_series, tilt_series_metadata,
+//                    projection_matching_parameters,
+//                    alignment_parameters.projection_matching_shift_only);
+//        }
     }
 }

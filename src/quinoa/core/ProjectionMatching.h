@@ -14,16 +14,27 @@
 #include "quinoa/core/Metadata.h"
 #include "quinoa/io/Logging.h"
 
+// Projection matching
+// -------------------
+//
+// Concept:
+//
+//
+// Strength:
+//
+//
+// Issues:
+//
+
 namespace qn {
     struct ProjectionMatchingParameters {
         Vec2<f32> max_shift = {};
         f32 area_match_taper = 0.1f;
 
-        f32 backward_slice_z_radius = 0.0005f;
-        f64 backward_tilt_angle_difference = 30;
-        bool backward_use_aligned_only = false;
-
+        f32 projection_slice_z_radius = 0.0005f;
         f32 projection_cutoff = 0.5f;
+        f64 projection_max_tilt_angle = 50;
+
         Vec2<f32> highpass_filter{};
         Vec2<f32> lowpass_filter{};
 
@@ -71,7 +82,8 @@ namespace qn {
                 const View<f32>& input,
                 const View<f32>& output,
                 const MetadataSlice& metadata,
-                const ProjectionMatchingParameters& parameters
+                const ProjectionMatchingParameters& parameters,
+                bool apply_weight
         );
 
         static void apply_area_mask_(
@@ -79,7 +91,8 @@ namespace qn {
                 const View<f32>& output,
                 const MetadataStack& metadata,
                 const std::vector<i64>& indexes,
-                const ProjectionMatchingParameters& parameters
+                const ProjectionMatchingParameters& parameters,
+                bool apply_weight
         );
 
         // Prepare the references for back-projection.

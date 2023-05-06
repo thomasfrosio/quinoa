@@ -4,7 +4,7 @@
 
 namespace qn {
     [[nodiscard]]
-    auto subdivide_volume_in_cubes(
+    inline auto subdivide_volume_in_cubes(
             const Shape3<i64>& volume_shape,
             i64 cube_size
     ) -> std::pair<std::vector<Vec3<f32>>, Vec3<i64>> {
@@ -28,5 +28,40 @@ namespace qn {
             if (range[i - 1][0] + step != range[i][0])
                 return false;
         return true;
+    }
+
+    // Shift the sample by a given amount.
+    inline void add_global_shift(
+            MetadataStack & metadata,
+            Vec2<f64> global_shift
+    ) {
+        for (size_t i = 0; i < metadata.size(); ++i) {
+            const Vec3<f64> angles = noa::math::deg2rad(metadata[i].angles);
+            const Vec2<f64> elevation_tilt = angles.filter(2, 1);
+            const Double22 shrink_matrix{
+                    noa::geometry::rotate(angles[0]) *
+                    noa::geometry::scale(noa::math::cos(elevation_tilt)) *
+                    noa::geometry::rotate(-angles[0])
+            };
+            metadata[i].shifts += shrink_matrix * global_shift;
+        }
+    }
+
+    // Move the average untilted-shift to 0.
+    inline void center_shifts(MetadataStack& metadata) {
+        Vec2<f64> mean{0};
+        auto mean_scale = 1 / static_cast<f64>(metadata.size());
+        for (size_t i = 0; i < metadata.size(); ++i) {
+            const Vec3<f64> angles = noa::math::deg2rad(metadata[i].angles);
+            const Vec2<f64> elevation_tilt = angles.filter(2, 1);
+            const Double22 stretch_to_0deg{
+                    noa::geometry::rotate(angles[0]) *
+                    noa::geometry::scale(1 / noa::math::cos(elevation_tilt)) * // 1 = cos(0deg)
+                    noa::geometry::rotate(-angles[0])
+            };
+            const Vec2<f64> shift_at_0deg = stretch_to_0deg * metadata[i].shifts;
+            mean += shift_at_0deg * mean_scale;
+        }
+        add_global_shift(metadata, -mean);
     }
 }

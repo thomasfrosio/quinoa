@@ -4,7 +4,7 @@ quinoa:
   # Preprocessing.
   preprocessing_run: true
   preprocessing_exclude_blank_views: false
-  preprocessing_exclude_view_indexes: 0 # Slice(s) index [0, n). A single value or a sequence, e.g. [0, 41].
+  preprocessing_exclude_view_indexes: # Slice(s) index [0, n). A single value or a sequence, e.g. [0, 41].
   # If views should be excluded, one should either:
   #   - Specify the "preprocessing_exclude_view_indexes" entry and provide the original input files (.mdoc, .tlt, etc.)
   #   - Or, use the "preprocessing_exclude_blank_views" option. This uses a simple mass-normalization to identify blank views.
@@ -14,14 +14,14 @@ quinoa:
 
   # Global alignment.
   alignment_run: true
-  alignment_resolution: 20  # Resolution, in Angstrom, at which to perform the alignment.
+  alignment_resolution: 4.4  # Resolution, in Angstrom, at which to perform the alignment.
 
-  alignment_rotation_offset: true
+  alignment_rotation_offset: false
   alignment_tilt_offset: false
   alignment_elevation_offset: false
 
   alignment_pairwise_shift: true
-  alignment_projection_matching: true
+  alignment_projection_matching: false
   alignment_projection_matching_shift_only: false
 
   alignment_save_input_stack: true
@@ -45,19 +45,19 @@ quinoa:
   # If the mdoc file is found, the tlt and exposure files are not used. The exposure file
   # is entirely optional.
   stack_directory:
-  stack_file: "/home/thomas/Projects/datasets/EMPIAR-10304/tilt2.mrc"
+  stack_file: "/home/thomas/Projects/datasets/Apo001/ApoF_165k_001_bin3.st"
   stack_mdoc:
   stack_tlt:
   stack_exposure:
 
   # Output directory. By default, it is set to the stack directory.
-  output_directory: "/home/thomas/Projects/quinoa/tests/tilt2_v2"
+  output_directory: "/home/thomas/Projects/quinoa/tests/apo001"
 
   # Initial (global) CCW rotation angle, in degrees.
   # This is the in-plane rotation angle of the images. A value of zero indicates
   # that the tilt-axis in the image is parallel to the Y (i.e. vertical) axis. If left empty,
   # the program will try to compute it. This is ignored if the mdoc file is specified.
-  rotation_angle: 175
+  rotation_angle: 83.36
 
   # Slice order.
   # If the mdoc file is found, or if the tlt and exposure files are found,
