@@ -1,6 +1,7 @@
 #pragma once
 
 #include <numeric>
+#include <optional>
 
 #include <noa/Array.hpp>
 #include <noa/Memory.hpp>
@@ -12,6 +13,8 @@
 
 #include "quinoa/Types.h"
 #include "quinoa/core/Metadata.h"
+#include "quinoa/core/CommonArea.hpp"
+#include "quinoa/core/Utilities.h"
 #include "quinoa/io/Logging.h"
 
 // Projection matching
@@ -28,26 +31,17 @@
 
 namespace qn {
     struct ProjectionMatchingParameters {
-        Vec2<f32> max_shift = {};
-        f32 area_match_taper = 0.1f;
+        f64 smooth_edge_percent{0.1};
 
         f32 projection_slice_z_radius = 0.0005f;
         f32 projection_cutoff = 0.5f;
-        f64 projection_max_tilt_angle = 50;
+        f64 projection_max_tilt_angle_difference = 50;
 
         Vec2<f32> highpass_filter{};
         Vec2<f32> lowpass_filter{};
 
         i64 max_iterations = 5;
-        bool center_tilt_axis = true;
         Path debug_directory;
-    };
-
-    struct ThirdDegreePolynomial {
-        f64 a, b, c, d;
-        constexpr f64 operator()(f64 x) const noexcept {
-            return a * x * x * x + b * x * x + c * x + d;
-        }
     };
 
     class ProjectionMatching {
@@ -58,77 +52,70 @@ namespace qn {
                            const ProjectionMatchingParameters& parameters,
                            noa::Allocator allocator = noa::Allocator::DEFAULT_ASYNC);
 
-        void update(const Array<float>& stack,
-                    MetadataStack& metadata,
-                    const ProjectionMatchingParameters& parameters,
-                    bool shift_only);
+        f64 update(const Array<f32>& stack,
+                   MetadataStack& metadata,
+                   const CommonArea& common_area,
+                   const ProjectionMatchingParameters& parameters,
+                   bool shift_only,
+                   f64 rotation_offset_bound,
+                   std::optional<ThirdDegreePolynomial> initial_rotation_target = {});
 
     private:
-        [[nodiscard]] auto extract_peak_window_(const Vec2<f32>& max_shift) -> View<f32>;
+        [[nodiscard]] auto extract_peak_window_(const Vec2<f64>& max_shift) -> View<f32>;
 
-        // Set the indexes of the slices contributing to the projected reference.
         static void set_reference_indexes_(
                 i64 target_index,
                 const MetadataStack& metadata,
                 const ProjectionMatchingParameters& parameters,
                 std::vector<i64>& output_reference_indexes);
 
-        // Get the maximum number of reference slices used for projection.
         [[nodiscard]] static i64 max_references_count_(
                 const MetadataStack& metadata,
                 const ProjectionMatchingParameters& parameters);
 
-        static void apply_area_mask_(
-                const View<f32>& input,
-                const View<f32>& output,
-                const MetadataSlice& metadata,
-                const ProjectionMatchingParameters& parameters,
-                bool apply_weight
-        );
-
-        static void apply_area_mask_(
-                const View<f32>& input,
-                const View<f32>& output,
+        [[nodiscard]] static i64 find_tilt_neighbour_(
                 const MetadataStack& metadata,
-                const std::vector<i64>& indexes,
-                const ProjectionMatchingParameters& parameters,
-                bool apply_weight
-        );
+                i64 target_index,
+                const std::vector<i64>& reference_indexes);
 
-        // Prepare the references for back-projection.
+        [[nodiscard]] static ThirdDegreePolynomial poly_fit_rotation(const MetadataStack& metadata);
+
         void prepare_for_insertion_(
                 const View<f32>& stack,
                 const MetadataStack& metadata,
                 i64 target_index,
                 const std::vector<i64>& reference_indexes,
-                const ProjectionMatchingParameters& parameters
-        );
+                const CommonArea& common_area,
+                const ProjectionMatchingParameters& parameters);
 
-        // Compute the projected reference.
         void compute_target_reference_(
                 const MetadataStack& metadata,
                 i64 target_index,
                 f64 target_rotation_offset,
                 const std::vector<i64>& reference_indexes,
+                const CommonArea& common_area,
                 const ProjectionMatchingParameters& parameters);
+
+        [[nodiscard]]
+        auto select_peak_(
+                const View<f32>& xmap,
+                const MetadataStack& metadata,
+                i64 target_index,
+                f64 target_angle_offset,
+                const std::vector<i64>& reference_indexes,
+                const std::vector<Vec2<f64>>& reference_shift_offsets
+        ) -> std::pair<Vec2<f64>, f64>;
 
         [[nodiscard]]
         auto project_and_correlate_(
                 const MetadataStack& metadata,
                 i64 target_index,
+                f64 target_rotation_offset,
                 const std::vector<i64>& reference_indexes,
-                const ProjectionMatchingParameters& parameters,
-                noa::signal::CorrelationMode correlation_mode,
-                f64 angle_offset
+                const std::vector<Vec2<f64>>& reference_shift_offsets,
+                const CommonArea& common_area,
+                const ProjectionMatchingParameters& parameters
         ) -> std::pair<Vec2<f64>, f64>;
-
-        // Fit a 3rd degree polynomial on the rotation.
-        [[nodiscard]] static ThirdDegreePolynomial poly_fit_rotation(const MetadataStack& metadata);
-
-        // Center the shifts. The mean should be computed and subtracted using a common reference frame.
-        // Here, stretch the shifts to the 0deg reference frame and compute the mean there. Then transform
-        // the mean to the slice tilt and pitch angles before subtraction.
-        static void center_tilt_axis_(MetadataStack& metadata);
 
     private:
         // Device buffers.

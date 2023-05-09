@@ -14,22 +14,15 @@ quinoa:
 
   # Global alignment.
   alignment_run: true
-  alignment_resolution: 4.4  # Resolution, in Angstrom, at which to perform the alignment.
+  alignment_max_resolution: # Maximum resolution, in Angstrom, at which to perform the alignment. Defaults to
 
   alignment_rotation_offset: false
   alignment_tilt_offset: false
   alignment_elevation_offset: false
 
-  alignment_pairwise_shift: true
+  alignment_pairwise_matching: true
+  alignment_ctf_estimate: false
   alignment_projection_matching: false
-  alignment_projection_matching_shift_only: false
-
-  alignment_save_input_stack: true
-  alignment_save_aligned_stack: true
-  alignment_save_aligned_stack_resolution:
-
-  # Refinement:
-  refinement_run: false
 
   # Reconstruction:
   reconstruction_run: false
@@ -55,7 +48,7 @@ quinoa:
 
   # Initial (global) CCW rotation angle, in degrees.
   # This is the in-plane rotation angle of the images. A value of zero indicates
-  # that the tilt-axis in the image is parallel to the Y (i.e. vertical) axis. If left empty,
+  # that the tilt-axis in the images is parallel to the Y axis (i.e. vertical). If left empty,
   # the program will try to compute it. This is ignored if the mdoc file is specified.
   rotation_angle: 83.36
 

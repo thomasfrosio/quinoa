@@ -45,91 +45,39 @@ namespace qn {
                     QN_THROW("The value of \"{}\" is not recognized", exclude_key);
                 metadata.exclude(exclude_views_idx);
             }
-
-            // TODO Exclude views based on initial pairwise shift (no cosine
         }
 
-        // Initial alignment.
+        // Alignment.
         if (options["alignment_run"].as<bool>(true)) {
-            // Focus in the center of the tilt-series. This seems to be the safest approach.
-            // The edges can be (more) problematic, especially for thick samples. Indeed, they
-            // are the regions that vary the most with the tilt, making them difficult to track.
-            // For this reason, the stack is masked with a (very) smooth mask located at the
-            // center of the FOV. This should focus the FOV in the center of the stack, but still
-            // include enough information for the cross-correlation, even with large shifts.
-            const auto alignment_resolution = options["alignment_resolution"].as<f64>(16);
+            const auto alignment_max_resolution = options["alignment_max_resolution"].as<f64>(10);
 
-            const auto loading_parameters = LoadStackParameters{
-                    compute_device, // Device compute_device
-                    int32_t{1}, // int32_t median_filter_window
-                    alignment_resolution, // double target_resolution
-                    false, // bool exposure_filter
-                    {0.03, 0.03}, // float2_t highpass_parameters
-                    {0.5, 0.05}, // float2_t lowpass_parameters
-                    true, // bool normalize_and_standardize
-                    0.03f, // float smooth_edge_percent
-                    true, // bool zero_pad_to_fast_fft_shape
+            const auto pairwise_alignment_parameters = PairwiseAlignmentParameters {
+                /*compute_device=*/ compute_device,
+                /*maximum_resolution=*/ alignment_max_resolution,
+                /*search_rotation_offset=*/ options["alignment_rotation_offset"].as<bool>(true),
+                /*search_tilt_offset=*/ options["alignment_tilt_offset"].as<bool>(true),
+                /*output_directory=*/ output_directory,
+                /*debug_directory=*/ output_directory / "debug_pairwise",
             };
+            pairwise_alignment(original_stack_filename, metadata,
+                               pairwise_alignment_parameters);
 
-            const auto saving_parameters = SaveStackParameters{
-                    compute_device, // Device compute_device
-                    int32_t{0}, // int32_t median_filter_window
-                    options["alignment_save_aligned_stack_resolution"].as<f64>(alignment_resolution),
-                    false, // bool exposure_filter
-                    {0.03, 0.03}, // float2_t highpass_parameters
-                    {0.5, 0.05}, // float2_t lowpass_parameters
-                    true, // bool normalize_and_standardize
-                    0.02f, // float smooth_edge_percent
-                    noa::InterpMode::LINEAR,
-                    noa::BorderMode::ZERO,
-            };
+//            const auto project_matching_parameters = ProjectionMatchingParameters{
+//                    {}, // max_shift
+//                    0.1f, // smooth_edge_percent
+//
+//                    /*projection_slice_z_radius=*/ 0.0005f,
+//                    /*projection_cutoff=*/ 0.5f,
+//                    /*projection_max_tilt_angle=*/ 45,
+//
+//                    /*highpass_filter=*/ {0.1, 0.05},
+//                    /*lowpass_filter=*/ {0.35, 0.1},
+//
+//                    /*max_iterations=*/ 2,
+//                    true, // center_shifts
+//                    output_directory / "debug_pm" // debug_directory
+//            };
 
-            const auto rotation_parameters = GlobalRotationParameters{
-                    /*highpass_filter=*/ {0.05, 0.05},
-                    /*lowpass_filter=*/ {0.25, 0.15},
-                    /*absolute_max_tilt_difference=*/ 70,
-                    /*solve_using_estimated_gradient=*/ false,
-                    /*interpolation_mode=*/ noa::InterpMode::LINEAR_FAST
-            };
-
-            const auto pairwise_cosine_parameters = PairwiseShiftParameters{
-                    /*highpass_filter=*/ {0.03, 0.03},
-                    /*lowpass_filter=*/ {0.25, 0.1},
-                    /*interpolation_mode=*/ noa::InterpMode::LINEAR_FAST,
-                    /*debug_directory=*/ output_directory / "debug_pairwise_shift"
-            };
-
-            const auto alignment_parameters = InitialGlobalAlignmentParameters{
-                    options["alignment_rotation_offset"].as<bool>(true),
-                    options["alignment_tilt_offset"].as<bool>(true),
-                    options["alignment_pairwise_shift"].as<bool>(true),
-                    options["alignment_save_input_stack"].as<bool>(false),
-                    options["alignment_save_aligned_stack"].as<bool>(true),
-                    output_directory
-            };
-
-            initial_global_alignment(original_stack_filename, metadata,
-                                     loading_parameters,
-                                     alignment_parameters,
-                                     rotation_parameters,
-                                     pairwise_cosine_parameters,
-                                     saving_parameters);
-
-            const auto project_matching_parameters = ProjectionMatchingParameters{
-                    {}, // max_shift
-                    0.1f, // smooth_edge_percent
-
-                    /*projection_slice_z_radius=*/ 0.0005f,
-                    /*projection_cutoff=*/ 0.5f,
-                    /*projection_max_tilt_angle=*/ 45,
-
-                    /*highpass_filter=*/ {0.1, 0.05},
-                    /*lowpass_filter=*/ {0.35, 0.1},
-
-                    /*max_iterations=*/ 2,
-                    true, // center_shifts
-                    output_directory / "debug_pm" // debug_directory
-            };
         }
 
         // TODO CTF, update tilt and elevation offset.
@@ -180,8 +128,6 @@ int main(int argc, char* argv[]) {
     noa::Session session("quinoa", "quinoa.log", noa::Logger::VERBOSE); // TODO set verbosity
     // TODO Set CUDA memory buffer
     // TODO Set number of cached cufft plans.
-
-//    noa::cuda::fft::PlanCache::set_limit(1);
 
     try {
         qn::Options options(argc, argv);

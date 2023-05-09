@@ -17,13 +17,14 @@ namespace qn {
         i32 index{};        // Index [0, N) of the slice within the array.
         i32 index_file{};   // Index [0, N) of the slice within the original file.
 
-        static constexpr Vec2<f32> center(i64 height, i64 width) noexcept {
-            // Just make it a function to make it less ambiguous
-            return {height / 2, width / 2};
+        template<typename Real = f32>
+        static constexpr Vec2<Real> center(i64 height, i64 width) noexcept {
+            return {height / 2, width / 2}; // center is defined at n // 2 (integer division)
         }
 
-        static constexpr Vec2<f32> center(const Shape4<i64>& shape) noexcept {
-            return center(shape[2], shape[3]);
+        template<typename Real = f32, size_t N>
+        static constexpr Vec2<Real> center(const Shape<i64, N>& shape) noexcept {
+            return center<Real>(shape[N - 2], shape[N - 1]);
         }
 
         static constexpr f64 UNSET_ROTATION_VALUE = std::numeric_limits<f64>::max();

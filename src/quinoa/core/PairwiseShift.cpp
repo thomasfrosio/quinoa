@@ -112,10 +112,8 @@ namespace qn {
         // These angles are flipped, since the cos-scaling is perpendicular to the axis of rotation.
         // So since the tilt axis is along Y, its stretching is along X.
         Vec2<f64> cos_factor{1};
-        if (cosine_stretch) {
-            cos_factor = {noa::math::cos(reference_angles[2]) / noa::math::cos(target_angles[2]),
-                          noa::math::cos(reference_angles[1]) / noa::math::cos(target_angles[1])};
-        }
+        if (cosine_stretch)
+            cos_factor = noa::math::cos(reference_angles.filter(2, 1)) / noa::math::cos(target_angles.filter(2, 1));
 
         // Cancel the difference (if any) in rotation and shift as well.
         const Double33 fwd_stretch_target_to_reference_d =

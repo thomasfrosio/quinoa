@@ -16,14 +16,7 @@ namespace qn {
         // Valid initialization, but mask_views() cannot be used.
         CommonArea() = default;
 
-        CommonArea(i64 max_slices, Device compute_device) {
-            const auto shape = Shape4<i64>{max_slices, 1, 1, 1};
-            const auto options = ArrayOption(compute_device, Allocator::DEFAULT_ASYNC);
-            m_inv_transforms = noa::memory::empty<Float23>(shape);
-            m_inv_transforms_on_device =
-                    compute_device.is_cpu() ? Array<Float23>{} :
-                    noa::memory::empty<Float23>(shape, options);
-        }
+        CommonArea(i64 max_slices, Device compute_device) { reserve(max_slices, compute_device); }
 
         // Given a stack geometry, set the common area.
         // If the slices are too different from each other, the common area might end up being too small.
@@ -57,11 +50,10 @@ namespace qn {
 
                 // Shift and stretch the current slice area to compare it with the common area.
                 const Double23 current_tilt_to_0deg = noa::geometry::affine2truncated(
-                        noa::geometry::translate(center) *
                         noa::geometry::linear2affine(noa::geometry::rotate(angles[0])) *
                         noa::geometry::linear2affine(noa::geometry::scale(cos_scale)) *
                         noa::geometry::linear2affine(noa::geometry::rotate(-angles[0])) *
-                        noa::geometry::translate(-center + slice.shifts));
+                        noa::geometry::translate(-slice.shifts)); // FIXME -shift
 
                 // Compute the area of the current view.
                 // Because the high tilts have a bigger field-of-view (which is encoded by the stretching),
@@ -142,8 +134,8 @@ namespace qn {
                 const View<f32>& output,
                 const MetadataStack& metadata,
                 const std::vector<i64>& indexes,
-                f32 smooth_edge_percent
-        ) {
+                f64 smooth_edge_percent
+        ) const {
             QN_CHECK(input.shape()[0] == static_cast<i64>(indexes.size()),
                      "The number of slices doesn't match the number of indexes");
             QN_CHECK(m_inv_transforms.size() <= m_inv_transforms.size(), "The maximum size is reached");
@@ -174,7 +166,7 @@ namespace qn {
                         noa::geometry::linear2affine(noa::geometry::rotate(angles[0])) *
                         noa::geometry::linear2affine(noa::geometry::scale(1 / cos_scale)) *
                         noa::geometry::linear2affine(noa::geometry::rotate(-angles[0])) *
-                        noa::geometry::translate(-m_common_area_center + current_slice.shifts);
+                        noa::geometry::translate(-m_common_area_center - current_slice.shifts);
 
                 inv_transforms(i, 0, 0, 0) = noa::geometry::affine2truncated(inv_common_area_to_view.as<f32>());
             }
@@ -187,7 +179,7 @@ namespace qn {
             // show the same area. Views that are excluded simply truncates the common area.
             const auto smooth_edge_size =
                     noa::math::max(input.shape().vec().filter(2, 3).as<f32>()) *
-                    smooth_edge_percent;
+                    static_cast<f32>(smooth_edge_percent);
             noa::geometry::ellipse(
                     input, output,
                     /*center=*/ m_common_area_center.as<f32>(),
@@ -202,7 +194,7 @@ namespace qn {
                 const View<f32>& output,
                 const MetadataSlice& metadata,
                 f64 smooth_edge_percent
-        ) {
+        ) const {
             QN_CHECK(input.shape()[0] == 1, "The input must not be batched");
             QN_CHECK(noa::all(m_common_area_radius >= 0), "Common area geometry is not initialized");
 
@@ -214,7 +206,7 @@ namespace qn {
                     noa::geometry::linear2affine(noa::geometry::rotate(angles[0])) *
                     noa::geometry::linear2affine(noa::geometry::scale(1 / cos_scale)) *
                     noa::geometry::linear2affine(noa::geometry::rotate(-angles[0])) *
-                    noa::geometry::translate(-m_common_area_center + metadata.shifts)).as<f32>();
+                    noa::geometry::translate(-m_common_area_center - metadata.shifts)).as<f32>();
 
             const auto smooth_edge_size = static_cast<f32>(
                     static_cast<f64>(noa::math::max(input.shape().filter(2, 3))) *
@@ -230,6 +222,15 @@ namespace qn {
 
         [[nodiscard]] const Vec2<f64>& center() const noexcept { return m_common_area_center; }
         [[nodiscard]] const Vec2<f64>& radius() const noexcept { return m_common_area_radius; }
+
+        void reserve(i64 max_slices, Device compute_device) {
+            const auto shape = Shape4<i64>{max_slices, 1, 1, 1};
+            const auto options = ArrayOption(compute_device, Allocator::DEFAULT_ASYNC);
+            m_inv_transforms = noa::memory::empty<Float23>(shape);
+            m_inv_transforms_on_device =
+                    compute_device.is_cpu() ? Array<Float23>{} :
+                    noa::memory::empty<Float23>(shape, options);
+        }
 
     private:
         Array<Float23> m_inv_transforms;
