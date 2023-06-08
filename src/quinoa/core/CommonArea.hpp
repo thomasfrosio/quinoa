@@ -16,7 +16,8 @@ namespace qn {
         // Valid initialization, but mask_views() cannot be used.
         CommonArea() = default;
 
-        CommonArea(i64 max_slices, Device compute_device) { reserve(max_slices, compute_device); }
+        template<typename Integer>
+        CommonArea(Integer max_slices, Device compute_device) { reserve(max_slices, compute_device); }
 
         // Given a stack geometry, set the common area.
         // If the slices are too different from each other, the common area might end up being too small.
@@ -107,7 +108,7 @@ namespace qn {
 
                 // Find the most problematic view (the view with the smallest area).
                 i64 index_with_smallest_diameter{0};
-                auto min_diameter = hw;
+                auto min_diameter = Vec2<f64>(noa::math::Limits<f64>::max());
                 for (size_t i = 0; i < areas.size(); ++i) {
                     if (!is_valid_index(static_cast<i64>(i)))
                         continue;
@@ -124,11 +125,21 @@ namespace qn {
             m_common_area_radius = common_area_diameter / 2;
             m_common_area_center = Vec2<f64>{
                     center + common_area.filter(0, 2) + m_common_area_radius};
+
+            // At this point, the indexes are the positions of the slices in the metadata.
+            // However, we want to return the positions of the slices in the stack, i.e. MetadataSlice.index.
+            // Admittedly, this is a bit confusing, but it seems more robust to use MetadataSlice.index so that
+            // it is independent of the order of the slices in the metadata and always matches the stack.
+            for (size_t i = 0; i < excluded_indexes.size(); ++i)
+                excluded_indexes[i] = metadata[i].index;
+
             return excluded_indexes;
         }
 
         // Applies the common area to the input views.
         // update_geometry() should have been called before calling this function.
+        // This function may be asynchronous depending on the device's current stream,
+        // a stream synchronization should be done between calls.
         void mask_views(
                 const View<f32>& input,
                 const View<f32>& output,
@@ -168,6 +179,8 @@ namespace qn {
                         noa::geometry::linear2affine(noa::geometry::rotate(-angles[0])) *
                         noa::geometry::translate(-m_common_area_center - current_slice.shifts);
 
+                // WARNING: Overwriting this buffer can lead to a data race if this function was already called
+                //          and the caller didn't synchronize inv_transforms_on_device's current stream.
                 inv_transforms(i, 0, 0, 0) = noa::geometry::affine2truncated(inv_common_area_to_view.as<f32>());
             }
 
@@ -177,9 +190,7 @@ namespace qn {
 
             // A common area is enforced, which will guarantees that the valid views in the stack
             // show the same area. Views that are excluded simply truncates the common area.
-            const auto smooth_edge_size =
-                    noa::math::max(input.shape().vec().filter(2, 3).as<f32>()) *
-                    static_cast<f32>(smooth_edge_percent);
+            const auto smooth_edge_size = static_cast<f32>(smooth_edge(smooth_edge_percent));
             noa::geometry::ellipse(
                     input, output,
                     /*center=*/ m_common_area_center.as<f32>(),
@@ -208,10 +219,7 @@ namespace qn {
                     noa::geometry::linear2affine(noa::geometry::rotate(-angles[0])) *
                     noa::geometry::translate(-m_common_area_center - metadata.shifts)).as<f32>();
 
-            const auto smooth_edge_size = static_cast<f32>(
-                    static_cast<f64>(noa::math::max(input.shape().filter(2, 3))) *
-                    smooth_edge_percent);
-
+            const auto smooth_edge_size = static_cast<f32>(smooth_edge(smooth_edge_percent));
             noa::geometry::ellipse(
                     input, output,
                     /*center=*/ m_common_area_center.as<f32>(),
@@ -223,13 +231,21 @@ namespace qn {
         [[nodiscard]] const Vec2<f64>& center() const noexcept { return m_common_area_center; }
         [[nodiscard]] const Vec2<f64>& radius() const noexcept { return m_common_area_radius; }
 
-        void reserve(i64 max_slices, Device compute_device) {
-            const auto shape = Shape4<i64>{max_slices, 1, 1, 1};
+        template<typename Integer, typename = std::enable_if_t<std::is_integral_v<Integer>>>
+        void reserve(Integer max_slices, Device compute_device) {
+            const auto shape = Shape4<i64>{static_cast<i64>(max_slices), 1, 1, 1};
             const auto options = ArrayOption(compute_device, Allocator::DEFAULT_ASYNC);
             m_inv_transforms = noa::memory::empty<Float23>(shape);
             m_inv_transforms_on_device =
                     compute_device.is_cpu() ? Array<Float23>{} :
                     noa::memory::empty<Float23>(shape, options);
+        }
+
+        [[nodiscard]] constexpr f64 smooth_edge(f64 smooth_edge_percent) const noexcept {
+            // The smooth edge percent is relative to the common area size, not the original image size.
+            auto smooth_edge_size = noa::math::max(m_common_area_radius * 2) * smooth_edge_percent;
+            smooth_edge_size = std::max(10., smooth_edge_size);
+            return smooth_edge_size;
         }
 
     private:

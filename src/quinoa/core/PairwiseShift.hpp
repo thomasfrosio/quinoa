@@ -14,8 +14,7 @@
 // ------------------------------------
 //
 // Concept:
-//  Find the per-view shift of the
-//  Go through the stack ordered by tilt angles, where each view is aligned to lower tilt neighbour (so by definition
+//  Go through the stack ordered by tilt angles, each view is aligned to lower tilt neighbour (so by definition
 //  the lowest tilt view is the global reference and is not aligned). The known shift and rotation difference between
 //  the target and the reference is corrected. The tilt and elevation, which are 3d transformations, cannot be
 //  corrected. Instead, a 2d cosine stretching is applied to estimate the tilt and elevation difference. Note that

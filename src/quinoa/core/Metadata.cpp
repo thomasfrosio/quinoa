@@ -117,13 +117,13 @@ namespace qn {
         m_slices = scheme.generate(count, rotation_angle);
     }
 
-    MetadataStack& MetadataStack::exclude(const std::vector<i32>& indexes_to_exclude) noexcept {
+    MetadataStack& MetadataStack::exclude(const std::vector<i64>& indexes_to_exclude) noexcept {
         const auto end_of_new_range = std::remove_if(
                 m_slices.begin(), m_slices.end(),
                 [&](const MetadataSlice& slice) {
-                    const i32 slice_index = slice.index;
+                    const i64 slice_index = slice.index;
                     return std::any_of(indexes_to_exclude.begin(), indexes_to_exclude.end(),
-                                       [=](i32 index_to_exclude) { return slice_index == index_to_exclude; });
+                                       [=](i64 index_to_exclude) { return slice_index == index_to_exclude; });
                 });
 
         m_slices.erase(end_of_new_range, m_slices.end());

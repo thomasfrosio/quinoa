@@ -7,8 +7,14 @@
 
 namespace qn {
     // Metadata of a 2d slice.
-    // The rotation center is fixed at n // 2, where n is the size of the axis.
-    // The shifts are applied before the rotations.
+    // * The shifts are applied before the rotations. These are "by how much the slice is shifted",
+    //   so to align the slice one must subtract the shifts.
+    // * The rotation center is fixed at n // 2, where n is the size of the axis.
+    // * The Euler angles are in degrees, ZYX extrinsic (). All angles are positive-CCW when looking
+    //   at the origin from the positive side. The rotation is "by how much the slice is rotated",
+    //   so to align the slice one must subtract the rotation. However, for the tilt and elevation,
+    //   these are simply the angle of the slices in 3d space, so to insert a slice in 3d space,
+    //   one must simply add these angles.
     struct MetadataSlice {
     public:
         Vec3<f64> angles{}; // Euler angles, in degrees, of the slice. zyx extrinsic (rotation, tilt, elevation)
@@ -19,7 +25,8 @@ namespace qn {
 
         template<typename Real = f32>
         static constexpr Vec2<Real> center(i64 height, i64 width) noexcept {
-            return {height / 2, width / 2}; // center is defined at n // 2 (integer division)
+            // Center is defined at n // 2 (integer division). We rely on this during resizing (as opposed to n / 2).
+            return {height / 2, width / 2};
         }
 
         template<typename Real = f32, size_t N>
@@ -38,7 +45,7 @@ namespace qn {
         bool exclude_start{};       // Exclude the first image from the first group.
         f32 per_view_exposure{};    // Per view exposure, in e-/A^2.
 
-        [[nodiscard]] std::vector<MetadataSlice> generate(i32 count, f64 rotation_angle = 0.f) const;
+        [[nodiscard]] std::vector<MetadataSlice> generate(i32 count, f64 rotation_angle = 0) const;
     };
 
     /// Metadata of a stack of 2D slices.
@@ -67,7 +74,7 @@ namespace qn {
         /// Excludes the slice(s) according to their "index" field.
         /// The metadata is sorted in ascending order according to the "index" field
         /// and the "index" field is reset from [0, N), N being the new slices count.
-        MetadataStack& exclude(const std::vector<i32>& indexes_to_exclude) noexcept;
+        MetadataStack& exclude(const std::vector<i64>& indexes_to_exclude) noexcept;
 
         /// (Stable) sorts the slices based on a given key.
         /// Valid keys: "index", "index_file", "tilt", "absolute_tilt", "exposure".

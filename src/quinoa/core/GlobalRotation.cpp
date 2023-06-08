@@ -24,7 +24,7 @@ namespace qn {
 
         // Allocate and prepare reference buffer. This will be compared with the stretched targets.
         m_reference_index = metadata_sorted[0].index; // lowest abs tilt
-        m_reference_rfft = noa::memory::empty<c32>(slice_shape.fft(), array_options);
+        m_reference_rfft = noa::memory::empty<c32>(slice_shape.rfft(), array_options);
         const auto reference_fft = m_reference_rfft.view();
         const auto reference = noa::fft::alias_to_real(reference_fft, slice_shape);
         stack.subregion(m_reference_index).to(reference);
@@ -51,7 +51,7 @@ namespace qn {
 
         // Allocate stretched-targets buffer.
         const auto targets_shape = Shape4<i64>{targets_count, 1, stack.shape()[2], stack.shape()[3]};
-        m_targets_stretched_rfft = noa::memory::empty<c32>(targets_shape.fft(), array_options);
+        m_targets_stretched_rfft = noa::memory::empty<c32>(targets_shape.rfft(), array_options);
         const auto targets_stretched_fft = m_targets_stretched_rfft.view();
         const auto targets_stretched = noa::fft::alias_to_real(targets_stretched_fft, targets_shape);
 
@@ -236,22 +236,7 @@ namespace qn {
             const MetadataStack& metadata,
             const GlobalRotationParameters& parameters
     ) const -> f32 {
-        auto make_xph_representable = [](f32 x, f32 h) {
-            // From https://github.com/boostorg/math/blob/develop/include/boost/math/differentiation/finite_difference.hpp
-            // Redefine h so that x + h is representable. Not using this trick leads to
-            // large error. The compiler flag -ffast-math evaporates these operations...
-            f32 temp = x + h;
-            h = temp - x;
-            // Handle the case x + h == x:
-            if (h == 0)
-                h = std::nextafter(x, (std::numeric_limits<f32>::max)()) - x;
-            return h;
-        };
-
-        f32 eps = std::numeric_limits<f32>::epsilon();
-        f32 h = std::pow(3 * eps, static_cast<f32>(1) / static_cast<f32>(3));
-        const f32 delta = make_xph_representable(rotation_offset, h);
-
+        const f32 delta = CentralFiniteDifference::delta(rotation_offset);
         const f32 yh = max_objective_fx_(rotation_offset + delta, metadata, parameters);
         const f32 ymh = max_objective_fx_(rotation_offset - delta, metadata, parameters);
         const f32 diff = yh - ymh;

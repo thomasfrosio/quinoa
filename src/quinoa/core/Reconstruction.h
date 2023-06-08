@@ -46,7 +46,7 @@ namespace qn::details {
             // For the reconstruction itself, we can prepare some buffers.
             std::tie(m_tiles, m_tiles_fft) = noa::fft::empty<float>(tiles_shape, options);
             std::tie(m_cube_padded, m_cube_padded_fft) = noa::fft::empty<float>(cube_padded_shape, options);
-            m_cube_padded_weight_fft = noa::memory::empty<float>(cube_padded_shape.fft(), options);
+            m_cube_padded_weight_fft = noa::memory::empty<float>(cube_padded_shape.rfft(), options);
 
             if (compute_device.gpu()) {
                 // To limit the number of synchronization and copies between GPU<->CPU, we reconstruct

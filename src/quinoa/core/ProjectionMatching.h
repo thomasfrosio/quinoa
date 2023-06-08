@@ -16,6 +16,7 @@
 #include "quinoa/core/CommonArea.hpp"
 #include "quinoa/core/Utilities.h"
 #include "quinoa/io/Logging.h"
+#include "quinoa/core/CubicGrid.hpp"
 
 // Projection matching
 // -------------------
@@ -31,37 +32,51 @@
 
 namespace qn {
     struct ProjectionMatchingParameters {
+        bool zero_pad_to_fast_fft_size{true};
+
+        f64 rotation_tolerance_abs{0.005};
+        f64 rotation_range{0.5};
+        f64 rotation_initial_step{0.15};
+
         f64 smooth_edge_percent{0.1};
 
-        f32 projection_slice_z_radius = 0.0005f;
+        f32 projection_slice_z_radius = 0.01f;
         f32 projection_cutoff = 0.5f;
         f64 projection_max_tilt_angle_difference = 50;
 
         Vec2<f32> highpass_filter{};
         Vec2<f32> lowpass_filter{};
 
-        i64 max_iterations = 5;
+        f64 allowed_shift_percent{0.005};
+
         Path debug_directory;
     };
 
     class ProjectionMatching {
     public:
-        ProjectionMatching(const noa::Shape4<i64>& shape,
+        [[nodiscard]]
+        static u64 predict_memory_usage(
+                const noa::Shape2<i64>& shape,
+                const MetadataStack& metadata,
+                const ProjectionMatchingParameters& parameters) noexcept;
+
+    public:
+        ProjectionMatching() = default;
+
+        ProjectionMatching(const noa::Shape2<i64>& shape,
                            noa::Device compute_device,
                            const MetadataStack& metadata,
                            const ProjectionMatchingParameters& parameters,
                            noa::Allocator allocator = noa::Allocator::DEFAULT_ASYNC);
 
-        f64 update(const Array<f32>& stack,
-                   MetadataStack& metadata,
-                   const CommonArea& common_area,
-                   const ProjectionMatchingParameters& parameters,
-                   bool shift_only,
-                   f64 rotation_offset_bound,
-                   std::optional<ThirdDegreePolynomial> initial_rotation_target = {});
+        void update(const View<f32>& stack,
+                    MetadataStack& metadata,
+                    const CommonArea& common_area,
+                    const CubicSplineGrid<f64, 1>& rotation_model,
+                    const ProjectionMatchingParameters& parameters);
 
     private:
-        [[nodiscard]] auto extract_peak_window_(const Vec2<f64>& max_shift) -> View<f32>;
+        [[nodiscard]] auto extract_peak_window_(const Vec2<f64>& max_shift) const -> View<f32>;
 
         static void set_reference_indexes_(
                 i64 target_index,
@@ -78,15 +93,13 @@ namespace qn {
                 i64 target_index,
                 const std::vector<i64>& reference_indexes);
 
-        [[nodiscard]] static ThirdDegreePolynomial poly_fit_rotation(const MetadataStack& metadata);
-
         void prepare_for_insertion_(
                 const View<f32>& stack,
                 const MetadataStack& metadata,
                 i64 target_index,
                 const std::vector<i64>& reference_indexes,
                 const CommonArea& common_area,
-                const ProjectionMatchingParameters& parameters);
+                const ProjectionMatchingParameters& parameters) const;
 
         void compute_target_reference_(
                 const MetadataStack& metadata,
@@ -94,7 +107,7 @@ namespace qn {
                 f64 target_rotation_offset,
                 const std::vector<i64>& reference_indexes,
                 const CommonArea& common_area,
-                const ProjectionMatchingParameters& parameters);
+                const ProjectionMatchingParameters& parameters) const;
 
         [[nodiscard]]
         auto select_peak_(
@@ -103,8 +116,9 @@ namespace qn {
                 i64 target_index,
                 f64 target_angle_offset,
                 const std::vector<i64>& reference_indexes,
-                const std::vector<Vec2<f64>>& reference_shift_offsets
-        ) -> std::pair<Vec2<f64>, f64>;
+                const std::vector<Vec2<f64>>& reference_shift_offsets,
+                const ProjectionMatchingParameters& parameters
+        ) const -> std::pair<Vec2<f64>, f64>;
 
         [[nodiscard]]
         auto project_and_correlate_(
@@ -115,7 +129,15 @@ namespace qn {
                 const std::vector<Vec2<f64>>& reference_shift_offsets,
                 const CommonArea& common_area,
                 const ProjectionMatchingParameters& parameters
-        ) -> std::pair<Vec2<f64>, f64>;
+        ) const -> std::pair<Vec2<f64>, f64>;
+
+        [[nodiscard]]
+        f64 run_projection_matching_(
+                const View<f32>& stack,
+                MetadataStack& metadata,
+                const CommonArea& common_area,
+                const ProjectionMatchingParameters& parameters,
+                const CubicSplineGrid<f64, 1>& rotation_target) const;
 
     private:
         // Device buffers.

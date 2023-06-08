@@ -5,59 +5,73 @@
 #include "quinoa/core/Optimizer.hpp"
 #include "quinoa/core/Utilities.h"
 #include "quinoa/core/CommonArea.hpp"
+#include "quinoa/core/Ewise.hpp"
 
 namespace {
     using namespace qn;
 
     // Data passed through the optimizer.
     struct OptimizerData {
-        ProjectionMatching* projector{};
+        const View<f32>* stack{};
+        const ProjectionMatching* projection_matching{};
         const ProjectionMatchingParameters* parameters{};
 
-        MetadataStack metadata;
-        CommonArea common_area;
+        MetadataStack metadata{};
+        CommonArea common_area{};
 
-        // This is set at each iteration so that the projector knows what target
-        // (and therefore projected-reference) to compute.
-        i64 target_index{};
-        std::vector<i64> reference_indexes;
-
-        // This is used to compute the global score of this optimization.
-        // Comparing the sum of these scores tells us how good the rotation
-        // of the global reference was.
-        std::vector<f64> scores;
-
-        // The shift offsets that were applied are saved to, in the same order as in the metadata.
-        // The offsets are used to restrain the shits of the next neighbour view.
-        std::vector<Vec2<f64>> shift_offsets;
+        const CubicSplineGrid<f64, 1>* rotation_model{};
     };
 }
 
 namespace qn {
+    u64 ProjectionMatching::predict_memory_usage(
+            const noa::Shape2<i64>& shape,
+            const MetadataStack& metadata,
+            const ProjectionMatchingParameters& parameters) noexcept {
+        i64 size_padded = std::max(shape[0], shape[1]) * 2;
+        if (parameters.zero_pad_to_fast_fft_size)
+            size_padded = noa::fft::next_fast_size(size_padded);
+        const auto size_padded_u = static_cast<u64>(size_padded);
+
+        const auto max_reference_count = static_cast<u64>(max_references_count_(metadata, parameters));
+
+        const u64 slices_elements = shape.as<u64>().elements() * (max_reference_count + 3);
+        const u64 slices_padded_elements = size_padded_u * size_padded_u * (max_reference_count + 3);
+        const u64 multiplicity_padded_rfft_elements = size_padded_u * (size_padded_u / 2 + 1);
+        const u64 peak_window = 256 * 256;
+        const u64 managed_buffers = max_reference_count * 25;
+
+        return slices_elements * slices_padded_elements *
+               multiplicity_padded_rfft_elements *
+               peak_window * managed_buffers * sizeof(f32);
+    }
+
     ProjectionMatching::ProjectionMatching(
-            const noa::Shape4<i64>& shape,
+            const noa::Shape2<i64>& shape,
             noa::Device compute_device,
             const MetadataStack& metadata,
             const ProjectionMatchingParameters& parameters,
             noa::Allocator allocator) {
         // Zero padding:
-        const i64 size_padded = std::max(shape[2], shape[3]) * 2;
+        i64 size_padded = std::max(shape[0], shape[1]) * 2;
+        if (parameters.zero_pad_to_fast_fft_size)
+            size_padded = noa::fft::next_fast_size(size_padded);
 
         // Find the maximum number of reference slices we'll need to hold at a given time.
         const i64 max_reference_count = max_references_count_(metadata, parameters);
-        const auto target_reference_shape = Shape4<i64>{2, 1, shape[2], shape[3]};
+        const auto target_reference_shape = Shape4<i64>{2, 1, shape[0], shape[1]};
         const auto target_reference_padded_shape = Shape4<i64>{2, 1, size_padded, size_padded};
 
         // Add an extra slice here to store the target at the end.
-        const auto slices_shape = Shape4<i64>{max_reference_count + 1, 1, shape[2], shape[3]};
+        const auto slices_shape = Shape4<i64>{max_reference_count + 1, 1, shape[0], shape[1]};
         const auto slices_padded_shape = Shape4<i64>{max_reference_count + 1, 1, size_padded, size_padded};
 
         // Device-only buffers.
         const auto device_options = ArrayOption(compute_device, allocator);
         m_slices = noa::memory::empty<f32>(slices_shape, device_options);
-        m_slices_padded_fft = noa::memory::empty<c32>(slices_padded_shape.fft(), device_options);
-        m_target_reference_fft = noa::memory::empty<c32>(target_reference_shape.fft(), device_options);
-        m_target_reference_padded_fft = noa::memory::empty<c32>(target_reference_padded_shape.fft(), device_options);
+        m_slices_padded_fft = noa::memory::empty<c32>(slices_padded_shape.rfft(), device_options);
+        m_target_reference_fft = noa::memory::empty<c32>(target_reference_shape.rfft(), device_options);
+        m_target_reference_padded_fft = noa::memory::empty<c32>(target_reference_padded_shape.rfft(), device_options);
         m_multiplicity_padded_fft = noa::memory::empty<f32>({1, 1, size_padded, size_padded / 2 + 1}, device_options);
         m_peak_window = noa::memory::empty<f32>({1, 1, 1, 256 * 256}, device_options);
 
@@ -70,148 +84,114 @@ namespace qn {
         m_reference_shifts_center2origin = noa::memory::like<Vec2<f32>>(m_reference_weights);
     }
 
-    f64 ProjectionMatching::update(
-            const Array<f32>& stack,
+    void ProjectionMatching::update(
+            const View<f32>& stack,
             MetadataStack& metadata,
             const CommonArea& common_area,
-            const ProjectionMatchingParameters& parameters,
-            bool shift_only,
-            f64 rotation_offset_bound,
-            std::optional<ThirdDegreePolynomial> initial_rotation_target
+            const CubicSplineGrid<f64, 1>& rotation_model,
+            const ProjectionMatchingParameters& parameters
     ) {
         qn::Logger::trace("Projection matching alignment...");
         noa::Timer timer;
         timer.start();
 
-        auto max_objective_function = [](u32, const f64* x, f64*, void* instance) -> f64 {
-            auto* data = static_cast<OptimizerData*>(instance);
+        const auto maximization_function = [](
+                u32 n_parameters, [[maybe_unused]] const f64* parameters,
+                f64* gradients, void* instance
+        ) -> f64 {
+            auto& data = *static_cast<OptimizerData*>(instance);
+            // TODO memoize parameters/gradients/score
+            //      Memoizer<std::array<f64, 3>, std::pair<std::array<f64, 3>, std::array<f64, 3>>>;
 
-            const auto [shift, score] = data->projector->project_and_correlate_(
-                    data->metadata,
-                    data->target_index,
-                    *x,
-                    data->reference_indexes,
-                    data->shift_offsets,
-                    data->common_area,
-                    *data->parameters
-            );
-            qn::Logger::debug("rotation offset={:> 7.4f}, score={:> 7.4f}", *x, score);
+            // Take a copy of the metadata, because the projection matching updates it and
+            // 1) we actually don't care about the shift updates from the projection matching at this point,
+            // 2) we want to use the same metadata for every evaluation.
+            auto metadata = data.metadata;
 
-            const auto target_index_u = static_cast<size_t>(data->target_index);
-            data->scores[target_index_u] = score;
-            data->shift_offsets[target_index_u] = shift;
+            const f64 score = data.projection_matching->run_projection_matching_(
+                    *data.stack, metadata, data.common_area, *data.parameters,
+                    *data.rotation_model);
+
+            // Numerically estimate the gradients (along each axis) using the central finite difference.
+            // This requires 2n evaluations, n being the number of parameters.
+            if (gradients != nullptr) {
+                // This is the same as the input parameters
+                f64* model_parameters = data.rotation_model->data();
+
+                for (u32 i = 0; i < n_parameters; ++i) {
+                    const f64 parameter = model_parameters[i];
+
+                    // Use 32-bits precision to make the delta larger (~0.007), making sure it's
+                    // not lost by noa, which uses 32-bits precisions for vector and matrices.
+                    const f64 delta = static_cast<f64>(CentralFiniteDifference::delta(static_cast<f32>(parameter)));
+
+                    model_parameters[i] = parameter - delta;
+                    const f64 score_minus = data.projection_matching->run_projection_matching_(
+                            *data.stack, metadata, data.common_area, *data.parameters,
+                            *data.rotation_model);
+
+                    model_parameters[i] = parameter + delta;
+                    const f64 score_plus = data.projection_matching->run_projection_matching_(
+                            *data.stack, metadata, data.common_area, *data.parameters,
+                            *data.rotation_model);
+
+                    gradients[i] = (score_plus - score_minus) / (2 * delta); // central finite difference
+                    model_parameters[i] = parameter; // reset original value
+                }
+            }
+
             return score;
         };
 
-        // Set up the optimizer.
+        // Set up the data used by the maximization function.
         OptimizerData optimizer_data;
-        optimizer_data.projector = this;
+        optimizer_data.stack = &stack;
+        optimizer_data.projection_matching = this;
         optimizer_data.parameters = &parameters;
         optimizer_data.metadata = metadata;
         optimizer_data.metadata.sort("absolute_tilt"); // TODO exposure?
         optimizer_data.common_area = common_area;
-        optimizer_data.common_area.reserve(m_slices.shape()[0], m_slices.device());
-        optimizer_data.reference_indexes.reserve(metadata.size());
+        optimizer_data.common_area.reserve(metadata.size(), m_slices.device());
+        optimizer_data.rotation_model = &rotation_model;
 
-        // The indexing to access these vector is the same as the metadata.
-        optimizer_data.shift_offsets = std::vector<Vec2<f64>>(metadata.size(), Vec2<f64>{0});
-        optimizer_data.scores = std::vector<f64>(metadata.size(), 0.);
-
+        // Set up the optimizer.
         const Optimizer optimizer(NLOPT_LN_SBPLX, 1);
-        optimizer.set_max_objective(max_objective_function, &optimizer_data);
-        optimizer.set_x_tolerance_abs(0.005);
-        const f64 bound = !shift_only ? rotation_offset_bound : 0;
-        optimizer.set_bounds(-bound, bound);
+        optimizer.set_max_objective(maximization_function, &optimizer_data);
+        const f64 bound = rotation_model.data()[0];
+        optimizer.set_bounds(bound - parameters.rotation_range, bound + parameters.rotation_range);
+        optimizer.set_x_tolerance_abs(parameters.rotation_tolerance_abs);
+        optimizer.set_initial_step(parameters.rotation_initial_step);
 
-        // For every slice (excluding the lowest tilt which defines the reference-frame), find the best
-        // geometry parameters using the previously aligned slice(s) as reference for alignment. The geometry
-        // parameters are, for each slice, the rotation and the (y,x) shifts.
-        const auto slice_count = static_cast<i64>(optimizer_data.metadata.size());
-        for (i64 target_index = 1; target_index < slice_count; ++target_index) {
-            const auto target_index_u = static_cast<size_t>(target_index);
+        // Optimize the rotation model by maximizing the normalized CC of the projection matching.
+        const f64 best_score = optimizer.optimize(rotation_model.data());
 
-            // The target.
-            optimizer_data.target_index = target_index;
-            auto& slice = optimizer_data.metadata[target_index];
+        // The optimizer can do some post-processing on the parameters, so the last projection matching
+        // might not have been run on these final parameters. As such, do a final pass with the actual
+        // best parameters returned by the optimizer.
+        const f64 final_score = run_projection_matching_(
+                stack, optimizer_data.metadata, common_area, parameters, rotation_model);
 
-            // Get the indexes of the reference views for this target view.
-            set_reference_indexes_(
-                    target_index, optimizer_data.metadata,
-                    parameters, optimizer_data.reference_indexes);
-
-            // Prepare the target and references for Fourier insertion.
-            prepare_for_insertion_(
-                    stack.view(), optimizer_data.metadata, target_index,
-                    optimizer_data.reference_indexes, optimizer_data.common_area, parameters);
-
-            // Either:
-            //  - impose no rotation offset and simply find the best shift given the current rotation.
-            //  - Add a rotation offset to match the curve and find the shift corresponding to this rotation.
-            const f64 rotation_offset_to_polynomial_curve =
-                    initial_rotation_target.has_value() ?
-                    initial_rotation_target.value()(slice.angles[1]) - slice.angles[0] : 0;
-            const auto [first_shift, first_score] = project_and_correlate_(
-                    optimizer_data.metadata,
-                    optimizer_data.target_index,
-                    rotation_offset_to_polynomial_curve,
-                    optimizer_data.reference_indexes,
-                    optimizer_data.shift_offsets,
-                    optimizer_data.common_area,
-                    *optimizer_data.parameters
-            );
-
-            // Add this score and shift offset. These will be updated by the maximization function.
-            optimizer_data.scores[target_index_u] = first_score;
-            optimizer_data.shift_offsets[target_index_u] = first_shift;
-            qn::Logger::debug("{:>02}: rotation offset={:> 6.3f}, score={:.6g}, shift={::> 6.3f}",
-                              target_index, rotation_offset_to_polynomial_curve, first_score, first_shift);
-
-            // Update the metadata to use this new shift and, optionally, new rotation.
-            slice.angles[0] += rotation_offset_to_polynomial_curve;
-            slice.shifts += first_shift.as<f64>();
-
-            // Find the best rotation offset (and its corresponding shift) by maximising the
-            // cross-correlation between the target and the projected-reference.
-            if (!shift_only) {
-                f64 x_rotation_offset{0}, fx_cc_score;
-                optimizer.optimize(&x_rotation_offset, &fx_cc_score);
-                qn::Logger::debug("{:>02}: rotation offset={:> 6.3f}, score={:.6g}, shift={::> 6.3f}",
-                                  target_index, x_rotation_offset, fx_cc_score,
-                                  optimizer_data.shift_offsets[target_index_u]);
-
-                // Update the metadata to use this new shift and new rotation.
-                slice.angles[0] += x_rotation_offset;
-                slice.shifts += optimizer_data.shift_offsets[target_index_u];
-            }
-        }
-
-        qn::Logger::trace("Projection matching alignment... took {}ms", timer.elapsed());
+        // Just for debugging, log this small difference, if any.
+        qn::Logger::debug("best_score={:.6g}, final_score:{:.6g}", best_score, final_score);
 
         // Update the metadata.
         for (const auto& updated_metadata: optimizer_data.metadata.slices()) {
             for (auto& original_slice: metadata.slices()) {
                 if (original_slice.index == updated_metadata.index) {
-                    qn::Logger::trace("{:>02},{},{}",
-                                      original_slice.index,
-                                      original_slice.angles - updated_metadata.angles,
-                                      original_slice.shifts - updated_metadata.shifts
-                    );
                     original_slice.angles = updated_metadata.angles;
                     original_slice.shifts = updated_metadata.shifts;
                 }
             }
         }
 
-        // Return the sum of the normalized CC scores. This is used to select the best "scenario"
-        // and the initial rotation of the global reference.
-        const f64 score = std::accumulate(optimizer_data.scores.begin(), optimizer_data.scores.end(), f64{0});
-        return score;
+        qn::Logger::trace("Projection matching alignment... took {}ms ({} evaluations)",
+                          timer.elapsed(), optimizer.number_of_evaluations());
     }
 }
 
 // Private methods:
 namespace qn {
-    auto ProjectionMatching::extract_peak_window_(const Vec2<f64>& max_shift) -> View<f32> {
+    auto ProjectionMatching::extract_peak_window_(const Vec2<f64>& max_shift) const -> View<f32> {
         const auto radius = noa::math::ceil(max_shift).as<i64>();
         const auto diameter = radius * 2 + 1;
         const auto shape = noa::fft::next_fast_shape(Shape4<i64>{1, 1, diameter[0], diameter[1]});
@@ -235,13 +215,18 @@ namespace qn {
         output_reference_indexes.clear();
         output_reference_indexes.reserve(static_cast<size_t>(max_index));
 
+        fmt::print("reproject={} from ", target_tilt_angle);
         for (i64 reference_index = 0; reference_index < max_index; ++reference_index) {
-            const f64 tilt_difference = std::abs(target_tilt_angle - metadata[reference_index].angles[1]);
+            const f64 reference_tilt = metadata[reference_index].angles[1];
+            const f64 tilt_difference = std::abs(target_tilt_angle - reference_tilt);
 
             // Do not include the target in the projected-reference to remove any auto-correlation.
-            if (reference_index != target_index && tilt_difference <= max_tilt_difference)
+            if (reference_index != target_index) { // && tilt_difference <= max_tilt_difference
                 output_reference_indexes.emplace_back(reference_index);
+                fmt::print("{},", reference_tilt);
+            }
         }
+        fmt::print("\n");
     }
 
     i64 ProjectionMatching::max_references_count_(
@@ -255,6 +240,7 @@ namespace qn {
         i64 max_count{3};
 
         const auto slice_count = static_cast<i64>(metadata.size());
+        const f64 max_tilt_difference = parameters.projection_max_tilt_angle_difference;
 
         // This is O(N^2), but it's fine because N is small (<60), and we do it once in the constructor.
         for (i64 target_index = 0; target_index < slice_count; ++target_index) {
@@ -265,9 +251,7 @@ namespace qn {
             i64 count = 0;
             for (i64 reference_index = 0; reference_index < max_index; ++reference_index) {
                 const f64 tilt_difference = std::abs(target_tilt_angle - metadata[reference_index].angles[1]);
-
-                if (reference_index != target_index &&
-                    noa::math::abs(metadata[reference_index].angles[1]) < parameters.projection_max_tilt_angle_difference)
+                if (reference_index != target_index && tilt_difference <= max_tilt_difference)
                     ++count;
             }
 
@@ -295,44 +279,6 @@ namespace qn {
         return neighbour_index;
     }
 
-    auto ProjectionMatching::poly_fit_rotation(
-            const MetadataStack& metadata
-    ) -> ThirdDegreePolynomial {
-        // Exclude the first view, assuming it's the global reference.
-        const auto rows = static_cast<i64>(metadata.size()) - 1;
-
-        // Find x in Ax=b. Shapes: A(M.N) * x(N.1) = b(M.1)
-        const Array<f64> A({1, 1, rows, 4});
-        const Array<f64> b({1, 1, rows, 1});
-        const auto A_ = A.accessor_contiguous<f64, 2>();
-        const auto b_ = b.accessor_contiguous_1d();
-
-        // d + cx + bx^2 + ax^3 = 0
-        for (i64 row = 0; row < rows; ++row) { // skip 0
-            const MetadataSlice& slice = metadata[row + 1];
-            const auto rotation = static_cast<f64>(slice.angles[0]);
-            const auto tilt = static_cast<f64>(slice.angles[1]);
-            A_(row, 0) = 1;
-            A_(row, 1) = tilt;
-            A_(row, 2) = tilt * tilt;
-            A_(row, 3) = tilt * tilt * tilt;
-            b_(row) = rotation;
-        }
-
-        // Least-square solution using SVD.
-        std::array<f64, 4> svd{};
-        std::array<f64, 4> x{};
-        noa::math::lstsq(
-                A.view(),
-                b.view(),
-                View<f64>(x.data(), {1, 1, 4, 1}),
-                0.,
-                View<f64>(svd.data(), 4)
-        );
-
-        return ThirdDegreePolynomial{x[3], x[2], x[1], x[0]};
-    }
-
     void ProjectionMatching::prepare_for_insertion_(
             const View<f32>& stack,
             const MetadataStack& metadata,
@@ -340,7 +286,7 @@ namespace qn {
             const std::vector<i64>& reference_indexes,
             const CommonArea& common_area,
             const ProjectionMatchingParameters& parameters
-    ) {
+    ) const {
         const auto references_count = static_cast<i64>(reference_indexes.size());
         const auto references_range = noa::indexing::slice_t{0, references_count};
 
@@ -354,9 +300,11 @@ namespace qn {
             const Vec2<f64>& reference_shifts = metadata[reference_index].shifts;
             const Vec3<f64> reference_angles = noa::math::deg2rad(metadata[reference_index].angles);
 
-            // TODO Weighting based on the order of collection? Or use exposure weighting?
-            // Multiplicity and weight.
-            reference_weights(i, 0, 0, 0) = 1; // FIXME?
+            // Weight by the angle difference. At 90, the weight is 0.
+            const auto tilt_difference = metadata[target_index].angles[1] - metadata[reference_index].angles[1];
+            constexpr f64 PI = noa::math::Constant<f64>::PI;
+            const f64 weight = noa::math::cos(tilt_difference * PI / 90) / 2 + 0.5;
+            reference_weights(i, 0, 0, 0) = static_cast<f32>(weight);
 
             // Get the references indexes. These are the indexes of the reference slices within the input stack.
             reference_batch_indexes(i, 0, 0, 0) = {metadata[reference_index].index, 0, 0, 0};
@@ -396,8 +344,9 @@ namespace qn {
             noa::memory::extract_subregions(stack, references, reference_batch_indexes, noa::BorderMode::NOTHING);
             input_reference_slices = references;
         }
+        noa::ewise_binary(input_reference_slices, reference_weights, references, noa::multiply_t{});
         common_area.mask_views(
-                input_reference_slices, references,
+                references, references,
                 metadata, reference_indexes, parameters.smooth_edge_percent);
 
         // Zero-pad.
@@ -436,7 +385,7 @@ namespace qn {
             const std::vector<i64>& reference_indexes,
             const CommonArea& common_area,
             const ProjectionMatchingParameters& parameters
-    ) {
+    ) const {
         // ...At this point
         //  - The zero padded rfft target and references are in m_slices_padded_fft
         //  - The references are phase-shifted and centered, ready for Fourier insertion.
@@ -482,7 +431,7 @@ namespace qn {
                 parameters.projection_slice_z_radius, false,
                 parameters.projection_cutoff);
         noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
-                noa::indexing::broadcast(reference_weights, references_padded_shape.fft()),
+                noa::indexing::broadcast(reference_weights, references_padded_shape.rfft()),
                 references_padded_shape,
                 multiplicity_padded_fft, slice_padded_shape,
                 Float22{}, insert_inv_references_rotation,
@@ -495,19 +444,16 @@ namespace qn {
                 reference_padded_fft, reference_padded_fft,
                 slice_padded_shape, slice_padded_center() + target_shifts.as<f32>());
 
-        // Correct for the multiplicity.
-        // If weight is 0 (i.e. less than machine epsilon), the frequency is set to 0.
-        // Otherwise, divide by the multiplicity.
+        // Correct for the multiplicity on the projected_reference.
+        // Everything below 1 is left unchanged because we do want to keep these frequencies down-weighted.
         noa::ewise_binary(reference_padded_fft, multiplicity_padded_fft,
-                          reference_padded_fft, noa::divide_safe_t{});
+                          reference_padded_fft, qn::divide_max_one_t{});
 
-        // For normalization, binary mask the target with the multiplicity to only keep
-        // the shared frequencies between the target and the projected reference.
-        // TODO Create new operator to merge these two calls.
-        // FIXME I think we should normalize to get a sampling function, and then multiply with the target.
-        noa::ewise_binary(multiplicity_padded_fft, 1e-6f, multiplicity_padded_fft, noa::greater_t{});
-        noa::ewise_binary(multiplicity_padded_fft, input_target_references_padded_fft.subregion(0),
-                          target_padded_fft, noa::multiply_t{});
+        // Apply the weights of the projected_reference onto the target.
+        // Here, everything below 1 is multiplied, effectively down-weighting the frequencies with low confidence
+        // or without any signal in the projected reference, but everything above 1 is left unchanged.
+        noa::ewise_binary(input_target_references_padded_fft.subregion(0), multiplicity_padded_fft,
+                          target_padded_fft, qn::multiply_min_one_t{});
 
         // Go back to real-space.
         noa::fft::c2r(target_reference_padded_fft, target_reference_padded);
@@ -535,8 +481,9 @@ namespace qn {
             i64 target_index,
             f64 target_angle_offset,
             const std::vector<i64>& reference_indexes,
-            const std::vector<Vec2<f64>>& shift_offsets
-    ) -> std::pair<Vec2<f64>, f64> {
+            const std::vector<Vec2<f64>>& shift_offsets,
+            const ProjectionMatchingParameters& parameters
+    ) const -> std::pair<Vec2<f64>, f64> {
 
         // Find the elliptical mask to apply onto the xmap to enforce a maximum shift.
         // The goal is to prevent large jumps in shift from one tilt to the next because we assume that
@@ -570,8 +517,8 @@ namespace qn {
 
         // Set an ellipse radius to account for small shifts.
         const auto ellipse_radius = noa::math::min(
-                Vec2<f64>{5},
-                xmap.shape().vec().filter(2, 3).as<f64>() * 0.005);
+                Vec2<f64>{4},
+                xmap.shape().vec().filter(2, 3).as<f64>() * parameters.allowed_shift_percent);
 
         // Increase performance by working on a small subregion located at the center of the xmap.
         const Vec2<f64> max_shift = ellipse_shift + ellipse_radius + 10;
@@ -597,6 +544,15 @@ namespace qn {
                 peak_window_center + ellipse_shift.as<f32>(),
                 ellipse_radius.as<f32>(), 0.f);
 
+        if (!parameters.debug_directory.empty()) {
+            noa::io::save(xmap,
+                          parameters.debug_directory /
+                          noa::string::format("xmap_{:>02}.mrc", target_index));
+            noa::io::save(peak_window,
+                          parameters.debug_directory /
+                          noa::string::format("xmap_rotated_{:>02}.mrc", target_index));
+        }
+
         // TODO Better fitting of the peak. 2D parabola?
         auto [peak_coordinate, peak_value] = noa::signal::fft::xpeak_2d<noa::fft::FC2FC>(peak_window);
         const Vec2<f32> shift_rotated = peak_coordinate - peak_window_center;
@@ -613,7 +569,7 @@ namespace qn {
             const std::vector<Vec2<f64>>& shift_offsets,
             const CommonArea& common_area,
             const ProjectionMatchingParameters& parameters
-    ) -> std::pair<Vec2<f64>, f64> {
+    ) const -> std::pair<Vec2<f64>, f64> {
         // First, compute the target and projected-reference slice.
         compute_target_reference_(
                 metadata, target_index, target_rotation_offset,
@@ -649,16 +605,12 @@ namespace qn {
                 target_reference_fft.subregion(0),
                 target_reference_fft.subregion(1),
                 xmap);
-        if (!parameters.debug_directory.empty()) {
-            noa::io::save(xmap, parameters.debug_directory /
-                                noa::string::format("xmap_{:>02}.mrc", target_index));
-        }
 
         // Select the best peak. The returned shifts are ready to be added to the metadata.
         const auto [shift, peak_value] = select_peak_(
                 xmap, metadata,
                 target_index, target_rotation_offset,
-                reference_indexes, shift_offsets);
+                reference_indexes, shift_offsets, parameters);
 
         // Normalize the peak.
         // TODO Check that this is equivalent to dividing by the auto-correlation peak.
@@ -667,5 +619,74 @@ namespace qn {
                                            static_cast<f64>(energy_reference));
 
         return {shift, score};
+    }
+
+    f64 ProjectionMatching::run_projection_matching_(
+            const View<f32>& stack,
+            MetadataStack& metadata,
+            const CommonArea& common_area,
+            const ProjectionMatchingParameters& parameters,
+            const CubicSplineGrid<f64, 1>& rotation_target) const {
+
+        // Store the score of every slice.
+        std::vector<f64> scores;
+        scores.reserve(metadata.size() - 1);
+
+        // We need to store the shift offsets for each slice. This vector must match the metadata.
+        std::vector shift_offsets(metadata.size(), Vec2<f64>{0});
+
+        // Compute the initial rotation of the global reference.
+        metadata[0].angles[0] = rotation_target.interpolate(Vec1<f64>{metadata[0].angles[1]}, 0);
+
+        // For every slice (excluding the lowest tilt which defines the reference-frame), move the rotation
+        // to the target rotation and update (y,x) shifts using the previously aligned slice(s) as reference
+        // for alignment.
+        std::vector<i64> reference_indexes;
+        for (i64 target_index = 1; target_index < static_cast<i64>(metadata.size()); ++target_index) {
+
+            // Get the indexes of the reference views for this target view.
+            set_reference_indexes_(
+                    target_index, metadata,
+                    parameters, reference_indexes);
+
+            // Prepare the target and references for Fourier insertion.
+            prepare_for_insertion_(
+                    stack, metadata, target_index,
+                    reference_indexes, common_area, parameters);
+
+            // Get the target rotation for this tilt.
+            auto& slice = metadata[target_index];
+            const f64 desired_rotation = rotation_target.interpolate(Vec1<f64>{slice.angles[1]}, 0);
+            const f64 rotation_offset = desired_rotation - slice.angles[0];
+
+            const auto [shift_offset, score] = project_and_correlate_(
+                    metadata,
+                    target_index,
+                    rotation_offset,
+                    reference_indexes,
+                    shift_offsets,
+                    common_area,
+                    parameters
+            );
+
+            qn::Logger::debug("{:>02}: rotation={:> 6.3f} ({:>+5.3f}), "
+                              "cc_score={:.6g}, shift={::> 6.3f} ({::>+5.3f})",
+                              target_index,
+                              desired_rotation, rotation_offset,
+                              score,
+                              slice.shifts, shift_offset);
+
+            // Update the metadata to use this new shift and new rotation in the next projected reference.
+            slice.angles[0] += rotation_offset; // or slice.angles[0] = desired_rotation
+            slice.shifts += shift_offset;
+
+            scores.push_back(score);
+            shift_offsets[static_cast<size_t>(target_index)] = shift_offset;
+        }
+
+        // Return the sum of the normalized CC scores. This is used to score this rotation target(s).
+        const auto score = std::accumulate(scores.begin(), scores.end(), f64{0});
+        qn::Logger::debug("total score={:.6g}", score);
+        return score;
     }
 }

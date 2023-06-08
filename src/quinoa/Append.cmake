@@ -11,12 +11,24 @@ set(QUINOA_SOURCES
         src/quinoa/io/YAML.h
 
         src/quinoa/core/Alignment.h
+        src/quinoa/core/Alignment.cpp
         src/quinoa/core/Metadata.cpp
         src/quinoa/core/Metadata.h
         src/quinoa/core/Stack.hpp
         src/quinoa/core/Optimizer.hpp
         src/quinoa/core/Utilities.h
         src/quinoa/core/CommonArea.hpp
+
+        src/quinoa/core/Ewise.hpp
+        src/quinoa/core/Ewise.cu
+
+        src/quinoa/core/CTF.hpp
+        src/quinoa/core/CTF.cpp
+
+        src/quinoa/core/Plot.hpp
+
+        src/quinoa/core/GridSearch1D.hpp
+        src/quinoa/core/CubicGrid.hpp
 
         src/quinoa/core/PairwiseShift.hpp
         src/quinoa/core/PairwiseShift.cpp

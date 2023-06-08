@@ -40,7 +40,7 @@ namespace qn {
                           "Area match: {}{}\n"
                           "Smooth edge: {}%",
                           m_xmap.device(), cosine_stretch, area_match,
-                          area_match ? noa::string::format(" (max area loss: {:.3f})", max_area_loss_percent) : "",
+                          area_match ? noa::string::format(" (max area loss: {}%)", max_area_loss_percent) : "",
                           smooth_edge_percent * 100);
         noa::Timer timer;
         timer.start();

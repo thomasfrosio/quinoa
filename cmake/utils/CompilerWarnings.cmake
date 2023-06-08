@@ -51,3 +51,28 @@ function(set_cxx_compiler_warnings interface)
     # Only add the warnings for the C++ language, e.g. nvcc doesn't support these warnings.
     target_compile_options(${interface} INTERFACE $<$<COMPILE_LANGUAGE:CXX>: ${PRJ_WARNINGS}>)
 endfunction()
+
+function(set_cuda_compiler_warnings interface)
+    if (NOT QN_ENABLE_WARNINGS)
+        set(PRJ_CUDA_WARNINGS --disable-warnings)
+    else ()
+        set(PRJ_CUDA_WARNINGS
+                --Wreorder # Generate warnings when member initializers are reordered.
+                --Wdefault-stream-launch # Generate warning when an explicit stream argument is not provided in the <<<...>>> kernel launch syntax.
+                --Wext-lambda-captures-this # Generate warning when an extended lambda implicitly captures 'this'.
+                )
+    endif ()
+
+    if (QN_ENABLE_WARNINGS_AS_ERRORS)
+        set(PRJ_CUDA_WARNINGS ${PRJ_CUDA_WARNINGS} -Werror all-warnings)
+    endif ()
+
+    if (CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA")
+        set(PRJ_WARNINGS ${PRJ_CUDA_WARNINGS})
+    else ()
+        message(AUTHOR_WARNING "No compiler warnings set for '${CMAKE_CUDA_COMPILER_ID}' compiler.")
+    endif ()
+
+    # Only add the warnings for the CUDA language.
+    target_compile_options(${interface} INTERFACE $<$<COMPILE_LANGUAGE:CUDA>: ${PRJ_WARNINGS}>)
+endfunction()

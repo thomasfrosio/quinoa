@@ -36,11 +36,11 @@ namespace qn {
             constexpr std::string_view exclude_key = "preprocessing_exclude_view_indexes";
             const auto exclude_node = options[exclude_key.data()];
             if (!exclude_node.IsNull()) {
-                std::vector<i32> exclude_views_idx;
+                std::vector<i64> exclude_views_idx;
                 if (exclude_node.IsSequence())
-                    exclude_views_idx = exclude_node.as<std::vector<i32>>();
+                    exclude_views_idx = exclude_node.as<std::vector<i64>>();
                 else if (exclude_node.IsScalar())
-                    exclude_views_idx.emplace_back(exclude_node.as<i32>());
+                    exclude_views_idx.emplace_back(exclude_node.as<i64>());
                 else
                     QN_THROW("The value of \"{}\" is not recognized", exclude_key);
                 metadata.exclude(exclude_views_idx);
@@ -48,42 +48,49 @@ namespace qn {
         }
 
         // Alignment.
-        if (options["alignment_run"].as<bool>(true)) {
+        const bool alignment = options["alignment_run"].as<bool>(true);
+        const bool alignment_pairwise_matching = options["alignment_pairwise_matching"].as<bool>(true);
+        const bool alignment_ctf_estimate = options["alignment_ctf_estimate"].as<bool>(true);
+        const bool alignment_projection_matching = options["alignment_projection_matching"].as<bool>(true);
+
+        GridSearch1D grid_search_1d(2, 0.5);
+        grid_search_1d.for_each([](f64 rotation) { qn::Logger::trace("rotation {}", rotation); });
+
+        if (alignment) {
             const auto alignment_max_resolution = options["alignment_max_resolution"].as<f64>(10);
 
-            const auto pairwise_alignment_parameters = PairwiseAlignmentParameters {
-                /*compute_device=*/ compute_device,
-                /*maximum_resolution=*/ alignment_max_resolution,
-                /*search_rotation_offset=*/ options["alignment_rotation_offset"].as<bool>(true),
-                /*search_tilt_offset=*/ options["alignment_tilt_offset"].as<bool>(true),
-                /*output_directory=*/ output_directory,
-                /*debug_directory=*/ output_directory / "debug_pairwise",
-            };
-            pairwise_alignment(original_stack_filename, metadata,
-                               pairwise_alignment_parameters);
+            if (alignment_pairwise_matching) {
+                const auto pairwise_alignment_parameters = PairwiseAlignmentParameters{
+                        /*compute_device=*/ compute_device,
+                        /*maximum_resolution=*/ alignment_max_resolution,
+                        /*search_rotation_offset=*/ options["alignment_rotation_offset"].as<bool>(true),
+                        /*search_tilt_offset=*/ options["alignment_tilt_offset"].as<bool>(true),
+                        /*output_directory=*/ output_directory,
+                        /*debug_directory=*/ output_directory / "debug_pairwise",
+                };
+                pairwise_alignment(original_stack_filename, metadata,
+                                   pairwise_alignment_parameters);
+            }
 
-//            const auto project_matching_parameters = ProjectionMatchingParameters{
-//                    {}, // max_shift
-//                    0.1f, // smooth_edge_percent
-//
-//                    /*projection_slice_z_radius=*/ 0.0005f,
-//                    /*projection_cutoff=*/ 0.5f,
-//                    /*projection_max_tilt_angle=*/ 45,
-//
-//                    /*highpass_filter=*/ {0.1, 0.05},
-//                    /*lowpass_filter=*/ {0.35, 0.1},
-//
-//                    /*max_iterations=*/ 2,
-//                    true, // center_shifts
-//                    output_directory / "debug_pm" // debug_directory
-//            };
+            if (alignment_ctf_estimate) {
+                ctf_alignment(original_stack_filename, metadata);
+            }
 
+            if (alignment_projection_matching) {
+                const auto projection_matching_alignment_parameters = ProjectionMatchingAlignmentParameters{
+                        /*compute_device=*/ compute_device,
+                        /*maximum_resolution=*/ alignment_max_resolution,
+                        //alignment_rotation_offset
+                        /*search_rotation_offset=*/ options["alignment_rotation_offset"].as<bool>(true),
+                        /*output_directory=*/ output_directory,
+                        /*debug_directory=*/ ""//output_directory / "debug_projection_matching"
+                };
+
+                metadata = projection_matching_alignment(
+                        original_stack_filename, metadata,
+                        projection_matching_alignment_parameters);
+            }
         }
-
-        // TODO CTF, update tilt and elevation offset.
-        // TODO Another initial global alignment
-
-        // TODO Projection global alignment
 
 //        if (options["reconstruction_run"].as<bool>(true)) {
 //            const auto reconstruction_resolution = options["reconstruction_resolution"].as<double>(14);
@@ -119,8 +126,21 @@ namespace qn {
 //        }
 
         // TODO Once reconstructed, molecular mask and forward project to remove noise, then start alignment again?
-        // TODO CTF (maybe one day...)
     }
+}
+
+#include "quinoa/core/CubicGrid.hpp"
+
+void test_grid() {
+    using namespace qn;
+
+    auto grid = CubicSplineGrid<f64, 1>(/*resolution=*/ Vec1<i64>{3}, /*channels=*/ 1);
+    grid.data()[0] = 1.5;
+    grid.data()[1] = 1.87;
+    grid.data()[2] = 0.75;
+
+    const f64 interpolant = grid.interpolate(Vec1<f64>{0.45}, 0);
+    qn::Logger::info("interpolant={}", interpolant);
 }
 
 int main(int argc, char* argv[]) {
@@ -128,6 +148,8 @@ int main(int argc, char* argv[]) {
     noa::Session session("quinoa", "quinoa.log", noa::Logger::VERBOSE); // TODO set verbosity
     // TODO Set CUDA memory buffer
     // TODO Set number of cached cufft plans.
+
+//    test_grid();
 
     try {
         qn::Options options(argc, argv);
