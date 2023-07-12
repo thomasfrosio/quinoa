@@ -197,7 +197,7 @@ namespace qn {
         const auto shape = noa::fft::next_fast_shape(Shape4<i64>{1, 1, diameter[0], diameter[1]});
         return m_peak_window
                 .view()
-                .subregion(noa::indexing::ellipsis_t{}, noa::indexing::slice_t{0, shape.elements()})
+                .subregion(noa::indexing::Ellipsis{}, noa::indexing::Slice{0, shape.elements()})
                 .reshape(shape);
     }
 
@@ -288,7 +288,7 @@ namespace qn {
             const ProjectionMatchingParameters& parameters
     ) const {
         const auto references_count = static_cast<i64>(reference_indexes.size());
-        const auto references_range = noa::indexing::slice_t{0, references_count};
+        const auto references_range = noa::indexing::Slice{0, references_count};
 
         const auto reference_weights = m_reference_weights.view().subregion(references_range);
         const auto reference_batch_indexes = m_reference_batch_indexes.view().subregion(references_range);
@@ -319,8 +319,8 @@ namespace qn {
         }
 
         // We are going to store the target and the references next to each other.
-        const auto target_references_range = noa::indexing::slice_t{0, references_count + 1};
-        const auto only_references_range = noa::indexing::slice_t{1, references_count + 1};
+        const auto target_references_range = noa::indexing::Slice{0, references_count + 1};
+        const auto only_references_range = noa::indexing::Slice{1, references_count + 1};
         const View<f32> target_references = m_slices.view().subregion(target_references_range);
         const View<f32> references = target_references.subregion(only_references_range);
 
@@ -339,7 +339,7 @@ namespace qn {
             // If the reference slices are already consecutive, no need to copy to a new array.
             const auto start = reference_batch_indexes(0, 0, 0, 0)[0];
             const auto end = start + references_count;
-            input_reference_slices = stack.subregion(noa::indexing::slice_t{start, end});
+            input_reference_slices = stack.subregion(noa::indexing::Slice{start, end});
         } else {
             noa::memory::extract_subregions(stack, references, reference_batch_indexes, noa::BorderMode::NOTHING);
             input_reference_slices = references;
@@ -391,9 +391,9 @@ namespace qn {
         //  - The references are phase-shifted and centered, ready for Fourier insertion.
         const auto references_count = static_cast<i64>(reference_indexes.size());
         const View<const c32> input_target_references_padded_fft = m_slices_padded_fft.view()
-                .subregion(noa::indexing::slice_t{0, references_count + 1});
+                .subregion(noa::indexing::Slice{0, references_count + 1});
 
-        const auto references_range = noa::indexing::slice_t{0, references_count};
+        const auto references_range = noa::indexing::Slice{0, references_count};
         const auto reference_weights = m_reference_weights.view().subregion(references_range);
         const auto insert_inv_references_rotation = m_insert_inv_references_rotation.view().subregion(references_range);
 
@@ -423,7 +423,7 @@ namespace qn {
         const auto slice_padded_shape = Shape4<i64>{1, 1, size_padded(), size_padded()};
 
         noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
-                input_target_references_padded_fft.subregion(noa::indexing::slice_t{1, references_count + 1}),
+                input_target_references_padded_fft.subregion(noa::indexing::Slice{1, references_count + 1}),
                 references_padded_shape,
                 reference_padded_fft, slice_padded_shape,
                 Float22{}, insert_inv_references_rotation,
@@ -459,7 +459,7 @@ namespace qn {
         noa::fft::c2r(target_reference_padded_fft, target_reference_padded);
 
         // The target and the projected reference are saved next to each other.
-        const auto target_reference = m_slices.view().subregion(noa::indexing::slice_t{0, 2});
+        const auto target_reference = m_slices.view().subregion(noa::indexing::Slice{0, 2});
         noa::memory::resize(target_reference_padded, target_reference);
 
         // Apply the area mask again.
@@ -574,7 +574,7 @@ namespace qn {
         compute_target_reference_(
                 metadata, target_index, target_rotation_offset,
                 reference_indexes, common_area, parameters);
-        const auto target_reference = m_slices.subregion(noa::indexing::slice_t{0, 2});
+        const auto target_reference = m_slices.subregion(noa::indexing::Slice{0, 2});
         const auto target = target_reference.subregion(0);
         const auto reference = target_reference.subregion(1);
 

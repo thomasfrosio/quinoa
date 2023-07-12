@@ -1,6 +1,8 @@
 #pragma once
 
 #include <noa/Math.hpp>
+#include <noa/IO.hpp>
+
 #include "quinoa/Types.h"
 
 namespace qn {
@@ -86,7 +88,7 @@ namespace qn {
     [[nodiscard]] constexpr bool is_consecutive_range(const View<Vec4<Int>>& sequence, Int step = 1) noexcept {
         NOA_ASSERT(noa::indexing::is_contiguous_vector(sequence));
         const auto* range = sequence.get();
-        for (i64 i = 1; i < sequence.size(); ++i)
+        for (i64 i = 1; i < sequence.ssize(); ++i)
             if (range[i - 1][0] + step != range[i][0])
                 return false;
         return true;
@@ -117,6 +119,10 @@ namespace qn {
     inline void rescale_shifts(MetadataStack& metadata, Vec2<f64> scale) {
         for (auto& slice: metadata.slices())
             slice.shifts *= scale;
+    }
+
+    inline void rescale_shifts(MetadataStack& metadata, Vec2<f64> input_spacing, Vec2<f64> output_spacing) {
+        rescale_shifts(metadata, input_spacing / output_spacing);
     }
 
     // Move the average untilted-shift to 0.
@@ -271,5 +277,28 @@ namespace qn {
         );
 
         return ThirdDegreePolynomial{x[3], x[2], x[1], x[0]};
+    }
+
+    template<typename Real>
+    void save_vector_to_text(View<Real> x, const Path& filename) {
+        NOA_CHECK(noa::indexing::is_contiguous_vector_batched(x), "");
+
+        // Make sure it is dereferenceable and ready to read.
+        Array<std::remove_const_t<Real>> x_cpu;
+        if (!x.is_dereferenceable()) {
+            x_cpu = x.to_cpu();
+            x = x_cpu.view();
+        }
+
+        const i64 size = x.shape().pop_front().elements();
+        const i64 batches = x.shape()[0];
+        x.eval();
+
+        std::string format;
+        for (i64 i = 0; i < batches; ++i) {
+            const auto span = noa::Span(x.subregion(i).data(), size);
+            format += fmt::format("{}\n", fmt::join(span, ","));
+        }
+        noa::io::save_text(format, filename);
     }
 }

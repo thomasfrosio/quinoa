@@ -29,10 +29,9 @@ namespace qn {
     ///       2) It is incomplete (e.g. result_to_string doesn't exist).
     ///       3) It uses std::vector but in our case a std::array would be more appropriate.
     struct Optimizer {
-        Optimizer(nlopt_algorithm algorithm, u32 variables) {
-            pointer = nlopt_create(algorithm, variables);
+        Optimizer(nlopt_algorithm algorithm, i64 variables) {
+            pointer = nlopt_create(algorithm, safe_cast<u32>(variables));
             QN_CHECK(pointer != nullptr, "Failed to create the optimizer");
-            qn::Logger::trace("Optimizer created, using: {}", nlopt_algorithm_name(algorithm));
         }
 
         ~Optimizer() {
@@ -70,6 +69,11 @@ namespace qn {
 
         void set_x_tolerance_abs(f64 tolerance) const {
             const nlopt_result result = nlopt_set_xtol_abs1(pointer, tolerance);
+            QN_CHECK(result >= 0, "Failed with status: {}", nlopt_result_to_string(result));
+        }
+
+        void set_x_tolerance_abs(const f64* tolerance) const {
+            const nlopt_result result = nlopt_set_xtol_abs(pointer, tolerance);
             QN_CHECK(result >= 0, "Failed with status: {}", nlopt_result_to_string(result));
         }
 
@@ -147,6 +151,16 @@ namespace qn {
             if (h == 0)
                 h = std::nextafter(x, (std::numeric_limits<Real>::max)()) - x;
             return h;
+        }
+
+        template<typename Real>
+        [[nodiscard]] static constexpr Real get(
+                Real fx_minus_delta,
+                Real fx_plus_delta,
+                Real delta
+        ) noexcept {
+            const auto diff = fx_plus_delta - fx_minus_delta;
+            return diff / (2 * delta);
         }
     };
 }

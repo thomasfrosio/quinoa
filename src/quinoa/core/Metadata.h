@@ -84,6 +84,7 @@ namespace qn {
         [[nodiscard]] constexpr const std::vector<MetadataSlice>& slices() const noexcept { return m_slices; }
         [[nodiscard]] constexpr std::vector<MetadataSlice>& slices() noexcept { return m_slices; }
         [[nodiscard]] size_t size() const noexcept { return m_slices.size(); }
+        [[nodiscard]] i64 ssize() const noexcept { return static_cast<i64>(size()); }
 
         /// Returns a view of the slice at \p idx, as currently sorted in this instance (see sort()).
         template<typename T, typename = std::enable_if_t<noa::traits::is_int_v<T>>>

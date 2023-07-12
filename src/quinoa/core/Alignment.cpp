@@ -1,4 +1,5 @@
 #include "quinoa/core/Alignment.h"
+#include "Utilities.h"
 #include "quinoa/core/Optimizer.hpp"
 #include "quinoa/core/Stack.hpp"
 
@@ -161,10 +162,10 @@ namespace qn {
                 /*compute_device=*/ Device("gpu"),
                 /*median_filter_window=*/ int32_t{1},
                 /*precise_cutoff=*/ true,
-                /*rescale_target_resolution=*/ 7.,
+                /*rescale_target_resolution=*/ -1,
                 /*rescale_min_size=*/ 1024,
                 /*exposure_filter=*/ false,
-                /*highpass_parameters=*/ {0.01, 0.01},
+                /*highpass_parameters=*/ {0.02, 0.02},
                 /*lowpass_parameters=*/ {0.5, 0.05},
                 /*normalize_and_standardize=*/ true,
                 /*smooth_edge_percent=*/ 0.02f,
@@ -172,34 +173,50 @@ namespace qn {
         };
         auto stack_loader = StackLoader(tilt_series_filename, loading_parameters);
 
-        // Scale the metadata shifts to the current sampling rate.
-        const auto pre_scale = stack_loader.file_spacing() / stack_loader.stack_spacing();
-        for (auto& slice: tilt_series_metadata.slices())
-            slice.shifts *= pre_scale;
+        rescale_shifts(tilt_series_metadata, stack_loader.file_spacing(), stack_loader.stack_spacing());
 
-        const auto patch_shape = Shape2<i64>{512, 512};
-        const auto patch_step = Vec2<i64>{256, 256};
+        const f64 spacing = noa::math::sum(stack_loader.stack_spacing()) / 2 ;
+        const i64 patch_size = noa::fft::next_fast_size(512);
+        const i64 patch_step = noa::fft::next_fast_size(256);
         const auto delta_z_range_nanometers = Vec2<f64>{-50, 50}; // nm
-        const auto fitting_range = Vec2<f64>{40, 10}; // angstrom
+        const auto delta_z_shift_nanometers = 150.;
+        const auto max_tilt_for_average = 90.;
+        const bool fit_phase_shift = false;
+        const bool flip_rotation_to_match_defocus_ramp = false;
 
-        const f64 spacing = stack_loader.stack_spacing()[0]; // precise_cutoff=true enforces a isotropic spacing
-        const f64 defocus = 2;
-        const f64 voltage = 300;
-        const f64 amplitude = 0.01;
-        const f64 cs = 2.7;
-        const f64 phase_shift = 0;
-        const f64 bfactor = 0;
-        const auto ctf_isotropic = CTFIsotropic64(
-                spacing, defocus, voltage, amplitude, cs, phase_shift, bfactor
+        CTF::FittingRange fitting_range({40, 8}, spacing, patch_size);
+
+        const bool fit_astigmatism = false;
+        f64 astigmatism_value{0};
+        f64 astigmatism_angle{0};
+
+        auto ctf_isotropic = CTFIsotropic64(
+                spacing,
+                /*defocus=*/ 2.5,
+                /*voltage=*/ 300,
+                /*amplitude=*/ 0.07,
+                /*cs=*/ 2.7,
+                /*phase_shift=*/ 0,
+                /*bfactor=*/ 0
+        );
+
+        auto ctf_fitter = CTF(stack_loader.slice_shape(), patch_size, patch_step, Device("gpu"));
+
+        ctf_fitter.fit_average(
+                stack_loader,
+                tilt_series_metadata,
+                fitting_range,
+                ctf_isotropic,
+                delta_z_range_nanometers,
+                delta_z_shift_nanometers,
+                max_tilt_for_average,
+                fit_phase_shift,
+                fit_astigmatism,
+                astigmatism_value,
+                astigmatism_angle,
+                flip_rotation_to_match_defocus_ramp,
+                ""
                 );
-
-        const auto stack_shape = stack_loader.slice_shape().push_front(Vec2<i64>{tilt_series_metadata.size(), 1});
-        auto ctf = CTF(stack_shape, patch_shape, patch_step, Device("gpu"));
-
-        ctf.fit_global(stack_loader, tilt_series_metadata,
-                       patch_shape, patch_step, delta_z_range_nanometers,
-                       fitting_range, false, ctf_isotropic,
-                       "/home/thomas/Projects/quinoa/tests/ribo_ctf/ctf");
     }
 
     MetadataStack projection_matching_alignment(

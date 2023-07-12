@@ -149,11 +149,11 @@ namespace qn {
         ) const {
             QN_CHECK(input.shape()[0] == static_cast<i64>(indexes.size()),
                      "The number of slices doesn't match the number of indexes");
-            QN_CHECK(m_inv_transforms.size() <= m_inv_transforms.size(), "The maximum size is reached");
+            QN_CHECK(m_inv_transforms.ssize() <= m_inv_transforms.ssize(), "The maximum size is reached");
             QN_CHECK(noa::all(m_common_area_radius >= 0), "Common area geometry is not initialized");
 
             // Get the matrices.
-            const auto slice_op = noa::indexing::slice_t{0, indexes.size()};
+            const auto slice_op = noa::indexing::Slice{0, indexes.size()};
             View inv_transforms = m_inv_transforms.view().subregion(slice_op);
             View inv_transforms_on_device =
                     m_inv_transforms_on_device.is_empty() ? View<Float23>{} :

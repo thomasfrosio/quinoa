@@ -1,16 +1,25 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.21)
 
 project(quinoa
         LANGUAGES CXX CUDA
         VERSION 0.1.0
-        HOMEPAGE_URL https://github.com/ffyr2w/quinoa
+        HOMEPAGE_URL https://github.com/thomasfrosio/quinoa
         )
+
+set(CMAKE_CXX_STANDARD 17)
 
 # ---------------------------------------------------------------------------------------
 # Project setup
 # ---------------------------------------------------------------------------------------
 # Project options
 include(${PROJECT_SOURCE_DIR}/cmake/utils/ProjectOptions.cmake)
+#include(CheckIPOSupported)
+#check_ipo_supported(RESULT result OUTPUT output)
+#if(result)
+#    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+#else()
+#    message(SEND_ERROR "IPO is not supported: ${output}")
+#endif()
 
 # Set up the C++ compiler.
 add_library(quinoa_compiler_option INTERFACE)
@@ -27,15 +36,16 @@ target_compile_options(quinoa_compiler_option INTERFACE $<$<COMPILE_LANGUAGE:CUD
 # Gather dependencies.
 add_library(quinoa_libraries INTERFACE)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/noa.cmake)
+include(${PROJECT_SOURCE_DIR}/cmake/ext/spdlog.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/yaml-cpp.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/nlopt.cmake)
-include(${PROJECT_SOURCE_DIR}/cmake/ext/matplotcpp.cmake)
-target_link_libraries(quinoa_libraries INTERFACE
-        noa::noa
-        yaml-cpp::yaml-cpp
-        nlopt
-        matplot
-        )
+target_link_libraries(quinoa_libraries
+    INTERFACE
+    noa::noa
+    spdlog::spdlog
+    yaml-cpp::yaml-cpp
+    nlopt
+    )
 
 # ---------------------------------------------------------------------------------------
 # Project target
@@ -63,5 +73,4 @@ set_target_properties(quinoa
         PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         POSITION_INDEPENDENT_CODE ON
-        CUDA_RESOLVE_DEVICE_SYMBOLS ON
         )

@@ -24,14 +24,25 @@
 
 namespace qn {
     template<typename T>
-    void plot(View<T> x, const View<T>& y, const Path& path) {
+    void plot(View<T> x, View<T> y, const Path& path) {
         NOA_CHECK(noa::indexing::is_contiguous_vector_batched(x) &&
                   noa::indexing::is_contiguous_vector_batched(y),
                   "");
 
         x = noa::indexing::broadcast(x, y.shape());
-        const i64 size = y.shape().pop_front().size();
+        const i64 size = y.shape().pop_front().elements();
         const i64 batches = y.shape()[0];
+
+        // Make sure it is dereferenceable and ready to read.
+        Array<T> x_cpu, y_cpu;
+        if (!x.is_dereferenceable()) {
+            x_cpu = x.to_cpu();
+            x = x_cpu.view();
+        }
+        if (!y.is_dereferenceable()) {
+            y_cpu = y.to_cpu();
+            y = y_cpu.view();
+        }
 
         for (i64 i = 0; i < batches; ++i) {
             noa::Span<T> span_x(x.subregion(i).data(), size);
@@ -47,7 +58,7 @@ namespace qn {
 
     template<typename T>
     void plot_uniform(const View<T>& y, const Path& path) {
-        const auto x = noa::memory::arange<T>(y.shape().pop_front().size());
+        const auto x = noa::memory::arange<T>(y.shape().pop_front().elements());
         plot(x.view(), y, path);
     }
 }

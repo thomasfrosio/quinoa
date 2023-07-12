@@ -14,7 +14,7 @@ quinoa:
 
   # Global alignment.
   alignment_run: true
-  alignment_max_resolution: # Maximum resolution, in Angstrom, at which to perform the alignment. Defaults to
+  alignment_max_resolution: # Maximum resolution, in Angstrom, at which to perform the alignment. Defaults to ~8A
 
   alignment_rotation_offset: true
   alignment_tilt_offset: false
@@ -38,7 +38,7 @@ quinoa:
   # If the mdoc file is found, the tlt and exposure files are not used. The exposure file
   # is entirely optional.
   stack_directory:
-  stack_file: "/home/thomas/Projects/datasets/EMPIAR-10304/tilt2.mrc"
+  stack_file: "/home/thomas/Projects/data/ribo/tilt1/tilt1.mrc"
   stack_mdoc:
   stack_tlt:
   stack_exposure:
@@ -67,5 +67,4 @@ quinoa:
 
   compute_device: gpu
   compute_cpu_threads: 4
-
-  logging: debug  # Should be: debug, verbose, info, quiet. Default to "info".
+  verbosity: trace

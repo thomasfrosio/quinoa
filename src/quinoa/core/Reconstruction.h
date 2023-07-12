@@ -214,13 +214,13 @@ namespace qn::details {
             const auto center = m_sub_size / 2;
             const auto input_central_cube = m_cube_padded.subregion(
                     0,
-                    noa::indexing::slice_t{center, center + m_sub_size},
-                    noa::indexing::slice_t{center, center + m_sub_size},
-                    noa::indexing::slice_t{center, center + size_cube_x});
+                    noa::indexing::Slice{center, center + m_sub_size},
+                    noa::indexing::Slice{center, center + m_sub_size},
+                    noa::indexing::Slice{center, center + size_cube_x});
 
             const auto output_central_cube = m_row_of_cubes.subregion(
-                    noa::indexing::ellipsis_t{},
-                    noa::indexing::slice_t{m_sub_size * x, m_sub_size * x + size_cube_x});
+                    noa::indexing::Ellipsis{},
+                    noa::indexing::Slice{m_sub_size * x, m_sub_size * x + size_cube_x});
 
             noa::memory::copy(input_central_cube, output_central_cube);
         }
@@ -232,18 +232,18 @@ namespace qn::details {
 
             const auto center = m_sub_size / 2;
             const auto input_central_cube = m_cube_padded.subregion(
-                    noa::indexing::full_extent_t{},
-                    noa::indexing::slice_t{center, center + m_sub_size},
-                    noa::indexing::slice_t{center, center + size_cube_y},
-                    noa::indexing::slice_t{center, center + size_cube_x});
+                    noa::indexing::FullExtent{},
+                    noa::indexing::Slice{center, center + m_sub_size},
+                    noa::indexing::Slice{center, center + size_cube_y},
+                    noa::indexing::Slice{center, center + size_cube_x});
 
             // Here we could let the subregion method to clamp the size in y/x,
             // but since we already have computed the truncated size in y/x, use it instead.
             const auto output_central_cube = reconstruction.subregion(
                     0,
-                    noa::indexing::slice_t{m_sub_size * z, m_sub_size * z + m_sub_size},
-                    noa::indexing::slice_t{m_sub_size * y, m_sub_size * y + size_cube_y},
-                    noa::indexing::slice_t{m_sub_size * x, m_sub_size * x + size_cube_x}
+                    noa::indexing::Slice{m_sub_size * z, m_sub_size * z + m_sub_size},
+                    noa::indexing::Slice{m_sub_size * y, m_sub_size * y + size_cube_y},
+                    noa::indexing::Slice{m_sub_size * x, m_sub_size * x + size_cube_x}
             );
 
             noa::memory::copy(input_central_cube, output_central_cube);
@@ -253,15 +253,15 @@ namespace qn::details {
             const size_t size_cube_y = std::min(m_sub_size, reconstruction.shape()[2] - m_sub_size * y);
             const auto valid_row_of_cubes = m_row_of_cubes.subregion(
                     0,
-                    noa::indexing::full_extent_t{},
-                    noa::indexing::slice_t{0, size_cube_y},
-                    noa::indexing::full_extent_t{}
+                    noa::indexing::FullExtent{},
+                    noa::indexing::Slice{0, size_cube_y},
+                    noa::indexing::FullExtent{}
             );
             const auto output_row = reconstruction.subregion(
                     0,
-                    noa::indexing::slice_t{m_sub_size * z, m_sub_size * z + m_sub_size},
-                    noa::indexing::slice_t{m_sub_size * y, m_sub_size * y + size_cube_y},
-                    noa::indexing::full_extent_t{}
+                    noa::indexing::Slice{m_sub_size * z, m_sub_size * z + m_sub_size},
+                    noa::indexing::Slice{m_sub_size * y, m_sub_size * y + size_cube_y},
+                    noa::indexing::FullExtent{}
             );
             noa::memory::copy(valid_row_of_cubes, output_row);
         };

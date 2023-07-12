@@ -1,5 +1,3 @@
-#include <noa/IO.hpp>
-
 #include "quinoa/io/Options.h"
 #include "quinoa/Exception.h"
 #include "quinoa/io/YAML.h"
@@ -43,7 +41,7 @@ namespace {
 
             "compute_cpu_threads",
             "compute_device",
-            "logging"
+            "verbosity"
     };
 
     void check_option_is_valid_(const YAML::Node& node) {

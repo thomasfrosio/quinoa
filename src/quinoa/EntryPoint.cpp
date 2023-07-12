@@ -1,15 +1,21 @@
 #include <noa/Session.hpp>
 #include <noa/IO.hpp>
+#include <noa/Memory.hpp>
+#include <noa/unified/Allocator.hpp>
+#include <noa/unified/Device.hpp>
 
+#include "quinoa/core/Alignment.h"
+#include "quinoa/core/Metadata.h"
+#include "quinoa/core/Utilities.h"
 #include "quinoa/Exception.h"
 #include "quinoa/io/Logging.h"
 #include "quinoa/io/Options.h"
-#include "quinoa/core/Alignment.h"
-#include "quinoa/core/Metadata.h"
 //#include "quinoa/core/Reconstruction.h"
 
 namespace qn {
     void tilt_series_alignment(const qn::Options& options) {
+        qn::Logger::initialize("quinoa", "quinoa.log", options["verbosity"].as<std::string>("debug"));
+
         // Parses options early, to quickly throw if there's an invalid option.
         const auto threads = options["compute_cpu_threads"].as<i32>(i32{0});
         const auto device_name = options["compute_device"].as<std::string>("gpu");
@@ -17,13 +23,15 @@ namespace qn {
         const auto output_directory = options["output_directory"].as<Path>();
         auto metadata = MetadataStack(options);
 
-        // Setting up the workers.
-        noa::Session::set_threads(threads);
+        noa::Session::set_cuda_lazy_loading();
+        noa::Session::set_thread_limit(threads);
+
         auto compute_device = noa::Device(device_name);
         if (compute_device.is_gpu()) {
             // If left unspecified, use the GPU with the most amount of unused memory.
             const size_t pos = device_name.find(':');
-            if (pos != std::string::npos && pos != device_name.size() - 1)
+            if (pos != std::string::npos &&
+                pos != device_name.size() - 1) // TODO noa::Device::has_id(std::string_view)? cpu:1
                 compute_device = noa::Device::most_free(noa::DeviceType::GPU);
             auto stream = noa::Stream(compute_device, noa::StreamMode::ASYNC);
             noa::Stream::set_current(stream);
@@ -53,9 +61,6 @@ namespace qn {
         const bool alignment_ctf_estimate = options["alignment_ctf_estimate"].as<bool>(true);
         const bool alignment_projection_matching = options["alignment_projection_matching"].as<bool>(true);
 
-        GridSearch1D grid_search_1d(2, 0.5);
-        grid_search_1d.for_each([](f64 rotation) { qn::Logger::trace("rotation {}", rotation); });
-
         if (alignment) {
             const auto alignment_max_resolution = options["alignment_max_resolution"].as<f64>(10);
 
@@ -66,7 +71,7 @@ namespace qn {
                         /*search_rotation_offset=*/ options["alignment_rotation_offset"].as<bool>(true),
                         /*search_tilt_offset=*/ options["alignment_tilt_offset"].as<bool>(true),
                         /*output_directory=*/ output_directory,
-                        /*debug_directory=*/ output_directory / "debug_pairwise",
+                        /*debug_directory=*/ "", //output_directory / "debug_pairwise",
                 };
                 pairwise_alignment(original_stack_filename, metadata,
                                    pairwise_alignment_parameters);
@@ -129,28 +134,7 @@ namespace qn {
     }
 }
 
-#include "quinoa/core/CubicGrid.hpp"
-
-void test_grid() {
-    using namespace qn;
-
-    auto grid = CubicSplineGrid<f64, 1>(/*resolution=*/ Vec1<i64>{3}, /*channels=*/ 1);
-    grid.data()[0] = 1.5;
-    grid.data()[1] = 1.87;
-    grid.data()[2] = 0.75;
-
-    const f64 interpolant = grid.interpolate(Vec1<f64>{0.45}, 0);
-    qn::Logger::info("interpolant={}", interpolant);
-}
-
 int main(int argc, char* argv[]) {
-    // Initialize everything that needs to be initialized.
-    noa::Session session("quinoa", "quinoa.log", noa::Logger::VERBOSE); // TODO set verbosity
-    // TODO Set CUDA memory buffer
-    // TODO Set number of cached cufft plans.
-
-//    test_grid();
-
     try {
         qn::Options options(argc, argv);
         qn::tilt_series_alignment(options);

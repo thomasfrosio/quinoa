@@ -159,7 +159,7 @@ namespace qn {
             // The area match can be very restrictive in the high tilts. When the shifts are not known and
             // large shifts are present, it is best to turn off the area match and enforce a common FOV only between
             // the two images that are being compared.
-            const auto reference_target = buffer.subregion(noa::indexing::slice_t{1, 3});
+            const auto reference_target = buffer.subregion(noa::indexing::Slice{1, 3});
             const auto hw = reference_target.shape().pop_front<2>();
             const auto smooth_edge_size = static_cast<f32>(
                     static_cast<f64>(noa::math::max(hw)) *
@@ -185,8 +185,8 @@ namespace qn {
                 parameters.interpolation_mode);
 
         // Get the views from the buffers.
-        const auto target_stretched_and_reference_rfft = buffer_rfft.subregion(noa::indexing::slice_t{0, 2});
-        const auto target_stretched_and_reference = buffer.subregion(noa::indexing::slice_t{0, 2});
+        const auto target_stretched_and_reference_rfft = buffer_rfft.subregion(noa::indexing::Slice{0, 2});
+        const auto target_stretched_and_reference = buffer.subregion(noa::indexing::Slice{0, 2});
         const auto xmap = m_xmap.view();
 
         if (!parameters.debug_directory.empty()) {
