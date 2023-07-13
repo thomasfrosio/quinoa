@@ -2,8 +2,11 @@
 
 #include <noa/Math.hpp>
 #include <noa/IO.hpp>
+#include <noa/Math.hpp>
+#include <noa/Geometry.hpp>
 
 #include "quinoa/Types.h"
+#include "quinoa/core/Metadata.h"
 
 namespace qn {
     struct ThirdDegreePolynomial {
@@ -114,6 +117,11 @@ namespace qn {
     inline void add_global_rotation(MetadataStack& metadata, f64 global_rotation) {
         for (size_t i = 0; i < metadata.size(); ++i)
             metadata[i].angles[0] += global_rotation;
+    }
+
+    inline void add_global_angles(MetadataStack& metadata, Vec3<f64> global_angles) {
+        for (size_t i = 0; i < metadata.size(); ++i)
+            metadata[i].angles += global_angles;
     }
 
     inline void rescale_shifts(MetadataStack& metadata, Vec2<f64> scale) {
@@ -243,41 +251,41 @@ namespace qn {
         return {current_shape, new_shape, new_spacing, shift_to_add};
     }
 
-    inline ThirdDegreePolynomial poly_fit_rotation(const MetadataStack& metadata) {
-        // Exclude the first view, assuming it's the global reference.
-        const auto rows = static_cast<i64>(metadata.size());
-
-        // Find x in Ax=b. Shapes: A(M.N) * x(N.1) = b(M.1)
-        const Array<f64> A({1, 1, rows, 4});
-        const Array<f64> b({1, 1, rows, 1});
-        const auto A_ = A.accessor_contiguous<f64, 2>();
-        const auto b_ = b.accessor_contiguous_1d();
-
-        // d + cx + bx^2 + ax^3 = 0
-        for (i64 row = 0; row < rows; ++row) {
-            const MetadataSlice& slice = metadata[row];
-            const auto rotation = static_cast<f64>(slice.angles[0]);
-            const auto tilt = static_cast<f64>(slice.angles[1]);
-            A_(row, 0) = 1;
-            A_(row, 1) = tilt;
-            A_(row, 2) = tilt * tilt;
-            A_(row, 3) = tilt * tilt * tilt;
-            b_(row) = rotation;
-        }
-
-        // Least-square solution using SVD.
-        std::array<f64, 4> svd{};
-        std::array<f64, 4> x{};
-        noa::math::lstsq(
-                A.view(),
-                b.view(),
-                View<f64>(x.data(), {1, 1, 4, 1}),
-                0.,
-                View<f64>(svd.data(), 4)
-        );
-
-        return ThirdDegreePolynomial{x[3], x[2], x[1], x[0]};
-    }
+//    inline ThirdDegreePolynomial poly_fit_rotation(const MetadataStack& metadata) {
+//        // Exclude the first view, assuming it's the global reference.
+//        const auto rows = static_cast<i64>(metadata.size());
+//
+//        // Find x in Ax=b. Shapes: A(M.N) * x(N.1) = b(M.1)
+//        const Array<f64> A({1, 1, rows, 4});
+//        const Array<f64> b({1, 1, rows, 1});
+//        const auto A_ = A.accessor_contiguous<f64, 2>();
+//        const auto b_ = b.accessor_contiguous_1d();
+//
+//        // d + cx + bx^2 + ax^3 = 0
+//        for (i64 row = 0; row < rows; ++row) {
+//            const MetadataSlice& slice = metadata[row];
+//            const auto rotation = static_cast<f64>(slice.angles[0]);
+//            const auto tilt = static_cast<f64>(slice.angles[1]);
+//            A_(row, 0) = 1;
+//            A_(row, 1) = tilt;
+//            A_(row, 2) = tilt * tilt;
+//            A_(row, 3) = tilt * tilt * tilt;
+//            b_(row) = rotation;
+//        }
+//
+//        // Least-square solution using SVD.
+//        std::array<f64, 4> svd{};
+//        std::array<f64, 4> x{};
+//        noa::math::lstsq(
+//                A.view(),
+//                b.view(),
+//                View<f64>(x.data(), {1, 1, 4, 1}),
+//                0.,
+//                View<f64>(svd.data(), 4)
+//        );
+//
+//        return ThirdDegreePolynomial{x[3], x[2], x[1], x[0]};
+//    }
 
     template<typename Real>
     void save_vector_to_text(View<Real> x, const Path& filename) {

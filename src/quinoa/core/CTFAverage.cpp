@@ -1,11 +1,13 @@
+#include <noa/Math.hpp>
+#include <noa/Geometry.hpp>
+#include <noa/IO.hpp>
+
 #include "quinoa/core/CTF.hpp"
 #include "quinoa/core/CubicGrid.hpp"
 #include "quinoa/core/GridSearch1D.hpp"
 #include "quinoa/core/Optimizer.hpp"
 #include "quinoa/core/Utilities.h"
-#include <noa/core/math/Constant.hpp>
-#include <noa/unified/geometry/fft/Polar.hpp>
-#include <noa/unified/io/ImageFile.hpp>
+#include "quinoa/io/Logging.h"
 
 namespace {
     using namespace ::qn;
@@ -58,7 +60,7 @@ namespace {
                 bool fit_astigmatism,
                 f64 astigmatism_value,
                 f64 astigmatism_angle,
-                i64 spline_resolution = 5
+                i64 spline_resolution = 3
         ) {
             if (fit_astigmatism) {
                 // In this case, we need to recompute the rotational average,
@@ -301,14 +303,13 @@ namespace {
                 f64 astigmatism_value = 0,
                 f64 astigmatism_angle = 0
         ) :
-                m_fit_phase_shift(fit_phase_shift), m_fit_astigmatism(fit_astigmatism)
-        {
+                m_fit_phase_shift(fit_phase_shift), m_fit_astigmatism(fit_astigmatism) {
             // Initialise values.
             m_parameters[0] = average_ctf.defocus();
             if (has_phase_shift())
                 m_parameters[1] = average_ctf.phase_shift();
             if (has_astigmatism()) {
-                const size_t index = 2 - has_phase_shift();
+                const size_t index = 2 - !has_phase_shift();
                 m_parameters[index] = astigmatism_value;
                 m_parameters[index + 1] = astigmatism_angle;
             }
@@ -328,11 +329,27 @@ namespace {
                 m_upper_bounds[1] = std::max(0., phase_shift() + phase_shift_bounds[1]);
             }
             if (has_astigmatism()) {
-                const size_t index = 2 - has_phase_shift();
+                const size_t index = 2 - !has_phase_shift();
                 m_lower_bounds[index] = std::max(0., astigmatism_value() + astigmatism_value_bounds[0]);
                 m_upper_bounds[index] = std::max(0., astigmatism_value() + astigmatism_value_bounds[1]);
                 m_lower_bounds[index + 1] = astigmatism_angle() + astigmatism_angle_bounds[0];
                 m_upper_bounds[index + 1] = astigmatism_angle() + astigmatism_angle_bounds[1];
+            }
+        }
+
+        void set_abs_tolerance(
+                f64 defocus_tolerance,
+                f64 phase_shift_tolerance,
+                f64 astigmatism_value_tolerance,
+                f64 astigmatism_angle_tolerance
+        ) {
+            m_abs_tolerance[0] = defocus_tolerance;
+            if (has_phase_shift())
+                m_abs_tolerance[1] = phase_shift_tolerance;
+            if (has_astigmatism()) {
+                const size_t index = 2 - !has_phase_shift();
+                m_abs_tolerance[index] = astigmatism_value_tolerance;
+                m_abs_tolerance[index + 1] = astigmatism_angle_tolerance;
             }
         }
 
@@ -347,6 +364,7 @@ namespace {
         [[nodiscard]] constexpr Span<f64> span() noexcept { return {m_parameters.data(), ssize()}; }
         [[nodiscard]] constexpr Span<f64> lower_bounds() noexcept { return {m_lower_bounds.data(), ssize()}; }
         [[nodiscard]] constexpr Span<f64> upper_bounds() noexcept { return {m_upper_bounds.data(), ssize()}; }
+        [[nodiscard]] constexpr Span<f64> abs_tolerance() noexcept { return {m_abs_tolerance.data(), ssize()}; }
 
     public: // safe access of the globals, whether they are fitted or not.
         [[nodiscard]] constexpr f64 defocus() const noexcept {
@@ -358,11 +376,11 @@ namespace {
         }
 
         [[nodiscard]] constexpr f64 astigmatism_value() const noexcept {
-            return has_astigmatism() ? m_parameters[2 - has_phase_shift()] : 0;
+            return has_astigmatism() ? m_parameters[2 - !has_phase_shift()] : 0;
         }
 
         [[nodiscard]] constexpr f64 astigmatism_angle() const noexcept {
-            return has_astigmatism() ? m_parameters[3 - has_phase_shift()] : 0;
+            return has_astigmatism() ? m_parameters[3 - !has_phase_shift()] : 0;
         }
 
     public: // Setters for compatibility with grid search.
@@ -383,6 +401,7 @@ namespace {
         std::array<f64, 4> m_parameters{};
         std::array<f64, 4> m_lower_bounds{};
         std::array<f64, 4> m_upper_bounds{};
+        std::array<f64, 4> m_abs_tolerance{};
     };
 
     class Helper {
@@ -422,7 +441,7 @@ namespace {
             simulated_ctf = buffer.view().subregion(2);
         }
 
-        f64 cost() {
+        f64 cost(bool print = true) {
             const f64 defocus = parameters.defocus();
             const f64 phase_shift = parameters.phase_shift();
 
@@ -479,9 +498,62 @@ namespace {
                         return static_cast<f64>(lhs) * static_cast<f64>(rhs);
                     }, noa::plus_t{}, {});
 
-            qn::Logger::debug("phase_shift={:.3f}, defocus={:.3f}, ncc={:.3f}", phase_shift, defocus, ncc);
+            if (print)
+                log(ncc);
             return ncc;
         }
+
+        void log(f64 ncc) const {
+            const auto defocus = ctf_iso->defocus();
+            const auto phase_shift = ctf_iso->phase_shift();
+
+            using namespace noa::string;
+            qn::Logger::trace(
+                    "CTF average fitting: {}, {}ncc={:.8f}",
+
+                    // Defocus.
+                    parameters.has_astigmatism() ?
+                    format("defocus=(value={:.4f}, astigmatism={:.4f}, angle={:.4f})",
+                           defocus, parameters.astigmatism_value(),
+                           parameters.astigmatism_angle()) :
+                    format("defocus={:.8f}", defocus),
+
+                    // Phase shift.
+                    parameters.has_phase_shift() ? format("phase_shift={:.4f}, ", phase_shift) : "",
+
+                    ncc);
+        }
+    };
+
+    auto function_to_maximise_(u32, const f64*, f64* gradients, void* instance) -> f64 {
+        auto& helper = *static_cast<Helper*>(instance);
+
+        if (gradients) {
+            for (auto& value: helper.parameters.span()) {
+                const f32 initial_value = static_cast<f32>(value);
+                const f32 delta = CentralFiniteDifference::delta(initial_value);
+
+                value = static_cast<f64>(initial_value - delta);
+                const f64 fx_minus_delta = helper.cost(false);
+                value = static_cast<f64>(initial_value + delta);
+                const f64 fx_plus_delta = helper.cost(false);
+
+                value = static_cast<f64>(initial_value); // back to original value
+                f64 gradient = CentralFiniteDifference::get(
+                        fx_minus_delta, fx_plus_delta, static_cast<f64>(delta));
+
+                if (noa::math::abs(gradient) < 1e-6) {
+                    qn::Logger::trace("g={:.8f} -> 0", gradient);
+                    gradient = 0;
+                } else {
+                    qn::Logger::trace("g={:.8f}", gradient);
+                }
+
+                *(gradients++) = gradient;
+            }
+        }
+
+        return helper.cost();
     };
 }
 
@@ -583,11 +655,9 @@ namespace qn {
     void CTF::fit_ctf_to_patch_(
             Array<f32> patch_rfft_ps,
             FittingRange& fitting_range,
-            CTFIsotropic64& ctf,
+            CTFAnisotropic64& ctf_anisotropic,
             bool fit_phase_shift,
             bool fit_astigmatism,
-            f64& astigmatism_value,
-            f64& astigmatism_angle,
             const Path& debug_directory
     ) {
         Timer timer;
@@ -601,36 +671,20 @@ namespace qn {
         NOA_ASSERT(patch_rfft_ps.shape()[2] == fitting_range.original_logical_size &&
                    patch_rfft_ps.shape()[3] == fitting_range.original_logical_size / 2 + 1);
 
+        // Extract CTF to isotropic + astigmatism value and angle. This is just simpler to deal with.
+        auto ctf_isotropic = CTFIsotropic64(ctf_anisotropic);
+        auto astigmatism_value = ctf_anisotropic.defocus().astigmatism;
+        auto astigmatism_angle = ctf_anisotropic.defocus().angle;
+        NOA_ASSERT(ctf_isotropic.pixel_size() == fitting_range.spacing);
+
         // Set up.
-        ctf.set_pixel_size(fitting_range.spacing); // just make sure this was correctly initialized
-        auto helper = Helper(patch_rfft_ps.view(), fitting_range, ctf, debug_directory);
+        auto helper = Helper(patch_rfft_ps.view(), fitting_range, ctf_isotropic, debug_directory);
         auto background = Background(patch_rfft_ps.view(), fitting_range.original_logical_size);
-
-        const auto function_to_maximise = [](u32, const f64*, f64* gradients, void* instance) -> f64 {
-            auto& helper = *static_cast<Helper*>(instance);
-
-            if (gradients) {
-                for (auto& value: helper.parameters.span()) {
-                    const f64 initial_value = value;
-                    const f64 delta = CentralFiniteDifference::delta(initial_value);
-
-                    value = initial_value - delta;
-                    const f64 fx_minus_delta = helper.cost();
-                    value = initial_value + delta;
-                    const f64 fx_plus_delta = helper.cost();
-
-                    value = initial_value; // back to original value
-                    *(gradients++) = CentralFiniteDifference::get(fx_minus_delta, fx_plus_delta, delta);
-                }
-            }
-
-            return helper.cost();
-        };
 
         i64 evaluations{0};
         {
             // First (grid) search. No astigmatism.
-            helper.parameters = Parameters(fit_phase_shift, /*fit_astigmatism=*/ false, ctf);
+            helper.parameters = Parameters(fit_phase_shift, /*fit_astigmatism=*/ false, ctf_isotropic);
 
             // Get initial background fitting. This is just an approximation of the background and simply fits
             // a smooth spline through the rotational average, cutting through the Thon rings. Similar results
@@ -650,7 +704,7 @@ namespace qn {
                 auto& parameters = helper.parameters;
                 parameters.set_phase_shift(phase_shift);
                 parameters.set_defocus(defocus);
-                const f64 ncc = function_to_maximise(0, parameters.data(), nullptr, &helper);
+                const f64 ncc = function_to_maximise_(0, parameters.data(), nullptr, &helper);
                 if (ncc > score) {
                     best_values = {defocus, phase_shift};
                     score = ncc;
@@ -659,53 +713,58 @@ namespace qn {
             });
 
             // Update ctf for next optimization.
-            ctf.set_defocus(best_values[0]);
-            ctf.set_phase_shift(best_values[1]);
+            ctf_isotropic.set_defocus(best_values[0]);
+            ctf_isotropic.set_phase_shift(best_values[1]);
         }
+
+        f64 ncc{};
         {
             // Local optimization to polish to optimum and astigmatism.
             constexpr auto PI = noa::math::Constant<f64>::PI;
             constexpr auto PI_EPSILON = PI / 32;
             helper.parameters = Parameters(
-                    fit_phase_shift, fit_astigmatism, ctf, astigmatism_value, astigmatism_angle);
+                    fit_phase_shift, fit_astigmatism, ctf_isotropic, astigmatism_value, astigmatism_angle);
             helper.parameters.set_relative_bounds(
                     /*defocus_bounds=*/ {-0.25, 0.25},
                     /*phase_shift_bounds=*/ {-PI / 6, PI / 6},
-                    /*astigmatism_value_bounds=*/ {0, 0.8},
-                    /*astigmatism_angle_bounds=*/ {0 - PI_EPSILON, 2 * PI + PI_EPSILON});
+                    /*astigmatism_value_bounds=*/ {0, 0.2},
+                    /*astigmatism_angle_bounds=*/ {-PI / 2 - PI_EPSILON, PI / 2 + PI_EPSILON});
+            helper.parameters.set_abs_tolerance(
+                    /*defocus_tolerance=*/ 5e-4,
+                    /*phase_shift_tolerance=*/ noa::math::deg2rad(0.25),
+                    /*astigmatism_value_tolerance=*/ 5e-4,
+                    /*astigmatism_angle_tolerance=*/ noa::math::deg2rad(0.25));
 
             Optimizer optimizer(NLOPT_LN_SBPLX, helper.parameters.ssize());
+            optimizer.set_max_objective(function_to_maximise_, &helper);
             optimizer.set_bounds(helper.parameters.lower_bounds().data(),
                                  helper.parameters.upper_bounds().data());
-            optimizer.set_max_objective(function_to_maximise, &helper);
+            optimizer.set_x_tolerance_abs(helper.parameters.abs_tolerance().data());
 
-            for ([[maybe_unused]] auto _: irange(2)) {
+            for ([[maybe_unused]] auto _: irange(2 + fit_astigmatism)) {
                 // Use a more accurate background now that we have a good idea of the ctf parameters.
-                background.fit_accurate(fitting_range, ctf, fit_astigmatism, astigmatism_value, astigmatism_angle);
+                background.fit_accurate(
+                        fitting_range, ctf_isotropic, fit_astigmatism, astigmatism_value, astigmatism_angle);
 
                 // We updated the background, so recompute the rotational average.
                 helper.is_rotational_average_ready = false;
 
-                optimizer.optimize(helper.parameters.data());
+                ncc = optimizer.optimize(helper.parameters.data());
                 evaluations += optimizer.number_of_evaluations();
-            }
 
-            // Update outputs (note that the fitting range has the background already updated).
-            ctf.set_defocus(helper.parameters.defocus());
-            ctf.set_phase_shift(helper.parameters.phase_shift());
-            if (fit_astigmatism) {
-                astigmatism_value = helper.parameters.astigmatism_value();
-                astigmatism_angle = helper.parameters.astigmatism_angle();
+                // Update outputs (note that the fitting range has its background already updated).
+                ctf_isotropic.set_defocus(helper.parameters.defocus());
+                ctf_isotropic.set_phase_shift(helper.parameters.phase_shift());
+                if (fit_astigmatism) {
+                    astigmatism_value = helper.parameters.astigmatism_value();
+                    astigmatism_angle = helper.parameters.astigmatism_angle();
+                }
             }
         }
+        helper.log(ncc);
 
-        using namespace noa::string;
-        qn::Logger::trace(
-                "CTF average fitting: {}, {}(evaluations={}, elapsed={}ms)",
-                fit_astigmatism ?
-                format("defocus=(value={:.4f}, astigmatism={:.4f}, angle={:.4f})", ctf.defocus(), astigmatism_value, astigmatism_angle) :
-                format("defocus={:.4f}", ctf.defocus()),
-                fit_phase_shift ? format("phase_shift={:.4f}, ", ctf.phase_shift()) : "",
-                evaluations, timer.elapsed());
+        // Update output ctf.
+        // If astigmatism isn't fitted, these are just the input values.
+        ctf_anisotropic = CTFAnisotropic64(ctf_isotropic, astigmatism_value, astigmatism_angle);
     }
 }

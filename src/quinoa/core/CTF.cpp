@@ -1,28 +1,9 @@
-#include "quinoa/core/CTF.hpp"
-#include "CubicGrid.hpp"
-#include "Metadata.h"
-#include "Optimizer.hpp"
-#include "nlopt.h"
-#include "quinoa/core/Utilities.h"
-//#include "quinoa/core/Plot.hpp"
-#include "quinoa/core/GridSearch1D.hpp"
-#include "quinoa/io/Logging.h"
-
-#include <noa/core/math/Constant.hpp>
-#include <noa/core/math/Enums.hpp>
-#include <noa/core/signal/fft/CTF.hpp>
-#include <noa/core/types/Shape.hpp>
-#include <noa/core/utils/Indexing.hpp>
-#include <noa/gpu/cuda/fft/Plan.hpp>
-#include <noa/unified/Allocator.hpp>
-#include <noa/unified/ArrayOption.hpp>
-#include <noa/unified/Ewise.hpp>
-#include <noa/unified/Reduce.hpp>
-#include <noa/unified/fft/Factory.hpp>
-#include <noa/unified/geometry/fft/Polar.hpp>
-#include <noa/unified/math/Blas.hpp>
-#include <noa/unified/memory/Factory.hpp>
+#include <noa/Math.hpp>
 #include <noa/Signal.hpp>
+
+#include "quinoa/core/CTF.hpp"
+#include "quinoa/core/Utilities.h"
+#include "quinoa/io/Logging.h"
 
 namespace qn {
     CTF::CTF(
@@ -50,19 +31,15 @@ namespace qn {
             StackLoader& stack_loader,
             MetadataStack& metadata,
             FittingRange& fitting_range,
-            CTFIsotropic64& ctf,
-
+            CTFAnisotropic64& ctf,
             Vec2<f64> delta_z_range_nanometers,
             f64 delta_z_shift_nanometers,
             f64 max_tilt_for_average,
             bool fit_phase_shift,
             bool fit_astigmatism,
-            f64& astigmatism_value,
-            f64& astigmatism_angle,
             bool flip_rotation_to_match_defocus_ramp,
             const Path& debug_directory
     ) {
-        // Initial fit below, above and at the eucentric height.
         std::array defoci{0., 0., 0.};
         std::array max_tilt_for_averages{max_tilt_for_average, 90., 90.};
         std::array delta_z_ranges{
@@ -72,21 +49,21 @@ namespace qn {
         };
 
         FittingRange i_fitting_range = fitting_range;
-        CTFIsotropic64 i_ctf = ctf;
+        CTFAnisotropic64 i_ctf = ctf;
 
         for (auto i: noa::irange<size_t>(3)) {
             const auto average_patch_rfft_ps = compute_average_patch_rfft_ps_(
                     stack_loader, metadata, delta_z_ranges[i], max_tilt_for_averages[i], debug_directory);
 
             fit_ctf_to_patch_(
-                    average_patch_rfft_ps, i_fitting_range, i_ctf, fit_phase_shift,
-                    fit_astigmatism, astigmatism_value, astigmatism_angle,
-                    debug_directory);
+                    average_patch_rfft_ps, i_fitting_range, i_ctf,
+                    fit_phase_shift, fit_astigmatism, debug_directory);
 
-            defoci[i] = i_ctf.defocus();
+            defoci[i] = i_ctf.defocus().value;
             if (i == 0) {
                 fitting_range = i_fitting_range;
                 ctf = i_ctf;
+                fit_astigmatism = false;
             }
         }
 
@@ -117,5 +94,37 @@ namespace qn {
                              "This could be due to a lack of signal, but note that this isn't really expected, "
                              "so please check your data and results carefully before proceeding");
         }
+    }
+
+    void CTF::fit_global(
+            StackLoader& stack_loader,
+            MetadataStack& metadata,
+            const FittingRange& fitting_range,
+            CTFAnisotropic64& average_ctf,
+            f64 max_tilt,
+            Vec3<bool> fit_angles,
+            bool fit_phase_shift,
+            bool fit_astigmatism,
+            f64 initial_astigmatism_value,
+            f64 initial_astigmatism_angle,
+            const Path& debug_directory
+    ) {
+        // Prepare the patches.
+        const auto patches_rfft_ps = compute_patches_rfft_ps_(
+                stack_loader, metadata, fitting_range, max_tilt, debug_directory);
+
+        fit_ctf_to_patches_(
+                metadata,
+                stack_loader.slice_shape(),
+                patches_rfft_ps,
+                fitting_range,
+                average_ctf,
+                fit_angles,
+                fit_phase_shift,
+                fit_astigmatism,
+                initial_astigmatism_value,
+                initial_astigmatism_angle,
+                debug_directory
+        );
     }
 }

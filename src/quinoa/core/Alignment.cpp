@@ -182,17 +182,14 @@ namespace qn {
         const auto delta_z_shift_nanometers = 150.;
         const auto max_tilt_for_average = 90.;
         const bool fit_phase_shift = false;
+        const bool fit_astigmatism = true;
         const bool flip_rotation_to_match_defocus_ramp = false;
 
         CTF::FittingRange fitting_range({40, 8}, spacing, patch_size);
 
-        const bool fit_astigmatism = false;
-        f64 astigmatism_value{0};
-        f64 astigmatism_angle{0};
-
-        auto ctf_isotropic = CTFIsotropic64(
-                spacing,
-                /*defocus=*/ 2.5,
+        auto ctf_isotropic = CTFAnisotropic64(
+                {spacing, spacing},
+                /*defocus=*/ {2.5, 0, 0},
                 /*voltage=*/ 300,
                 /*amplitude=*/ 0.07,
                 /*cs=*/ 2.7,
@@ -212,10 +209,12 @@ namespace qn {
                 max_tilt_for_average,
                 fit_phase_shift,
                 fit_astigmatism,
-                astigmatism_value,
-                astigmatism_angle,
                 flip_rotation_to_match_defocus_ramp,
                 ""
+                );
+
+        ctf_fitter.fit_global(
+
                 );
     }
 

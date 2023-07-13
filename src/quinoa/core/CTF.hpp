@@ -7,9 +7,6 @@
 #include <noa/IO.hpp>
 #include <noa/Memory.hpp>
 #include <noa/Signal.hpp>
-#include <noa/core/fft/Frequency.hpp>
-#include <noa/core/traits/Utilities.hpp>
-#include <noa/core/utils/Indexing.hpp>
 
 #include "quinoa/Types.h"
 #include "quinoa/core/Metadata.h"
@@ -94,14 +91,12 @@ namespace qn {
                 StackLoader& stack_loader,
                 MetadataStack& metadata,
                 FittingRange& fitting_range,
-                CTFIsotropic64& ctf,
+                CTFAnisotropic64& ctf_anisotropic,
                 Vec2<f64> delta_z_range_nanometers,
                 f64 delta_z_shift_nanometers,
                 f64 max_tilt_for_average,
                 bool fit_phase_shift,
                 bool fit_astigmatism,
-                f64& astigmatism_value,
-                f64& astigmatism_angle,
                 bool flip_rotation_to_match_defocus_ramp,
                 const Path& debug_directory
         );
@@ -109,8 +104,10 @@ namespace qn {
         void fit_global(
                 StackLoader& stack_loader,
                 MetadataStack& metadata,
+                const FittingRange& fitting_range,
+                CTFAnisotropic64& ctf_anisotropic,
                 f64 max_tilt,
-                Vec3<bool> fit_angles, // rotation, tilt, elevation
+                Vec3<bool> fit_angles,
                 bool fit_phase_shift,
                 bool fit_astigmatism,
                 const Path& debug_directory
@@ -163,15 +160,13 @@ namespace qn {
         static void fit_ctf_to_patch_(
                 Array<f32> patch_rfft_ps,
                 FittingRange& fitting_range,
-                CTFIsotropic64& ctf, // contains the initial defocus and phase shift, return best
+                CTFAnisotropic64& ctf_anisotropic, // contains the initial defocus and phase shift, return best
                 bool fit_phase_shift,
                 bool fit_astigmatism,
-                f64& astigmatism_value,
-                f64& astigmatism_angle,
                 const Path& debug_directory
         );
 
-    private: // Global fitting
+    public: // Global fitting
         // The cropped power-spectra, of every patch, of every slice.
         //  - The patches are Fourier cropped to save memory. However, we want to keep track of the original
         //    spacing and logical size so that we can apply fitting range as if it was the full spectrum.
@@ -215,6 +210,7 @@ namespace qn {
             }
         };
 
+    private:
         Patches compute_patches_rfft_ps_(
                 StackLoader& stack_loader,
                 const MetadataStack& metadata,
@@ -228,12 +224,10 @@ namespace qn {
                 const Shape2<i64>& slice_shape,
                 const Patches& patches_rfft_ps,
                 const FittingRange& fitting_range,
-                CTFIsotropic64& average_ctf,
+                CTFAnisotropic64& average_ctf,
                 Vec3<bool> fit_angles,
                 bool fit_phase_shift,
                 bool fit_astigmatism,
-                f64 initial_astigmatism_value,
-                f64 initial_astigmatism_angle,
                 const Path& debug_directory
         );
 
