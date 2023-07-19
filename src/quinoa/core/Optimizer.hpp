@@ -84,14 +84,19 @@ namespace qn {
 
         void optimize(f64* x, f64* fx) const {
             const nlopt_result result = nlopt_optimize(pointer, x, fx);
-            if (result < 0)
-                qn::Logger::trace("Optimizer terminated with status code = {}", nlopt_result_to_string(result));
+            qn::Logger::debug("Optimizer terminated with status code = {}", nlopt_result_to_string(result));
         }
 
         f64 optimize(f64* x) const {
             f64 fx{};
             optimize(x, &fx);
             return fx;
+        }
+
+        void force_stop() const {
+            const nlopt_result result = nlopt_force_stop(pointer);
+            if (result < 0)
+                qn::Logger::debug("Optimizer failed to stop, status={}", nlopt_result_to_string(result));
         }
 
         [[nodiscard]] i32 number_of_evaluations() const noexcept {
@@ -102,34 +107,119 @@ namespace qn {
         nlopt_opt pointer;
     };
 
-    template<typename Input, typename Output>
+    // Memoize optimization steps, to save computation.
     class Memoizer {
+    private:
+        struct Key {
+            f64 value;
+            bool has_value;
+            bool has_gradient;
+        };
+
     public:
-        std::optional<Output> find(const Input& input) {
-            const auto iter = std::find_if(
-                    m_cache.begin(), m_cache.end(),
-                    [=](const auto& value) {
-                        return noa::math::are_almost_equal(value.first, input);
-                    });
-            return iter == m_cache.end() ? std::optional<Output>{} : iter->second;
+        Memoizer() = default;
+
+        Memoizer(i64 n_parameters, i64 resolution) {
+            if (resolution > 0) {
+                // Allocate everything upfront.
+                m_cache_input = noa::memory::zeros<f64>({resolution, 1, 2, n_parameters});
+                m_cache_lines = std::vector<Key>(static_cast<size_t>(resolution), {0, false, false});
+            }
         }
 
-        template<typename Predicate>
-        std::optional<Output> find(Predicate&& predicate) {
-            const auto iter = std::find_if(
-                    m_cache.begin(), m_cache.end(),
-                    [&](const auto& value) {
-                        return predicate(value.first);
-                    });
-            return iter == m_cache.end() ? std::optional<Output>{} : iter->second;
+        // If the input is found:
+        //  - Returns the corresponding score.
+        //  - If "gradients" is valid, set the corresponding gradients, if any.
+        std::optional<f64> find(const f64* input, f64* gradients = nullptr, f64 epsilon = 1e-7) {
+            if (m_cache_lines.empty())
+                return std::nullopt;
+
+            const auto cache = m_cache_input.view().subregion(
+                    noa::indexing::FullExtent{}, 0, 0, noa::indexing::FullExtent{});
+
+            // If the caller passes the gradients, we need a record with the gradients too.
+            const bool requires_gradients = gradients != nullptr;
+
+            // Check the cache lines for a perfect match.
+            i64 line = m_circular_index;
+            i64 successful_line{-1};
+            for (i64 i = 0; i < resolution(); ++i) {
+                const Key& cache_line = m_cache_lines[static_cast<size_t>(line)];
+                if (!cache_line.has_value)
+                    continue;
+
+                // Check this cache line.
+                const Span cache_line_input = cache.subregion(line).span();
+                bool success{true};
+                for (i64 parameter = 0; parameter < n_parameters(); ++parameter) {
+                    if (!noa::math::are_almost_equal<4>(cache_line_input[parameter], input[parameter], epsilon)) {
+                        success = false;
+                        break;
+                    }
+                }
+
+                // We have a match, but make sure this match has the gradients too.
+                if (success && cache_line.has_gradient == requires_gradients) {
+                    successful_line = line;
+                    break;
+                }
+
+                // This line isn't a good match. Step to the previous one.
+                line -= 1;
+                if (line < 0)
+                    line += resolution();
+            }
+
+            // We don't have a match.
+            if (successful_line == -1)
+                return std::nullopt;
+
+            // We have a match. Set the recorded gradients and return recorded value.
+            if (gradients) {
+                const auto cache_line_gradient = m_cache_input.view().subregion(
+                        successful_line, 0, 1, noa::indexing::FullExtent{}).span();
+                for (i64 i = 0; i < cache_line_gradient.ssize(); ++i)
+                    gradients[i] = cache_line_gradient[i];
+            }
+            return m_cache_lines[static_cast<size_t>(successful_line)].value;
         }
 
-        void record(const Input& input, const Output& output) {
-            m_cache.emplace_back(input, output);
+        void record(const f64* inputs, f64 score, const f64* gradients = nullptr) {
+            if (m_cache_lines.empty())
+                return;
+
+            // Circular buffer. Increment at every call.
+            // We start at +1 to make the find() increment simpler.
+            m_circular_index = (m_circular_index + 1) % resolution();
+
+            const Span cache_line_input = m_cache_input.view().subregion(
+                    m_circular_index, 0, 0, noa::indexing::FullExtent{}).span();
+            for (i64 i = 0; i < cache_line_input.ssize(); ++i) {
+                cache_line_input[i] = inputs[i];
+            }
+
+            if (gradients) {
+                const Span cache_line_gradient = m_cache_input.view().subregion(
+                        m_circular_index, 0, 1, noa::indexing::FullExtent{}).span();
+                for (i64 i = 0; i < cache_line_gradient.ssize(); ++i)
+                    cache_line_gradient[i] = gradients[i];
+            }
+
+            m_cache_lines[static_cast<size_t>(m_circular_index)] = {score, true, gradients != nullptr};
+        }
+
+        [[nodiscard]] i64 resolution() const noexcept { return m_cache_input.shape()[0]; }
+        [[nodiscard]] i64 n_parameters() const noexcept { return m_cache_input.shape()[3]; }
+
+        void reset_cache() {
+            for (auto& line: m_cache_lines)
+                line.has_value = false;
         }
 
     private:
-        std::vector<std::pair<Input, Output>> m_cache;
+        Array<f64> m_cache_input;
+        std::vector<Key> m_cache_lines;
+        i64 m_circular_index{0};
     };
 
     struct CentralFiniteDifference {

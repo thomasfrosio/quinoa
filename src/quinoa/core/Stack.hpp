@@ -15,6 +15,7 @@
 namespace qn {
     struct LoadStackParameters {
         Device compute_device;
+        Allocator allocator;
 
         // Initial filtering on original images:
         i32 median_filter_window{0};
@@ -74,7 +75,7 @@ namespace qn {
                 m_output_slice_shape[1] = noa::fft::next_fast_size(m_output_slice_shape[1]);
             }
 
-            const auto options = noa::ArrayOption(parameters.compute_device, noa::Allocator::DEFAULT_ASYNC);
+            const auto options = noa::ArrayOption(parameters.compute_device, parameters.allocator);
             const auto input_shape = m_input_slice_shape.push_front<2>({1, 1});
             const auto padded_shape = m_padded_slice_shape.push_front<2>({1, 1});
             const auto cropped_shape = m_cropped_slice_shape.push_front<2>({1, 1});
@@ -219,6 +220,7 @@ namespace qn {
         }
 
         [[nodiscard]] Device compute_device() const noexcept { return m_parameters.compute_device; }
+        [[nodiscard]] Allocator allocator() const noexcept { return m_parameters.allocator; }
         [[nodiscard]] Vec2<f64> file_spacing() const noexcept { return m_input_spacing; }
         [[nodiscard]] Vec2<f64> stack_spacing() const noexcept { return m_output_spacing; }
         [[nodiscard]] Shape2<i64> slice_shape() const noexcept { return m_output_slice_shape; }
@@ -282,7 +284,7 @@ namespace qn {
         auto stack_loader = StackLoader(input_stack_path, parameters);
         const auto output_slice_shape = stack_loader.slice_shape().push_front<2>({1, 1});
         const auto output_slice_center = MetadataSlice::center(output_slice_shape);
-        const auto options = ArrayOption(stack_loader.compute_device(), Allocator::DEFAULT_ASYNC);
+        const auto options = ArrayOption(stack_loader.compute_device(), stack_loader.allocator());
         const auto use_gpu = stack_loader.compute_device().is_gpu();
 
         // Output buffers.

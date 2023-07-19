@@ -1,119 +1,395 @@
-#include "quinoa/io/Options.h"
+#include <filesystem>
+#include <optional>
+#include <string_view>
+#include <noa/unified/Device.hpp>
+
 #include "quinoa/Exception.h"
+#include "quinoa/io/Options.h"
 #include "quinoa/io/YAML.h"
+#include "quinoa/core/Utilities.h"
 
 namespace {
-    constexpr std::array<std::string_view, 31> QN_OPTIONS_ = {
-            "preprocessing_run",
-            "preprocessing_exclude_blank_views",
-            "preprocessing_exclude_view_indexes",
-
-            "alignment_run",
-            "alignment_max_resolution",
-            "alignment_rotation_offset",
-            "alignment_tilt_offset",
-            "alignment_elevation_offset",
-            "alignment_pairwise_matching",
-            "alignment_ctf_estimate",
-            "alignment_projection_matching",
-
-            "reconstruction_run",
-            "reconstruction_resolution",
-            "reconstruction_thickness",
-            "reconstruction_cube_size",
-
-            "output_directory",
-
-            "stack_directory",
-            "stack_file",
-            "stack_mdoc",
-            "stack_tlt",
-            "stack_exposure",
-
-            "rotation_angle",
-
-            "order_starting_angle",
-            "order_starting_direction",
-            "order_angle_increment",
-            "order_group",
-            "order_exclude_start",
-            "order_per_view_exposure",
-
-            "compute_cpu_threads",
-            "compute_device",
-            "verbosity"
-    };
-
-    void check_option_is_valid_(const YAML::Node& node) {
+    template<size_t N>
+    void sanitize_node_(YAML::Node node, const std::array<const char*, N>& expected) {
         std::string name;
+        const auto predicate = [&name](const char* expected_name) {
+            return std::string_view(expected_name) == name;
+        };
+
+        // First, make sure the entries are all recognized.
         for (const auto& e: node) {
             name = e.first.as<std::string>();
-            if (std::find(QN_OPTIONS_.begin(), QN_OPTIONS_.end(), name) == QN_OPTIONS_.end())
-                QN_THROW("Invalid option: {}", name);
+            if (std::find_if(expected.begin(), expected.end(), predicate) == expected.end())
+                QN_THROW("Invalid parameter: {}", name);
         }
+
+        // Then, add the missing entries.
+        for (const auto& e: expected)
+            if (!node[e].IsDefined())
+                node[e] = YAML::Null;
     }
 
-    void add_missing_options_(YAML::Node node) {
-        std::string name;
-        for (const auto& e: QN_OPTIONS_) {
-            name = e; // YAML::Node::operator[] doesn't support std::string_view.
-            if (!node[name].IsDefined())
-                node[name] = YAML::Null;
-        }
-    }
+    using namespace qn;
 
-    void find_input_filenames_(YAML::Node& node) {
-        using namespace qn;
+    Options::Files parse_files_(YAML::Node files_node) {
+        constexpr std::array QN_OPTIONS_FILES{
+                "input_directory",
+                "input_stack",
+                "input_tlt",
+                "input_exposure",
+                "output_directory",
+        };
+        sanitize_node_(files_node, QN_OPTIONS_FILES);
 
-        // Extract the input directory if specified.
-        const Path directory_path = node["stack_directory"].IsScalar() ?
-                                    node["stack_directory"].as<Path>() : "";
-        std::string basename;
-        if (!directory_path.empty()) {
-            QN_CHECK(fs::is_directory(directory_path),
-                     "The values of \"stack_directory\" does not refer to an existing directory");
-            basename = *(--directory_path.parent_path().end()); // FIXME
-        }
+        Options::Files files;
 
-        // Stack file.
-        if (node["stack_file"].IsScalar()) {
-            const auto stack_filename = node["stack_file"].as<Path>();
-            QN_CHECK(fs::is_regular_file(stack_filename),
-                     "A stack filename was provided, but the file doesn't exist or permissions to read are not granted");
+        // input_directory
+        Path input_directory;
+        const auto input_directory_node = files_node["input_directory"];
+        if (input_directory_node.IsScalar()) {
+            input_directory = files_node["input_directory"].as<Path>();
+            QN_CHECK(fs::is_directory(input_directory),
+                     "files:input_directory={}. Does not refer to an existing directory",
+                     input_directory);
 
-        } else if (!directory_path.empty()) {
-            i32 count = 0;
-            for (auto& e: std::array<std::string, 3>{".st", ".mrc", ".mrcs"}) {
-                const Path stack_filename = directory_path / (basename + e);
-                if (fs::is_regular_file(stack_filename)) {
-                    node["stack_file"] = stack_filename;
-                    break;
-                }
-                ++count;
-            }
-            if (count == 3)
-                QN_THROW("Could not find the stack {}.(st|mrc|mrcs) in directory {}", basename, directory_path);
+        } else if (input_directory_node.IsNull()) {
+            input_directory = fs::current_path();
 
         } else {
-            QN_THROW("The stack could not be found. Check the options \"stack_file\" or "
-                     "\"stack_directory\" to make sure they are correctly specified");
+            QN_THROW("files:input_directory has an invalid type ({}). "
+                     "It should be a path to an existing directory or be left empty (defaulting on the cwd)",
+                     input_directory_node.Type());
         }
+        const std::string basename = *(--(input_directory / "").parent_path().end());
 
-        // Optional files.
-        for (auto& extension: std::array<std::string, 3>{"mdoc", "tlt", "exposure"}) {
-            const auto node_name = noa::string::format("stack_{}", extension);
-            if (node[node_name].IsScalar()) {
-                const auto filename = node[node_name].as<Path>();
-                QN_CHECK(fs::is_regular_file(filename),
-                         "The \"{}\" option was provided, but the corresponding filename doesn't exist or "
-                         "permissions to read are not granted", node_name);
+        // input_stack
+        const auto input_stack_node = files_node["input_stack"];
+        if (input_stack_node.IsScalar()) {
+            files.input_stack = input_stack_node.as<Path>();
+            QN_CHECK(fs::is_regular_file(files.input_stack),
+                     "files:input_stack={}. File does not exist or permissions to read are not granted",
+                     files.input_stack);
 
-            } else if (!directory_path.empty()) {
-                const Path filename = directory_path / noa::string::format("{}.{}", basename, extension);
-                if (fs::is_regular_file(filename))
-                    node[node_name] = filename;
+        } else if (input_stack_node.IsNull()) { // search within the input directory
+            const auto get_if_file_exists = [&](const Path& filename) {
+                Path stack_filename = filename;
+                if (fs::is_regular_file(stack_filename))
+                    return stack_filename;
+                return Path();
+            };
+
+            // Try to find the input stack.
+            for (auto& e: std::array<std::string, 3>{".st", ".mrc", ".mrcs"}) {
+                auto input_stack = get_if_file_exists(input_directory / (basename + e));
+                if (!input_stack.empty()) {
+                    QN_CHECK(files.input_stack.empty(),
+                             "Multiple files within the input directory fits the pattern of the input stack. "
+                             "Found: {} and {}", files.input_stack.filename(), input_stack.filename());
+                    files.input_stack = input_stack;
+                }
             }
+            QN_CHECK(!files.input_stack.empty(),
+                     "Could not find the input stack {}.(st|mrc|mrcs) in the input directory {}",
+                     basename, input_directory);
+
+        } else {
+            QN_THROW("files:input_stack has an invalid type ({}). "
+                     "It should be a path to an existing file or be left empty",
+                     input_stack_node.Type());
         }
+
+        // Optional input files.
+        const auto get_optional_file = [&](const std::string& parameter_name, std::string_view extension) {
+            Path file;
+            const auto parameter_node = files_node[parameter_name];
+            if (parameter_node.IsScalar()) {
+                // If a value was passed, check that it's a valid path.
+                file = parameter_node.as<Path>();
+                if (!fs::is_regular_file(file)) {
+                    QN_THROW_FUNC("parse_files_",
+                                  "files:{}={}. File does not exist or permissions to read are not granted",
+                                  parameter_name, file);
+                }
+            } else if (parameter_node.IsNull()) {
+                // Otherwise, fallback to the input directory.
+                const Path filename = input_directory / noa::string::format("{}.{}", basename, extension);
+                if (fs::is_regular_file(filename))
+                    file = filename;
+            } else {
+                QN_THROW("files:{} has an invalid type ({}). "
+                         "It should be a path to an existing file or be left empty",
+                         parameter_name, parameter_node.Type());
+            }
+            return file;
+        };
+        files.input_tlt = get_optional_file("input_tlt", "tlt");
+        files.input_exposure = get_optional_file("input_exposure", "exposure");
+
+        // output_directory
+        const auto output_directory_node = files_node["output_directory"];
+        if (output_directory_node.IsScalar()) {
+            files.output_directory = output_directory_node.as<Path>();
+        } else if (output_directory_node.IsNull()) {
+            files.output_directory = fs::current_path();
+        } else {
+            QN_THROW("files:output_directory has an invalid type ({}). "
+                     "It should be a convertible to a path or be left empty (defaulting on the cwd)",
+                     output_directory_node.Type());
+        }
+
+        return files;
+    }
+
+    Options::TiltScheme parse_tilt_scheme_(YAML::Node tilt_scheme_node) {
+        constexpr std::array QN_OPTIONS_TILT_SCHEME{
+                "order",
+                "rotation_offset",
+                "tilt_offset",
+                "elevation_offset",
+                "voltage",
+                "amplitude",
+                "cs",
+                "phase_shift",
+                "astigmatism_value",
+                "astigmatism_angle",
+        };
+        constexpr std::array QN_OPTIONS_TILT_SCHEME_ORDER{
+                "starting_angle",
+                "starting_direction",
+                "angle_increment",
+                "group",
+                "exclude_start",
+                "per_view_exposure",
+        };
+
+        sanitize_node_(tilt_scheme_node, QN_OPTIONS_TILT_SCHEME);
+        if (tilt_scheme_node["order"].IsMap())
+            sanitize_node_(tilt_scheme_node["order"], QN_OPTIONS_TILT_SCHEME_ORDER);
+
+        const auto parse_order_to_optional = [&](const YAML::Node& order_node)
+                -> std::optional<Options::TiltScheme::Order> {
+            if (order_node.IsMap()) {
+                // Every parameter should be specified.
+                for (auto parameter: QN_OPTIONS_TILT_SCHEME_ORDER) {
+                    if (!order_node[parameter].IsScalar())
+                        QN_THROW_FUNC("parse_tilt_scheme_", "tilt_scheme:order:{} has an invalid type ({})",
+                                      parameter, order_node[parameter].Type());
+                }
+                return Options::TiltScheme::Order{
+                        order_node["starting_angle"].as<f64>(),
+                        order_node["starting_direction"].as<i64>(),
+                        order_node["angle_increment"].as<f64>(),
+                        order_node["group"].as<i64>(),
+                        order_node["exclude_start"].as<bool>(),
+                        order_node["per_view_exposure"].as<f64>(),
+                };
+            } else if (!order_node.IsNull()) {
+                QN_THROW_FUNC("parse_tilt_scheme_",
+                              "tilt_scheme:order has an invalid type ({}). Should be a map or be left empty",
+                              order_node.Type());
+            } else {
+                return std::nullopt;
+            }
+        };
+
+        const auto parse_parameter = [&](const std::string& parameter_name, f64 fallback) -> f64 {
+            const auto parameter_node = tilt_scheme_node[parameter_name];
+            if (parameter_node.IsScalar())
+                return parameter_node.as<f64>(fallback);
+            else if (parameter_node.IsNull())
+                return fallback;
+            else {
+                QN_THROW_FUNC("parse_tilt_scheme_",
+                              "tilt_scheme:{} has an invalid type ({}). Should be a scalar",
+                              parameter_name, parameter_node.Type());
+            }
+        };
+
+        // Use max() to say that the angle offsets are not specified.
+        Options::TiltScheme tilt_scheme;
+        tilt_scheme.order = parse_order_to_optional(tilt_scheme_node["order"]);
+        tilt_scheme.rotation_offset = parse_parameter("rotation_offset", std::numeric_limits<f64>::max());
+        tilt_scheme.tilt_offset = parse_parameter("tilt_offset", std::numeric_limits<f64>::max());
+        tilt_scheme.elevation_offset = parse_parameter("elevation_offset", std::numeric_limits<f64>::max());
+        tilt_scheme.voltage = parse_parameter("voltage", 300.);
+        tilt_scheme.amplitude = parse_parameter("amplitude", 0.07);
+        tilt_scheme.cs = parse_parameter("cs", 2.7);
+        tilt_scheme.phase_shift = parse_parameter("phase_shift", 0.);
+        tilt_scheme.astigmatism_value = parse_parameter("astigmatism_value", 0.);
+        tilt_scheme.astigmatism_angle = parse_parameter("astigmatism_angle", 0.);
+
+        // Angle range (this is optional).
+        tilt_scheme.phase_shift = to_angle_range(tilt_scheme.phase_shift);
+        tilt_scheme.astigmatism_angle = to_angle_range(tilt_scheme.astigmatism_angle);
+
+        // Sanitize.
+        QN_CHECK(tilt_scheme.voltage >= 50 && tilt_scheme.voltage <= 450,
+                 "tilt_scheme::voltage={} (kV). Value is not supported",
+                 tilt_scheme.voltage);
+        QN_CHECK(tilt_scheme.amplitude >= 0 && tilt_scheme.amplitude <= 0.2,
+                 "tilt_scheme::amplitude={} (fraction). Value is not supported",
+                 tilt_scheme.amplitude);
+        QN_CHECK(tilt_scheme.cs >= 0 && tilt_scheme.cs <= 4,
+                 "tilt_scheme::cs={} (micrometers). Value is not supported",
+                 tilt_scheme.cs);
+        QN_CHECK(tilt_scheme.phase_shift >= 0 && tilt_scheme.phase_shift <= 45,
+                 "tilt_scheme::phase_shift={} (degrees). Value is not supported",
+                 tilt_scheme.phase_shift);
+        QN_CHECK(tilt_scheme.astigmatism_value >= 0 && tilt_scheme.astigmatism_value <= 0.5,
+                 "tilt_scheme::astigmatism_value={} (micrometers). Value is not supported",
+                 tilt_scheme.astigmatism_value);
+
+        return tilt_scheme;
+    }
+
+    Options::Preprocessing parse_preprocessing_(YAML::Node preprocessing_node) {
+        constexpr std::array QN_OPTIONS_PREPROCESSING{
+                "run",
+                "exclude_blank_views",
+                "exclude_view_indexes",
+        };
+        sanitize_node_(preprocessing_node, QN_OPTIONS_PREPROCESSING);
+
+        const auto parse_parameter = [&](const std::string& parameter_name, bool fallback) -> bool {
+            const auto parameter_node = preprocessing_node[parameter_name];
+            if (parameter_node.IsScalar())
+                return parameter_node.as<bool>(fallback);
+            else if (parameter_node.IsNull())
+                return fallback;
+            else {
+                QN_THROW_FUNC("parse_preprocessing_",
+                              "preprocessing:{} has an invalid type ({}). Should be a boolean",
+                              parameter_name, parameter_node.Type());
+            }
+        };
+
+        Options::Preprocessing preprocessing;
+        preprocessing.run = parse_parameter("run", true);
+        preprocessing.exclude_blank_views = parse_parameter("exclude_blank_views", true);
+
+        const YAML::Node exclude_view_indexes_node = preprocessing_node["exclude_view_indexes"];
+        if (exclude_view_indexes_node.IsSequence())
+            preprocessing.exclude_view_indexes = exclude_view_indexes_node.as<std::vector<i64>>();
+        else if (exclude_view_indexes_node.IsScalar())
+            preprocessing.exclude_view_indexes.emplace_back(exclude_view_indexes_node.as<i64>());
+        else {
+            QN_THROW("preprocessing:exclude_view_indexes has an invalid type ({}). Should be a scalar or a sequence",
+                     exclude_view_indexes_node.Type());
+        }
+
+        return preprocessing;
+    }
+
+    Options::Alignment parse_alignment_(YAML::Node alignment_node) {
+        constexpr std::array QN_OPTIONS_ALIGNMENT{
+                "run",
+                "fit_rotation_offset",
+                "fit_tilt_offset",
+                "fit_elevation_offset",
+                "fit_phase_shift",
+                "fit_astigmatism",
+                "use_pairwise_matching",
+                "use_projection_matching",
+                "use_ctf_estimate",
+        };
+        sanitize_node_(alignment_node, QN_OPTIONS_ALIGNMENT);
+
+        const auto parse_parameter = [&](const std::string& parameter_name, bool fallback) -> bool {
+            const auto parameter_node = alignment_node[parameter_name];
+            if (parameter_node.IsScalar())
+                return parameter_node.as<bool>(fallback);
+            else if (parameter_node.IsNull())
+                return fallback;
+            else {
+                QN_THROW_FUNC("parse_alignment_",
+                              "alignment:{} has an invalid type ({}). Should be a boolean",
+                              parameter_name, parameter_node.Type());
+            }
+        };
+
+        Options::Alignment alignment;
+        alignment.run = parse_parameter("run", true);
+        alignment.fit_rotation_offset = parse_parameter("fit_rotation_offset", true);
+        alignment.fit_tilt_offset = parse_parameter("fit_tilt_offset", true);
+        alignment.fit_elevation_offset = parse_parameter("fit_elevation_offset", true);
+        alignment.fit_phase_shift = parse_parameter("fit_phase_shift", false);
+        alignment.fit_astigmatism = parse_parameter("fit_astigmatism", true);
+        alignment.use_pairwise_matching = parse_parameter("use_pairwise_matching", true);
+        alignment.use_ctf_estimate = parse_parameter("use_ctf_estimate", true);
+        alignment.use_projection_matching = parse_parameter("use_projection_matching", true);
+        return alignment;
+    }
+
+    Options::Compute parse_compute_(const YAML::Node& compute_node) {
+        constexpr std::array QN_OPTIONS_COMPUTE{
+                "device",
+                "n_cpu_threads",
+                "log_level",
+        };
+        sanitize_node_(compute_node, QN_OPTIONS_COMPUTE);
+
+        Options::Compute compute;
+
+        // device
+        YAML::Node device_node = compute_node["device"];
+        std::string device_name;
+        if (device_node.IsNull()) {
+            device_name = "auto";
+        } else if (device_node.IsScalar()) {
+            device_name = string::lower(string::trim(device_node.as<std::string>()));
+        } else {
+            QN_THROW("compute:device has an invalid type ({}). "
+                     "Should be a scalar or be left emtpy (defaulting to \"auto\")",
+                     device_node.Type());
+        }
+
+        if (device_name == "auto") {
+            compute.device =
+                    noa::Device::is_any(noa::DeviceType::GPU) ?
+                    noa::Device::most_free(noa::DeviceType::GPU) :
+                    noa::Device("cpu");
+
+        } else if (string::starts_with(device_name, "gpu")){
+            // TODO noa::Device::has_id(std::string_view)? cpu:1
+            const size_t pos = device_name.find(':');
+            if (pos != std::string::npos && pos != device_name.size() - 1)
+                compute.device = noa::Device::most_free(noa::DeviceType::GPU);
+            else
+                compute.device = noa::Device(device_name);
+
+        } else {
+            // Let the device parsing do its thing and possibly throw...
+            compute.device = noa::Device(device_name);
+        }
+
+        // n_cpu_threads
+        const auto n_cpu_threads_node = compute_node["n_cpu_threads"];
+        if (n_cpu_threads_node.IsScalar()) {
+            compute.n_cpu_threads = n_cpu_threads_node.as<i64>();
+        } else if (n_cpu_threads_node.IsNull()){
+            compute.n_cpu_threads = std::min(static_cast<i64>(noa::cpu::Device::cores().logical), i64{16});
+        } else {
+            QN_THROW("compute:n_cpu_threads has an invalid type ({}). Should be a scalar or be left emtpy",
+                     device_node.Type());
+        }
+
+        // log_level
+        const auto log_level_node = compute_node["log_level"];
+        if (log_level_node.IsNull()) {
+            compute.log_level = "info";
+        } else if (log_level_node.IsScalar()) {
+            const auto level = string::lower(string::trim(compute_node["log_level"].as<std::string>()));
+            constexpr std::array valid_levels{"off", "error", "warn", "info", "trace", "debug"};
+            QN_CHECK(std::find(valid_levels.begin(), valid_levels.end(), level) != valid_levels.end(),
+                     "compute:log_level={} is not valid. Should be {}",
+                     level, valid_levels);
+            compute.log_level = level;
+        } else {
+            QN_THROW("compute:log_level has an invalid type ({}). "
+                     "Should be a scalar or be left emtpy (defaulting to \"info\")",
+                     device_node.Type());
+        }
+        return compute;
     }
 }
 
@@ -123,25 +399,27 @@ namespace qn {
             QN_THROW("Incorrect number of arguments. Enter the filename of the YAML parameter file");
 
         try {
-            m_options = YAML::LoadFile(argv[1]);
+            YAML::Node node = YAML::LoadFile(argv[1]);
+
+            constexpr std::array QN_OPTIONS_{
+                    "files",
+                    "tilt_scheme",
+                    "preprocessing",
+                    "alignment",
+                    "reconstruction",
+                    "compute"
+            };
+            sanitize_node_(node, QN_OPTIONS_);
+
+            files = parse_files_(node["files"]);
+            tilt_scheme = parse_tilt_scheme_(node["tilt_scheme"]);
+            preprocessing = parse_preprocessing_(node["preprocessing"]);
+            alignment = parse_alignment_(node["alignment"]);
+            // TODO reconstruction
+            compute = parse_compute_(node["compute"]);
+
         } catch (...) {
-            QN_THROW("Failed to load the parameter file");
+            QN_THROW("Failed to parse the parameters");
         }
-
-        // Make sure this is our parameter file.
-        if (m_options["quinoa"].Type() != YAML::NodeType::Map)
-            QN_THROW("Invalid parameter file. Main entry \"quinoa\" is missing");
-        m_options = m_options["quinoa"];
-
-        // Check the options are all valid options.
-        // This is mostly to prevent options being ignored because of a typo.
-        check_option_is_valid_(m_options);
-
-        // Add missing entries (as null), so that we don't need to check
-        // whether a node with a valid name is defined.
-        add_missing_options_(m_options);
-
-        // This should be done at the end, when all nodes are defined.
-        find_input_filenames_(m_options);
     }
 }

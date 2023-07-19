@@ -24,8 +24,6 @@ set(QUINOA_SOURCES
     src/quinoa/core/Ewise.cu
 
     src/quinoa/core/CTF.hpp
-    src/quinoa/core/CTF.inl
-    src/quinoa/core/CTF.cpp
     src/quinoa/core/CTFAverage.cpp
     src/quinoa/core/CTFGlobal.cpp
 

@@ -4,9 +4,16 @@
 #include <spdlog/spdlog.h>
 
 namespace qn {
+    // Static logger, with priority error > warn > info > trace > debug.
     class Logger {
     public:
-        static void initialize(std::string_view name, std::string_view filename, const std::string& level);
+        // Initializes the logger.
+        // - If "logfile" can be empty, the logs are not saved to a file.
+        // - The log level is set to debug (our lowest level). Use set_level() to change it.
+        static void initialize(std::string_view logfile);
+
+        // Set the level of the console sink.
+        static void set_level(const std::string& level_name);
 
         template<typename... Args>
         static void error(Args&& ... args) { s_logger.error(std::forward<Args>(args)...); }
@@ -18,16 +25,15 @@ namespace qn {
         static void info(Args&& ... args) { s_logger.info(std::forward<Args>(args)...); }
 
         template<typename... Args>
-        static void trace(Args&& ... args) { s_logger.trace(std::forward<Args>(args)...); }
+        static void trace(Args&& ... args) { s_logger.debug(std::forward<Args>(args)...); }
 
         template<typename... Args>
-        static void debug([[maybe_unused]] Args&& ... args) {
-            #ifdef QN_DEBUG
-            s_logger.debug(std::forward<Args>(args)...);
-            #endif
-        }
+        static void debug(Args&& ... args) { s_logger.trace(std::forward<Args>(args)...); }
+
+        static bool is_debug() { return s_is_debug; };
 
     private:
         static spdlog::logger s_logger;
+        static bool s_is_debug;
     };
 }

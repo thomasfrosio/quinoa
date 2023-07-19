@@ -44,7 +44,7 @@
 
 - [Compute](#compute)
   - `device`: string
-  - `cpu_threads`: integer
+  - `n_cpu_threads`: integer
   - `verbosity`: string
 
 
@@ -153,5 +153,5 @@ The alignments can be turned off using `alignment:run: false` (defaults to `true
 # Compute
 
 - `device`: Compute device. Either `auto` (default), `cpu`, `gpu` or `gpu:X`, where `X` is the gpu index, starting from `0`. `auto` will check if there are GPUs on the system, and if so, will use the most free GPU. `gpu` will also use the most free GPU.
-- `cpu_threads`: maximum number of CPU threads to use. Defaults to the maximum number of threads available on the system, clamped to `16`.
+- `n_cpu_threads`: maximum number of CPU threads to use. Defaults to the maximum number of threads available on the system, clamped to `16`.
 - `log_level`: Level of logging in the console. `off`, `error`, `info` (default), `trace` or `debug`. Note that log file is at least set to `trace`. `debug` has special meaning and should not be used in production, as it is only intended for debugging. In `debug` mode, a bunch of logs are emitted, possibly including a lot of (sometimes large) files, considerably slowing down the execution and storage footprint.

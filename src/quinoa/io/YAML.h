@@ -1,5 +1,7 @@
 #pragma once
 
+#include "yaml-cpp/node/type.h"
+#include <istream>
 #include <noa/Array.hpp>
 #include <ostream>
 
@@ -85,4 +87,29 @@ namespace YAML {
             return status;
         }
     };
+
+    inline std::ostream& operator<<(std::ostream& os, NodeType::value type) {
+        switch (type) {
+            case NodeType::Undefined:
+                os << "YAML::NodeType::Undefined";
+                break;
+            case NodeType::Null:
+                os << "YAML::NodeType::Null";
+                break;
+            case NodeType::Scalar:
+                os << "YAML::NodeType::Scalar";
+                break;
+            case NodeType::Sequence:
+                os << "YAML::NodeType::Sequence";
+                break;
+            case NodeType::Map:
+                os << "YAML::NodeType::Map";
+                break;
+        }
+        return os;
+    }
+}
+
+namespace fmt {
+    template<> struct formatter<YAML::NodeType::value> : ostream_formatter {};
 }

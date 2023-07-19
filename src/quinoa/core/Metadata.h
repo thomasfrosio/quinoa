@@ -8,15 +8,14 @@
 namespace qn {
     // Metadata of a 2d slice.
     // * The shifts are applied before the rotations. These are "by how much the slice is shifted",
-    //   so to align the slice one must subtract the shifts.
+    //   so to align the slice, one must subtract the shifts.
     // * The rotation center is fixed at n // 2, where n is the size of the axis.
     // * The Euler angles are in degrees, ZYX extrinsic (). All angles are positive-CCW when looking
     //   at the origin from the positive side. The rotation is "by how much the slice is rotated",
-    //   so to align the slice one must subtract the rotation. However, for the tilt and elevation,
+    //   so to align the slice, one must subtract the rotation. However, for the tilt and elevation,
     //   these are simply the angle of the slices in 3d space, so to insert a slice in 3d space,
     //   one must simply add these angles.
     struct MetadataSlice {
-    public:
         Vec3<f64> angles{}; // Euler angles, in degrees, of the slice. zyx extrinsic (rotation, tilt, elevation)
         Vec2<f64> shifts{}; // yx shifts, in pixels, of the slice.
         f32 exposure{};     // Cumulated exposure, in e-/A2.
@@ -45,39 +44,61 @@ namespace qn {
         bool exclude_start{};       // Exclude the first image from the first group.
         f32 per_view_exposure{};    // Per view exposure, in e-/A^2.
 
-        [[nodiscard]] std::vector<MetadataSlice> generate(i32 count, f64 rotation_angle = 0) const;
+        [[nodiscard]] std::vector<MetadataSlice> generate(i32 n_slices) const;
     };
 
-    /// Metadata of a stack of 2D slices.
+    // Metadata of a stack of 2D slices.
     class MetadataStack {
     public:
         MetadataStack() = default;
 
-        /// Creates the metadata.
-        /// Excluded views are not included, obviously.
+        // Initializes the slices:
+        //  - The tilt angles and exposure are set using the tilt_scheme:order or the tilt/exposure file.
+        //  - The rotation and elevation angles, as well as the shifts, are set to 0.
+        //  - The known angle offsets are not added at this point: the alignment will deal with them.
+        //  - The slice index and index_file are set, either from the tilt_scheme:order (in which case
+        //    slices are assumed to be saved in tilt-ascending order), or from the tilt file.
         explicit MetadataStack(const Options& options);
 
-        /// Creates the metadata from a mdoc file.
-        explicit MetadataStack(const Path& mdoc_filename);
-
-        /// Creates the metadata from a tlt and exposure file.
-        MetadataStack(const Path& tlt_filename,
-                      const Path& exposure_filename,
-                      f64 rotation_angle = 0);
-
-        /// Creates the metadata from the tilt scheme.
-        MetadataStack(TiltScheme tilt_scheme,
-                      i32 order_count,
-                      f64 rotation_angle = 0);
-
     public: // Stack manipulations
-        /// Excludes the slice(s) according to their "index" field.
-        /// The metadata is sorted in ascending order according to the "index" field
-        /// and the "index" field is reset from [0, N), N being the new slices count.
-        MetadataStack& exclude(const std::vector<i64>& indexes_to_exclude) noexcept;
+        // Excludes slice(s) according to a predicate.
+        // Predicate: The predicate is a function taking a MetadataSlice a retuning a boolean
+        //            If the predicate returns true, the slice should be removed.
+        // Reset indexes: The filtered metadata is sorted in ascending order according to the "index" field,
+        //                and the "index" field is reset from [0, N), N being the new slices count.
+        template<typename Predicate,
+                 typename = std::enable_if_t<std::is_invocable_r_v<bool, Predicate, const MetadataSlice&>>>
+        MetadataStack& exclude(
+                Predicate&& predicate,
+                bool reset_index_field = true
+        ) {
+            const auto end_of_new_range = std::remove_if(m_slices.begin(), m_slices.end(), predicate);
+            m_slices.erase(end_of_new_range, m_slices.end());
 
-        /// (Stable) sorts the slices based on a given key.
-        /// Valid keys: "index", "index_file", "tilt", "absolute_tilt", "exposure".
+            // Sort and reset index.
+            if (reset_index_field) {
+                sort_on_indexes_();
+                i32 count{0};
+                for (auto& slice: m_slices)
+                    slice.index = count++;
+            }
+
+            return *this;
+        }
+
+        // Excludes the slice(s) according to their "index" field.
+        MetadataStack& exclude(const std::vector<i64>& indexes_to_exclude, bool reset_index_field = true) {
+            return exclude(
+                    [&](const MetadataSlice& slice) {
+                        const i64 slice_index = slice.index;
+                        return std::any_of(indexes_to_exclude.begin(), indexes_to_exclude.end(),
+                                           [=](i64 index_to_exclude) { return slice_index == index_to_exclude; });
+                    },
+                    reset_index_field);
+        }
+
+        // (Stable) sorts the slices based on a given key.
+        // Valid keys: "index", "index_file", "tilt", "absolute_tilt", "exposure".
         MetadataStack& sort(std::string_view key, bool ascending = true);
 
     public: // Getters
@@ -86,28 +107,31 @@ namespace qn {
         [[nodiscard]] size_t size() const noexcept { return m_slices.size(); }
         [[nodiscard]] i64 ssize() const noexcept { return static_cast<i64>(size()); }
 
-        /// Returns a view of the slice at \p idx, as currently sorted in this instance (see sort()).
+        // Returns a view of the slice at "idx", as currently sorted in this instance (see sort()).
         template<typename T, typename = std::enable_if_t<noa::traits::is_int_v<T>>>
         [[nodiscard]] constexpr MetadataSlice& operator[](T idx) noexcept {
             NOA_ASSERT(idx >= 0 && static_cast<size_t>(idx) < size());
             return m_slices[static_cast<size_t>(idx)];
         }
 
-        /// Returns a view of the slice at \p idx, as currently sorted in this instance (see sort()).
+        // Returns a view of the slice at "idx", as currently sorted in this instance (see sort()).
         template<typename T, typename = std::enable_if_t<noa::traits::is_int_v<T>>>
         [[nodiscard]] constexpr const MetadataSlice& operator[](T idx) const noexcept {
             NOA_ASSERT(idx >= 0 && static_cast<size_t>(idx) < size());
             return m_slices[static_cast<size_t>(idx)];
         }
 
-        /// Find the index (as currently sorted in this instance)
-        /// of the slice with the lowest absolute tilt angle.
+        // Find the index (as currently sorted in this instance)
+        // of the slice with the lowest absolute tilt angle.
         [[nodiscard]] i64 find_lowest_tilt_index() const;
 
     public:
         static void log_update(const MetadataStack& origin, const MetadataStack& current);
 
     private:
+        void generate_(const Path& tlt_filename, const Path& exposure_filename);
+        void generate_(TiltScheme tilt_scheme, i32 order_count);
+
         void sort_on_indexes_(bool ascending = true);
         void sort_on_file_indexes_(bool ascending = true);
         void sort_on_tilt_(bool ascending = true);

@@ -16,9 +16,14 @@ else ()
         GIT_REPOSITORY ${spdlog_REPOSITORY}
         GIT_TAG ${spdlog_TAG}
     )
-    option(SPDLOG_INSTALL "Enable installation for the spdlog project." ON)
-    option(SPDLOG_FMT_EXTERNAL "Use the external {fmt} library" ON)
+    set(SPDLOG_INSTALL ON)
+    set(SPDLOG_FMT_EXTERNAL ON)
     FetchContent_MakeAvailable(spdlog)
+
+    # Change debug<->trace priority
+    target_compile_definitions(spdlog
+        PRIVATE
+        SPDLOG_LEVEL_NAMES={"debug","trace","info","warn","error","critical","off"})
 
     message(STATUS "New imported target available: spdlog::spdlog")
 endif ()

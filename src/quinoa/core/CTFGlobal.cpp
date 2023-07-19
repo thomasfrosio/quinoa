@@ -23,11 +23,12 @@ namespace {
     class Parameters {
     public:
         Parameters(
-                Vec3<bool> fit_angles, bool fit_phase_shift, bool fit_astigmatism,
-                i64 n_slices, CTFAnisotropic64 average_ctf
+                CTFFitter::GlobalFit fit,
+                i64 n_slices,
+                CTFAnisotropic64 average_ctf
         ) :
                 m_n_defocus(n_slices),
-                m_fit(fit_angles[0], fit_angles[1], fit_angles[2], fit_phase_shift, fit_astigmatism),
+                m_fit(fit.rotation, fit.tilt, fit.elevation, fit.phase_shift, fit.astigmatism),
                 m_buffer(size()
         ) {
             // Save the initial values.
@@ -97,15 +98,9 @@ namespace {
         [[nodiscard]] constexpr i64 ssize() const noexcept { return n_globals() + n_defocus(); }
         [[nodiscard]] constexpr size_t size() const noexcept { return static_cast<size_t>(ssize()); }
 
-        void set(i64 index, f64 value) noexcept {
-            m_buffer[static_cast<size_t>(index)] = value;
-        }
-        [[nodiscard]] f64 get(i64 index) const noexcept {
-            return m_buffer[static_cast<size_t>(index)];
-        }
-        [[nodiscard]] f64* data() noexcept {
-            return m_buffer.data();
-        }
+        void set(i64 index, f64 value) noexcept { m_buffer[static_cast<size_t>(index)] = value; }
+        [[nodiscard]] f64 get(i64 index) const noexcept { return m_buffer[static_cast<size_t>(index)]; }
+        [[nodiscard]] f64* data() noexcept { return m_buffer.data(); }
 
         [[nodiscard]] constexpr bool has_rotation() const noexcept { return m_fit[0]; }
         [[nodiscard]] constexpr bool has_tilt() const noexcept { return m_fit[1]; }
@@ -161,7 +156,7 @@ namespace {
     private:
         i64 m_n_defocus;
         Vec<bool, 5> m_fit; // rotation, tilt, elevation, phase_shift, astigmatism
-        std::array<f64, 3> m_initial_values{}; // phase_shift, defocus, astigmatism value, astigmatism angle
+        std::array<f64, 4> m_initial_values{}; // phase_shift, defocus, astigmatism value, astigmatism angle
         std::vector<f64> m_buffer;
         std::array<i64, 6> m_indexes{}; // rotation, tilt, elevation, phase_shift, astigmatism x2
         std::vector<f64> m_lower_bounds{};
@@ -171,29 +166,28 @@ namespace {
     class CTFGlobalFitter {
     public:
         CTFGlobalFitter(
-                MetadataStack& metadata,
-                const Shape2<i64>& slice_shape,
-                const CTF::Patches& patches_rfft_ps,
-                const CTF::FittingRange& fitting_range,
-                CTFAnisotropic64& average_anisotropic_ctf,
-                Vec3<bool> fit_angles,
-                bool fit_phase_shift,
-                bool fit_astigmatism
+                const MetadataStack& metadata,
+                const CTFFitter::Patches& patches_rfft_ps,
+                const CTFFitter::FittingRange& fitting_range,
+                const CTFFitter::Grid& grid,
+                const CTFAnisotropic64& average_anisotropic_ctf,
+                const CTFFitter::GlobalFit& fit
         ) :
-                m_slice_shape(slice_shape),
                 m_metadata(&metadata),
                 m_fitting_range(&fitting_range),
-                m_parameters(fit_angles, fit_phase_shift, fit_astigmatism, metadata.ssize(), average_anisotropic_ctf),
+                m_grid(&grid),
+                m_parameters(fit, patches_rfft_ps.n_slices(), average_anisotropic_ctf),
                 m_patches(&patches_rfft_ps)
         {
             // Few checks...
-            QN_CHECK(metadata.ssize() == patches_rfft_ps.n_slices(), "");
+            QN_CHECK(metadata.ssize() == patches_rfft_ps.n_slices() &&
+                     metadata.ssize() == m_parameters.n_defocus(), "");
             QN_CHECK(noa::math::are_almost_equal(
                      fitting_range.spacing,
                      noa::math::sum(average_anisotropic_ctf.pixel_size()) / 2), "");
 
-            const i64 n_patches = patches_rfft_ps.n_patches();
-            const auto options = patches_rfft_ps.rfft_ps.options();
+            const i64 n_patches = patches_rfft_ps.n_patches_per_stack();
+            const auto options = patches_rfft_ps.rfft_ps().options();
             const auto options_pitched = ArrayOption(options).set_allocator(Allocator::PITCHED);
             const auto options_managed = ArrayOption(options).set_allocator(Allocator::MANAGED);
 
@@ -223,7 +217,7 @@ namespace {
 
             // Astigmatism. In this case, we need an extra array with the anisotropic ctfs.
             // The defocus is going to be overwritten, but we still need to initialize everything else.
-            if (fit_astigmatism) {
+            if (m_parameters.has_astigmatism()) {
                 m_ctfs_anisotropic = noa::memory::empty<CTFAnisotropic64>(n_patches, options_managed);
                 for (auto& ctf: m_ctfs_anisotropic.span())
                     ctf = average_anisotropic_ctf;
@@ -235,23 +229,23 @@ namespace {
         }
 
         void update_slice_patches_ctfs_(
-                Span<const Vec2<f32>> patches_centers,
                 Span<CTFIsotropic64> patches_ctfs,
                 const Vec2<f64>& slice_shifts,
                 const Vec3<f64>& slice_angles,
                 f64 slice_defocus,
                 f64 phase_shift
         ) {
+            const auto patches_centers = m_grid->patches_centers();
             NOA_ASSERT(patches_centers.ssize() == patches_ctfs.ssize());
 
             for (i64 i = 0; i < patches_ctfs.ssize(); ++i) {
                 CTFIsotropic64& patch_ctf = patches_ctfs[i];
 
                 // Get the 3d position of the patch, in micrometers.
-                const auto patch_coordinates = CTF::patch_transformed_coordinate(
-                        m_slice_shape, slice_shifts, slice_angles,
+                const auto patch_coordinates = m_grid->patch_transformed_coordinate(
+                        slice_shifts, slice_angles,
                         Vec2<f64>{patch_ctf.pixel_size()},
-                        patches_centers[i].as<f64>());
+                        patches_centers[i]);
 
                 // The defocus at the patch center is simply the slice defocus plus the z offset from the tilt axis.
                 patch_ctf.set_defocus(patch_coordinates[0] + slice_defocus);
@@ -261,28 +255,29 @@ namespace {
 
         void cost(i64 nccs_index) {
             const i64 n_slices = m_patches->n_slices();
-            const i64 n_patches = m_patches->n_patches();
+            const i64 n_patches = m_patches->n_patches_per_stack();
+            const auto patches_shape = m_patches->shape().push_front<2>({n_patches, 1});
 
-            // Update CTFs with the current parameters.
-            const Span<f64> defoci = m_parameters.defoci();
-            const auto patches_center_coordinates = Span(
-                    m_patches->center_coordinates.data(), m_patches->center_coordinates.size());
+            {
+                // Update CTFs with the current parameters.
+                const Vec3<f64> angle_offsets = m_parameters.angle_offsets();
+                const f64 phase_shift = m_parameters.phase_shift();
+                const Span<f64> defoci = m_parameters.defoci();
 
-            for (i64 i = 0; i < n_slices; ++i) {
-                const MetadataSlice& metadata_slice = (*m_metadata)[i];
-                const Vec2<f64>& slice_shifts = metadata_slice.shifts;
-                const Vec3<f64> slice_angles = metadata_slice.angles + m_parameters.angle_offsets();
-                const f64 slice_defocus = defoci[i];
+                for (i64 i = 0; i < n_slices; ++i) {
+                    const MetadataSlice& metadata_slice = (*m_metadata)[i];
+                    const Vec2<f64>& slice_shifts = metadata_slice.shifts;
+                    const Vec3<f64> slice_angles = metadata_slice.angles + angle_offsets;
+                    const f64 slice_defocus = defoci[i];
 
-                // Fetch the CTFs of the patches belonging to the current slice.
-                const auto ctfs_isotropic_of_that_slice = m_ctfs_isotropic
-                        .subregion(noa::indexing::Ellipsis{}, m_patches->slicing_operator(i))
-                        .span();
+                    // Fetch the CTFs of the patches belonging to the current slice.
+                    const auto slice_patches_ctfs = m_ctfs_isotropic
+                            .subregion(noa::indexing::Ellipsis{}, m_patches->chunk(i))
+                            .span();
 
-                update_slice_patches_ctfs_(
-                        patches_center_coordinates, ctfs_isotropic_of_that_slice,
-                        slice_shifts, slice_angles, slice_defocus,
-                        m_parameters.phase_shift());
+                    update_slice_patches_ctfs_(
+                            slice_patches_ctfs, slice_shifts, slice_angles, slice_defocus, phase_shift);
+                }
             }
 
             // Compute the rotation averages, if needed.
@@ -301,12 +296,12 @@ namespace {
 
                     // Compute the astigmatism-corrected rotational average.
                     noa::geometry::fft::rotational_average_anisotropic<fft::H2H>(
-                            m_patches->rfft_ps, m_patches->logical_shape().push_front<2>({n_patches, 1}),
+                            m_patches->rfft_ps(), patches_shape,
                             m_ctfs_anisotropic, m_rotational_averages, m_rotational_weights,
                             m_fitting_range->fourier_cropped_fftfreq_range().as<f32>(), /*endpoint=*/ true);
                 } else {
                     noa::geometry::fft::rotational_average<fft::H2H>(
-                            m_patches->rfft_ps, m_patches->logical_shape().push_front<2>({n_patches, 1}),
+                            m_patches->rfft_ps(), patches_shape,
                             m_rotational_averages, m_rotational_weights,
                             m_fitting_range->fourier_cropped_fftfreq_range().as<f32>(), /*endpoint=*/ true);
 
@@ -338,24 +333,14 @@ namespace {
             noa::math::dot(m_rotational_averages, m_simulated_ctfs, m_nccs.subregion(nccs_index));
         }
 
-        [[nodiscard]] const CTF::Patches& patches() noexcept {
-            return *m_patches;
-        }
-
-        [[nodiscard]] View<const f32> nccs() const noexcept {
-            return m_nccs.view();
-        }
-
-        [[nodiscard]] Parameters& parameters() noexcept {
-            return m_parameters;
-        }
-
         static auto function_to_maximise(u32, const f64*, f64* gradients, void* buffer) -> f64 {
             Timer timer;
             timer.start();
             auto& self = *static_cast<CTFGlobalFitter*>(buffer);
             auto& parameters = self.parameters();
 
+            // TODO Weighted sum using cos(tilt) to increase weight of the lower tilt (where we have more signal)?
+            //      Or use exposure since we don't know the lower tilt...?
             auto cost_mean = [&self](i64 nccs_index = 0) -> f64 {
                 self.cost(nccs_index);
                 return static_cast<f64>(noa::math::mean(self.nccs().subregion(nccs_index)));
@@ -417,17 +402,19 @@ namespace {
                 const auto fx = nccs.subregion(0).span();
                 const auto fx_minus_delta = nccs.subregion(1).span();
                 const auto fx_plus_delta = nccs.subregion(2).span();
-                const CTF::Patches& patches = self.patches();
-                const auto mean_weight = static_cast<f64>(patches.n_patches());
 
-                for (i64 i = 0; i < patches.n_slices(); ++i) {
-                    const auto [index_start, index_end] = patches.range(i);
+                const auto n_slices = self.patches().n_slices();
+                const auto n_patches = self.patches().n_patches_per_stack();
+                const auto mean_weight = static_cast<f64>(n_patches);
+
+                for (i64 i = 0; i < n_slices; ++i) {
+                    const noa::indexing::Slice chunk = self.patches().chunk(i);
                     f64 cost_minus_delta{0};
                     f64 cost_plus_delta{0};
 
-                    for (i64 j = 0; j < patches.n_patches(); ++j) {
+                    for (i64 j = 0; j < n_patches; ++j) {
                         // Whether the patch belongs to this slice.
-                        if (j >= index_start && j < index_end) {
+                        if (j >= chunk.start && j < chunk.end) {
                             // This patch is affected by this defocus.
                             cost_minus_delta += static_cast<f64>(fx_minus_delta[j]);
                             cost_plus_delta += static_cast<f64>(fx_plus_delta[j]);
@@ -453,14 +440,26 @@ namespace {
             return cost;
         }
 
+        [[nodiscard]] const CTFFitter::Patches& patches() noexcept {
+            return *m_patches;
+        }
+
+        [[nodiscard]] View<const f32> nccs() const noexcept {
+            return m_nccs.view();
+        }
+
+        [[nodiscard]] Parameters& parameters() noexcept {
+            return m_parameters;
+        }
+
     private:
-        Shape2<i64> m_slice_shape;
         const MetadataStack* m_metadata{};
-        const CTF::FittingRange* m_fitting_range{};
+        const CTFFitter::FittingRange* m_fitting_range{};
+        const CTFFitter::Grid* m_grid{};
         Parameters m_parameters;
 
         // Patches and their ctfs.
-        const CTF::Patches* m_patches{};
+        const CTFFitter::Patches* m_patches{};
         Array<CTFIsotropic64> m_ctfs_isotropic;
         Array<CTFAnisotropic64> m_ctfs_anisotropic;
         Array<f32> m_nccs;
@@ -475,71 +474,36 @@ namespace {
 }
 
 namespace qn {
-    CTF::Patches CTF::compute_patches_rfft_ps_(
+    CTFFitter::Patches CTFFitter::compute_patches_rfft_ps(
+            Device compute_device,
             StackLoader& stack_loader,
             const MetadataStack& metadata,
             const FittingRange& fitting_range,
-            f64 max_tilt,
+            const Grid& grid,
             const Path& debug_directory
     ) {
-        const auto options = m_slice.options();
-        const auto n_patches_per_slice = m_patches_rfft.shape()[0];
-        const auto patch_shape = Shape2<i64>(m_patch_size);
+        const auto options = ArrayOption(compute_device, Allocator::DEFAULT_ASYNC);
+        const auto slice_patches_shape = grid.patch_shape().push_front<2>({grid.n_patches(), 1});
 
-        // How many patches do we have?
-        i64 n_patches_per_stack{0};
-        for (const auto& slice_metadata: metadata.slices()) {
-            if (std::abs(slice_metadata.angles[1]) <= max_tilt)
-                n_patches_per_stack += n_patches_per_slice;
-        }
+        // The patches are loaded one slice at a time. So allocate enough for one slice.
+        const auto slice = noa::memory::empty<f32>(grid.slice_shape().push_front<2>({1, 1}), options);
+        const auto patches_rfft = noa::memory::empty<c32>(slice_patches_shape.rfft(), options);
+        const auto patches_rfft_ps = noa::memory::like<f32>(patches_rfft);
+        const auto patches = noa::fft::alias_to_real(patches_rfft, slice_patches_shape);
 
-        // Here, to save memory and computation, we store the Fourier crop spectra directly.
-        const auto cropped_patch_shape = fitting_range
-                .fourier_cropped_shape()
-                .push_front<2>({n_patches_per_stack, 1});
+        // Create the big array with all the patches.
+        // Use managed memory in case it doesn't fit in device memory.
+        const auto options_managed = ArrayOption(options).set_allocator(Allocator::MANAGED);
+        auto cropped_patches = Patches(grid, fitting_range, metadata.ssize(), options_managed);
 
-        // This is the big array with all the patches. For safety here, use managed memory
-        // in case the compute-device cannot hold the entire thing at once.
-        qn::Logger::trace("Patches (max_tilt={} degrees, n_patches={} ({}GB)):",
-                          max_tilt, n_patches_per_stack,
-                          static_cast<f64>(cropped_patch_shape.rfft().as<size_t>().elements() * sizeof(f32)) * 1e-9);
+        // Prepare the subregion origins, ready for extract_subregions().
+        const auto subregion_origins = grid.compute_subregion_origins();
+        const auto patches_origins = View(subregion_origins.data(), subregion_origins.size()).to(options);
 
-        Patches cropped_patches{
-                /*rfft_ps=*/ noa::memory::empty<f32>(
-                        cropped_patch_shape.rfft(),
-                        ArrayOption(options).set_allocator(Allocator::MANAGED)),
-
-                /*center_coordinates=*/ extract_patches_centers(
-                        stack_loader.slice_shape(),
-                        patch_shape, Vec2<i64>(m_patch_step))
-        };
-
-        // Loading every single patch at once can be too much if the compute-device is a GPU.
-        // Since this function is only called a few times, simply load the patches slice per slice.
-        const auto slice = m_slice.view();
-        const auto patches_rfft = m_patches_rfft.view();
-        const auto patches_rfft_ps = noa::memory::like<f32>(m_patches_rfft);
-        const auto patches_origins = noa::memory::empty<Vec4<i32>>(n_patches_per_slice, options);
         i64 index{0};
-        i64 total{0};
-
         for (const auto& slice_metadata: metadata.slices()) {
-            if (std::abs(slice_metadata.angles[1]) > max_tilt)
-                continue;
-
-            // Get the patch origins.
-            const std::vector<Vec4<i32>> patches_origins_vector = extract_patches_origins(
-                    stack_loader.slice_shape(), slice_metadata, stack_loader.stack_spacing(),
-                    patch_shape, Vec2<i64>(m_patch_step));
-            NOA_ASSERT(patches_origins_vector.size() == static_cast<size_t>(n_patches_per_slice));
-            View(patches_origins_vector.data(), n_patches_per_slice).to(patches_origins);
-
-            // Prepare the patches for extraction.
-            const auto patches = noa::fft::alias_to_real(
-                    patches_rfft, patch_shape.push_front<2>({n_patches_per_slice, 1}));
-
             // Extract the patches. Assume the slice is normalized and edges are tapered.
-            stack_loader.read_slice(slice, slice_metadata.index_file);
+            stack_loader.read_slice(slice.view(), slice_metadata.index_file);
             noa::memory::extract_subregions(slice, patches, patches_origins);
             noa::math::normalize_per_batch(patches, patches);
 
@@ -550,40 +514,34 @@ namespace qn {
             noa::fft::r2c(patches, patches_rfft, noa::fft::Norm::FORWARD);
             noa::ewise_unary(patches_rfft, patches_rfft_ps, noa::abs_squared_t{});
 
-            // Fourier crop to fitting range and store.
-            cropped_patches.slices.emplace_back(total, total + n_patches_per_slice);
-            const auto slice_cropped_patches_rfft_ps = cropped_patches.patches_from_last_slice();
+            // Fourier crop to fitting range and store in the output.
             noa::fft::resize<fft::H2H>(
                     patches_rfft_ps, patches.shape(),
-                    slice_cropped_patches_rfft_ps, cropped_patch_shape.set<0>(n_patches_per_slice));
+                    cropped_patches.rfft_ps(index), cropped_patches.chunk_shape());
 
             ++index;
-            total += n_patches_per_slice;
-            qn::Logger::debug("index={:>02.2f}, patches={:>03}, total={:>05}",
-                              slice_metadata.angles[1], n_patches_per_slice, total);
+            qn::Logger::debug("index={:>02.2f}", slice_metadata.angles[1]);
         }
 
         if (!debug_directory.empty()) {
-            noa::io::save(noa::ewise_unary(cropped_patches.rfft_ps, noa::abs_one_log_t{}),
+            noa::io::save(noa::ewise_unary(cropped_patches.rfft_ps().to_cpu(), noa::abs_one_log_t{}),
                           debug_directory / "patches_ps.mrc");
         }
         return cropped_patches;
     }
 
-    void CTF::fit_ctf_to_patches_(
-            MetadataStack& metadata,
-            const Shape2<i64>& slice_shape,
+    auto CTFFitter::fit_ctf_to_patches(
+            const MetadataStack& metadata,
             const Patches& patches_rfft_ps,
             const FittingRange& fitting_range,
-            CTFAnisotropic64& ctf_anisotropic,
-            Vec3<bool> fit_angles,
-            bool fit_phase_shift,
-            bool fit_astigmatism,
+            const Grid& grid,
+            const CTFAnisotropic64& ctf_anisotropic,
+            GlobalFit fit,
             const Path& debug_directory
-    ) {
+    ) -> CTFFitter::GlobalFitOutput {
+
         auto fitter = CTFGlobalFitter(
-                metadata, slice_shape, patches_rfft_ps, fitting_range, ctf_anisotropic,
-                fit_angles, fit_phase_shift, fit_astigmatism);
+                metadata, patches_rfft_ps, fitting_range, grid, ctf_anisotropic, fit);
         auto& parameters = fitter.parameters();
 
         // Optimizer.
@@ -608,14 +566,21 @@ namespace qn {
         optimizer.optimize(parameters.data());
 
         // Actual average defocus.
+        std::vector<f64> defoci;
         f64 average_defocus{0};
-        for (f64 defocus: parameters.defoci())
+        for (f64 defocus: parameters.defoci()) {
             average_defocus += defocus;
+            defoci.push_back(defocus);
+        }
         average_defocus /= static_cast<f64>(parameters.n_defocus());
 
-        // Update the metadata:
-        add_global_angles(metadata, parameters.angle_offsets());
-        ctf_anisotropic.set_phase_shift(parameters.phase_shift());
-        ctf_anisotropic.set_defocus({average_defocus, parameters.astigmatism_value(), parameters.astigmatism_angle()});
+        return {
+            /*angle_offsets=*/ parameters.angle_offsets(),
+            /*phase_shift=*/ parameters.phase_shift(),
+            /*astigmatism_value=*/ parameters.astigmatism_value(),
+            /*astigmatism_angle=*/ parameters.astigmatism_angle(),
+            /*average_defocus=*/ average_defocus,
+            /*defoci=*/ defoci
+        };
     }
 }
