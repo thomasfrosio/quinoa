@@ -14,25 +14,25 @@
 // ------------------------------------
 //
 // Concept:
-//  Go through the stack ordered by tilt angles, each view is aligned to lower tilt neighbour (so by definition
+//  Go through the stack ordered by tilt angles, each view is aligned to a lower tilt neighbor (so by definition,
 //  the lowest tilt view is the global reference and is not aligned). The known shift and rotation difference between
 //  the target and the reference is corrected. The tilt and elevation, which are 3d transformations, cannot be
 //  corrected. Instead, a 2d cosine stretching is applied to estimate the tilt and elevation difference. Note that
-//  the elevation difference is almost always 0. Once these correction are applied, the shift between the stretched
+//  the elevation difference is almost always 0. Once these corrections are applied, the shift between the stretched
 //  target and the reference is computed using the conventional cross-correlation.
 //
 // Strength:
-//  This method is quite robust to large shifts so is perfect as first step of the alignment. If the rotation is not
+//  This method is quite robust to large shifts so is perfect as a first step of the alignment. If the rotation is not
 //  known, cosine stretching can be turned off and still be robust enough for a first estimate of the shifts.
 //  It is also very efficient, so can be used iteratively, each iteration building on the next one (because the
 //  difference between the target and the reference can be better estimated).
 //  Overall, it gives us a good starting point.
 //
 // Issues:
-//  Since the neighbouring views are aligned together, to get the global shift (the shift relative to the global
-//  reference), we need to add the relative shifts (inclusive sum operation), effectively accumulating the errors
+//  Since the neighboring views are aligned together, to get the global shift (the shift relative to the global
+//  reference), we need to add the relative shifts (by an inclusive sum operation), effectively accumulating the errors
 //  to the higher tilts.
-//  The tilt (and elevation) difference cannot be correctly accounted for and the cosine stretching is only an
+//  The tilt (and elevation) difference cannot be correctly accounted for, and the cosine stretching is only an
 //  approximation. While it mostly holds for thin samples and at low tilt, it quickly becomes imprecise at high tilt.
 //  This implementation tries to limit the drift that these errors can cause, mostly by restricting and enforcing
 //  a common area for the cross-correlation, excluding the regions perpendicular to the tilt axis that move a lot
