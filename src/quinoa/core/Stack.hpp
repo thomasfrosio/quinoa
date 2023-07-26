@@ -188,8 +188,8 @@ namespace qn {
             if (output_slice.device() == cropped_slice.device()) {
                 noa::memory::resize(cropped_slice, output_slice);
             } else {
-                if (m_output_buffer.is_empty() || m_output_buffer.device() != output_slice.device())
-                    m_output_buffer = noa::memory::empty<f32>(cropped_slice.shape(), output_slice.options());
+                if (m_output_buffer.is_empty())
+                    m_output_buffer = noa::memory::like(cropped_slice);
                 noa::memory::resize(cropped_slice, m_output_buffer);
                 m_output_buffer.to(output_slice);
             }
