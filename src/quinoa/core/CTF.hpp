@@ -69,18 +69,18 @@ namespace qn {
                 subregion_origins.reserve(m_origins.size());
 
                 const Vec2<f64>& slice_shifts = metadata.shifts;
-                const Vec3<f64>& slice_angles = metadata.angles;
+                const Vec3<f64> slice_angles_rad = noa::math::deg2rad(metadata.angles);
                 const Vec2<f64> patch_center = MetadataSlice::center<f64>(patch_shape());
 
                 for (const auto& origin: m_origins) {
                     // Get the 3d position of the patch.
-                    const auto patch_coordinates = patch_transformed_coordinate(
-                            slice_shifts, slice_angles, sampling_rate,
+                    const auto patch_z_offset_um = patch_z_offset(
+                            slice_shifts, slice_angles_rad, sampling_rate,
                             origin.as<f64>() + patch_center);
 
                     // Filter based on its z position.
                     // TODO Filter to remove patches at the corners?
-                    const auto z_nanometers = patch_coordinates[0] * 1e3; // micro -> nano
+                    const auto z_nanometers = patch_z_offset_um * 1e3; // micro -> nano
                     if (z_nanometers < delta_z_range_nanometers[0] ||
                         z_nanometers > delta_z_range_nanometers[1])
                         continue;
@@ -90,33 +90,31 @@ namespace qn {
                 return subregion_origins;
             }
 
-            [[nodiscard]] auto patch_transformed_coordinate(
+            // Applies the tilt and elevation to the patch to get its z-offset (in micrometers) from the tilt-axis.
+            [[nodiscard]] auto patch_z_offset(
                     Vec2<f64> slice_shifts,
-                    Vec3<f64> slice_angles,
+                    Vec3<f64> slice_angles, // radians
                     Vec2<f64> slice_spacing,
                     Vec2<f64> patch_center
-            ) const -> Vec3<f64> {
-                slice_angles = noa::math::deg2rad(slice_angles);
-
-                // By convention, the rotation angle is the additional rotation of the image.
-                // Subtracting it aligns the tilt-axis to the y-axis.
-                slice_angles[0] *= -1;
-
+            ) const -> f64 {
                 // Switch coordinates from pixels to micrometers.
                 const auto scale = slice_spacing * 1e-4;
                 const auto slice_center = MetadataSlice::center(slice_shape()).as<f64>();
                 const auto slice_center_3d = (slice_center * scale).push_front(0);
                 const auto slice_shifts_3d = (slice_shifts * scale).push_front(0);
 
-                // Place the slice into a 3d volume, with the center of the slice at the origin of the volume.
-                namespace ng = noa::geometry;
+                // Apply the tilt and elevation.
                 const Double44 image2microscope_matrix =
-                        ng::linear2affine(ng::euler2matrix(slice_angles, /*axes=*/ "zyx", /*intrinsic=*/ false)) *
-                        ng::translate(-slice_center_3d - slice_shifts_3d);
+                        noa::geometry::translate(slice_center_3d + slice_shifts_3d) * // 6. shift back
+                        noa::geometry::linear2affine(noa::geometry::rotate_z(slice_angles[0])) * // 5. rotate back
+                        noa::geometry::linear2affine(noa::geometry::rotate_x(slice_angles[2])) * // 4. elevation
+                        noa::geometry::linear2affine(noa::geometry::rotate_y(slice_angles[1])) * // 3. tilt
+                        noa::geometry::linear2affine(noa::geometry::rotate_z(-slice_angles[0])) * // 2. align tilt-axis
+                        noa::geometry::translate(-slice_center_3d - slice_shifts_3d); // 1. slice rotation center
 
                 const auto patch_center_3d = (patch_center * scale).push_front(0).push_back(1);
                 const Vec3<f64> patch_center_transformed = (image2microscope_matrix * patch_center_3d).pop_back();
-                return patch_center_transformed;
+                return patch_center_transformed[0];
             }
 
         private:
@@ -185,8 +183,8 @@ namespace qn {
             // This corresponds to the range [0, fftfreq[1]], i.e. the high frequencies are removed,
             // but of course the low frequencies cannot be cropped by simple Fourier cropping.
             [[nodiscard]] constexpr Shape2<i64> fourier_cropped_shape() const noexcept {
-                const i64 fourier_cropped_size = slice.end;
-                return {fourier_cropped_size, fourier_cropped_size};
+                const i64 fourier_cropped_logical_size = (slice.end - 1) * 2; // even size
+                return {fourier_cropped_logical_size, fourier_cropped_logical_size};
             }
 
             // The patches are already Fourier cropped to (exactly) the end of fitting range.
@@ -216,7 +214,7 @@ namespace qn {
                 // inout
                 FittingRange& fitting_range,
                 CTFAnisotropic64& ctf
-        ) -> std::array<f64, 3>; // defocus ramp
+        ) -> std::pair<std::array<f64, 3>, std::array<f64, 3>>; // defocus and ncc ramp
 
     private:
         static Array<f32> compute_average_patch_rfft_ps_(
@@ -229,7 +227,7 @@ namespace qn {
                 const Path& debug_directory
         );
 
-        static void fit_ctf_to_patch_(
+        static f64 fit_ctf_to_patch_(
                 Array<f32> patch_rfft_ps,
                 FittingRange& fitting_range,
                 CTFAnisotropic64& ctf_anisotropic, // contains the initial defocus and phase shift, return best
@@ -258,11 +256,12 @@ namespace qn {
         };
 
         // The cropped power-spectra, of every patch, of every slice.
-        //  - The patches are Fourier cropped to save memory.
+        //  - The patches are Fourier cropped to save memory. The frequency range is set by the "fitting_range".
         //  - This type contains the actual (Fourier cropped) power-spectrum of each patch, of every slice.
-        //    The patches of a given slice are saved sequentially in "chunks" and these chunks are saved
+        //    The patches of a given slice are saved sequentially in a "chunk" and these chunks are saved
         //    sequentially too, along the batch dimension of the main (contiguous) array. In practice,
-        //    chunks are simple slice-operators: an index range such as [start,end) (the end is exclusive).
+        //    chunks can be accessed with a simple slice-operator: an index range such as [start,end).
+        //  - Importantly, chunks have the same size, i.e. the number of patches is the same for every slice.
         class Patches {
         public:
             Patches(
@@ -276,11 +275,13 @@ namespace qn {
                 // Here, to save memory and computation, we store the Fourier crop spectra directly.
                 const auto cropped_patch_shape = fitting_range
                         .fourier_cropped_shape()
-                        .push_front<2>({n_patches_per_slice() * n_slices, 1});
+                        .push_front<2>({grid.n_patches() * n_slices, 1});
 
                 const size_t bytes = cropped_patch_shape.rfft().as<size_t>().elements() * sizeof(f32);
-                qn::Logger::trace("Allocating for the patches (n_slices={}, n_patches={} ({}GB, device={})).",
-                                  n_slices, n_patches_per_slice(), static_cast<f64>(bytes) * 1e-9, option.device());
+                qn::Logger::trace(
+                        "Allocating for the patches (n_slices={}, n_patches={}, total={} ({:.2f}GB, device={})).",
+                        n_slices, grid.n_patches(), cropped_patch_shape[0],
+                        static_cast<f64>(bytes) * 1e-9, option.device());
 
                 // This is the big array with all the patches.
                 m_rfft_ps = noa::memory::empty<f32>(cropped_patch_shape.rfft(), option);
@@ -288,6 +289,7 @@ namespace qn {
 
             [[nodiscard]] View<f32> rfft_ps() const noexcept { return m_rfft_ps.view(); }
 
+            // Retrieves the patches of a given slice.
             [[nodiscard]] View<f32> rfft_ps(i64 chunk_index) const {
                 return rfft_ps().subregion(chunk(chunk_index));
             }

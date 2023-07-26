@@ -34,6 +34,7 @@ namespace {
     void save_average_ctf_(
             const CTFAnisotropic64& average_ctf,
             const std::array<f64, 3>& defocus_ramp,
+            const std::array<f64, 3>& ncc_ramp,
             const Path& output_filename
     ) {
         YAML::Emitter out;
@@ -56,12 +57,53 @@ namespace {
         out << YAML::Comment("degrees");
 
         out << YAML::Key << "defocus_ramp";
-        out << YAML::Comment("micrometers");
-        out << YAML::BeginSeq;
-        out << YAML::Value << defocus_ramp[0] << YAML::Comment("above tilt-axis");
-        out << YAML::Value << defocus_ramp[1] << YAML::Comment("at tilt-axis");
-        out << YAML::Value << defocus_ramp[2] << YAML::Comment("below tilt-axis");
-        out << YAML::EndSeq;
+        out << YAML::BeginMap;
+
+        std::array keys{"above", "at", "below"};
+        for (size_t i = 0; i < 3; ++i) {
+            out << YAML::Key << keys[i];
+            out << YAML::BeginMap;
+            out << YAML::Key << "defocus" << YAML::Value << defocus_ramp[i] << YAML::Comment("micrometers");
+            out << YAML::Key << "ncc" << YAML::Value << ncc_ramp[i];
+            out << YAML::EndMap;
+        }
+        out << YAML::EndMap;
+
+        out << YAML::EndMap;
+        out << YAML::Newline;
+
+        noa::io::save_text(out.c_str(), output_filename);
+    }
+
+    void save_global_ctf_(
+            const CTFAnisotropic64& average_ctf,
+            const std::array<f64, 3>& defoci,
+            const Path& output_filename
+    ) {
+        YAML::Emitter out;
+        out << YAML::BeginMap;
+
+        out << YAML::Key << "defocus";
+        out << YAML::Value << average_ctf.defocus().value;
+        out << YAML::Comment("in micrometers");
+
+        out << YAML::Key << "defocus_astigmatism";
+        out << YAML::Value << average_ctf.defocus().astigmatism;
+        out << YAML::Comment("in micrometers");
+
+        out << YAML::Key << "defocus_angle";
+        out << YAML::Value << noa::math::rad2deg(average_ctf.defocus().angle);
+        out << YAML::Comment("in degrees");
+
+        out << YAML::Key << "phase_shift";
+        out << YAML::Value << noa::math::rad2deg(average_ctf.phase_shift());
+        out << YAML::Comment("in degrees");
+
+        out << YAML::Key << "defoci" << YAML::Comment("micrometers");
+        out << YAML::BeginMap;
+        for (size_t i = 0; i < defoci.size(); ++i)
+            out << YAML::Key << i << YAML::Value << defoci[i];
+        out << YAML::EndMap;
 
         out << YAML::EndMap;
         out << YAML::Newline;
@@ -264,7 +306,7 @@ namespace {
         // Load stack
         const auto loading_parameters = LoadStackParameters{
                 /*compute_device=*/ parameters.compute_device,
-                /*allocator=*/ Allocator::DEFAULT_ASYNC,
+                /*allocator=*/ Allocator::MANAGED,
                 /*median_filter_window=*/ int32_t{1},
                 /*precise_cutoff=*/ true,
                 /*rescale_target_resolution=*/ -1,
@@ -298,7 +340,7 @@ namespace {
             // Fit on the average power-spectrum.
             auto metadata_for_average_fitting = metadata;
             rescale_shifts(metadata_for_average_fitting, spacing_file, spacing_fitting);
-            std::array<f64, 3> defocus_ramp = CTFFitter::fit_average_ps(
+            auto [defocus_ramp, ncc_ramp] = CTFFitter::fit_average_ps(
                     stack_loader, grid, metadata_for_average_fitting, parameters.debug_directory / "ctf_average",
                     parameters.delta_z_range_nanometers, parameters.delta_z_shift_nanometers,
                     parameters.max_tilt_for_average, parameters.fit_phase_shift, parameters.fit_astigmatism,
@@ -337,27 +379,28 @@ namespace {
 
             // Save average fit to an output yaml file.
             save_average_ctf_(
-                    average_ctf, defocus_ramp,
+                    average_ctf, defocus_ramp, ncc_ramp,
                     parameters.output_directory /
                     noa::string::format("{}_average_ctf.yaml", stack_filename.stem().string()));
         }
 
-//        // For the global fitting, allow to remove high tilts to save memory.
-//        auto metadata_for_global_fitting = metadata;
-//        metadata_for_global_fitting.exclude(
-//                [&](const MetadataSlice& slice) {
-//                    return std::abs(slice.angles[1]) > parameters.max_tilt_for_global;
-//                });
-//        rescale_shifts(metadata_for_global_fitting, spacing_file, spacing_fitting);
-//
-//        // Compute the patches.
-//        const CTFFitter::Patches patches_rfft_ps = CTFFitter::compute_patches_rfft_ps(
-//                parameters.compute_device, stack_loader, metadata_for_global_fitting,
-//                fitting_range, grid, debug_directory);
-//
-//        // From that point, everything is loaded, release the loader.
-//        stack_loader = StackLoader();
-//
+        // For the global fitting, allow to remove high tilts to save memory.
+        auto metadata_for_global_fitting = metadata;
+        metadata_for_global_fitting.exclude(
+                [&](const MetadataSlice& slice) {
+                    return std::abs(slice.angles[1]) > parameters.max_tilt_for_global;
+                });
+        rescale_shifts(metadata_for_global_fitting, spacing_file, spacing_fitting);
+
+        // Compute the patches.
+        qn::Logger::set_level("trace");
+        const CTFFitter::Patches patches_rfft_ps = CTFFitter::compute_patches_rfft_ps(
+                parameters.compute_device, stack_loader, metadata_for_global_fitting,
+                fitting_range, grid, parameters.debug_directory);
+
+        // From that point, everything is loaded, release the loader.
+        stack_loader = StackLoader();
+
 //        // Initialize pairwise shift alignment, to refine the shifts after finding the stage angles.
 //        struct PairwiseShiftAlignment {
 //            MetadataStack metadata;
@@ -396,16 +439,27 @@ namespace {
 //            };
 //            rescale_shifts(pairwise_shift.metadata, spacing_file, pairwise_shift.spacing);
 //        }
-//
-//        CTFFitter::GlobalFitOutput output;
+
+        // FIXME tests
+        add_global_angles(metadata_for_global_fitting, {0, 0, 3.});
+
+        qn::Logger::set_level("debug");
+        CTFFitter::GlobalFit global_fit{
+                /*rotation=*/ true,
+                /*tilt=*/ true,
+                /*elevation=*/ true,
+                /*phase_shift=*/ false,
+                /*astigmatism=*/ false,
+        };
+        CTFFitter::GlobalFitOutput output;
 //        for (i64 i = 0; i < 1 + parameters.refine_pairwise_shift; ++i) {
 //            // Global fit.
-//             output = CTFFitter::fit_ctf_to_patches(
-//                    metadata_for_global_fitting, patches_rfft_ps,
-//                    fitting_range, grid, average_ctf, global_fit,
-//                    debug_directory
-//            );
-//
+             output = CTFFitter::fit_ctf_to_patches(
+                    metadata_for_global_fitting, patches_rfft_ps,
+                    fitting_range, grid, average_ctf, global_fit,
+                    parameters.debug_directory
+            );
+
 //            // Update and output.
 //            add_global_angles(metadata_for_global_fitting, output.angle_offsets);
 //            average_ctf.set_defocus({output.average_defocus, output.astigmatism_value, output.astigmatism_angle});
@@ -621,14 +675,14 @@ namespace qn {
         // 2. CTF alignment:
         //  -
         //  -
-        qn::Logger::set_level("debug");
+        qn::Logger::set_level("trace");
         const auto ctf_alignment_parameters = CTFAlignmentParameters{
                 /*compute_device=*/ options.compute.device,
                 /*output_directory=*/ options.files.output_directory,
                 /*debug_directory=*/ options.files.output_directory / "debug_ctf",
 
-                /*patch_size=*/ 512,
-                /*patch_step=*/ 256,
+                /*patch_size=*/ 1024,
+                /*patch_step=*/ 512,
                 /*fit_phase_shift=*/ options.alignment.fit_phase_shift,
                 /*fit_astigmatism=*/ options.alignment.fit_astigmatism,
                 /*resolution_range=*/ Vec2<f64>{ 40, 8 },
@@ -645,7 +699,7 @@ namespace qn {
                 /*flip_rotation_to_match_defocus_ramp=*/ !has_user_angle_offset[0],
 
                 /*fit_angle_offset=*/ fit_angle_offset,
-                /*max_tilt_for_global=*/ 90,
+                /*max_tilt_for_global=*/ 70,
         };
         auto [average_ctf, per_view_defocus] = ctf_alignment(
                 options.files.input_stack,

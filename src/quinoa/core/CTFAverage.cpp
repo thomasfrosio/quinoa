@@ -610,9 +610,8 @@ namespace qn {
             Device compute_device,
             FittingRange& fitting_range,
             CTFAnisotropic64& ctf
-    ) -> std::array<f64, 3> {
+    ) -> std::pair<std::array<f64, 3>, std::array<f64, 3>> {
         std::array directory{"at_eucentric", "below_eucentric", "above_eucentric"};
-        std::array defocus_ramp{0., 0., 0.};
         std::array max_tilt_for_averages{max_tilt_for_average, 90., 90.};
         std::array delta_z_ranges{
                 delta_z_range_nanometers,
@@ -620,6 +619,8 @@ namespace qn {
                 delta_z_range_nanometers + std::abs(delta_z_shift_nanometers)
         };
 
+        std::array<f64, 3> defocus_ramp{};
+        std::array<f64, 3> ncc_ramp{};
         FittingRange i_fitting_range = fitting_range;
         CTFAnisotropic64 i_ctf = ctf;
 
@@ -628,11 +629,12 @@ namespace qn {
                     compute_device, stack_loader, metadata, grid,
                     delta_z_ranges[i], max_tilt_for_averages[i], debug_directory / directory[i]);
 
-            fit_ctf_to_patch_(
+            const f64 ncc = fit_ctf_to_patch_(
                     average_patch_rfft_ps, i_fitting_range, i_ctf,
                     fit_phase_shift, fit_astigmatism, debug_directory / directory[i]);
 
             defocus_ramp[i] = i_ctf.defocus().value;
+            ncc_ramp[i] = ncc;
             if (i == 0) {
                 fitting_range = i_fitting_range;
                 ctf = i_ctf;
@@ -641,7 +643,8 @@ namespace qn {
         }
 
         std::swap(defocus_ramp[0], defocus_ramp[1]); // below, at, above eucentric height
-        return defocus_ramp;
+        std::swap(ncc_ramp[0], ncc_ramp[1]);
+        return {defocus_ramp, ncc_ramp};
     }
 
     Array<f32> CTFFitter::compute_average_patch_rfft_ps_(
@@ -744,7 +747,7 @@ namespace qn {
         return patches_rfft_ps_average;
     }
 
-    void CTFFitter::fit_ctf_to_patch_(
+    f64 CTFFitter::fit_ctf_to_patch_(
             Array<f32> patch_rfft_ps,
             FittingRange& fitting_range, // background is updated
             CTFAnisotropic64& ctf_anisotropic, // defocus and phase shift are updated
@@ -861,5 +864,6 @@ namespace qn {
         // Update output ctf.
         // If astigmatism isn't fitted, these are just the input values.
         ctf_anisotropic = CTFAnisotropic64(ctf_isotropic, astigmatism_value, astigmatism_angle);
+        return ncc;
     }
 }

@@ -7,20 +7,35 @@
 namespace {
     using namespace ::qn;
 
+    // TODO Make the defocus fitting optional. The user could provide a vector with the defocus of each slice,
+    //      and we can wrap and access it from e.g. Parameters::defocus(i64 slice_index)? Not sure it's really
+    //      useful, especially given that fitting the defoci is really cheap in resources.
+
     // The parameters to optimize.
-    //
     //  - The parameters are divided in two categories, 1) the global parameters, and 2) the defoci.
     //    The global parameters affect every patch of every slice. These are the 3 stage-angles (rotation, tilt,
     //    elevation), the phase shift and the defocus astigmatism (value and angle). On the other hand, the defocus
     //    (of a given slice) only affects the patches of that slice. This distinction is used to compute the
     //    gradients efficiently.
-    //
     //  - The stage-angles are offsets to whatever angles are saved in the metadata.
     //    The other parameters are the actual values of the CTF.
-    //
     //  - The parameters are saved contiguously, so we can iterate through them. If a global parameter is not
     //    fitted, it is not included in this continuous buffer.
     class Parameters {
+    private:
+        // How many slices, i.e., defocus, do we have?
+        i64 m_n_defocus;
+
+        Vec<bool, 5> m_fit_global; // whether to fit the rotation, tilt, elevation, phase_shift, astigmatism
+        std::array<f64, 3> m_initial_values{}; // phase_shift, astigmatism value, astigmatism angle
+        std::array<i64, 6> m_indexes{}; // rotation, tilt, elevation, phase_shift, astigmatism x2
+
+        // Contiguous buffers, where parameters for the optimizer are saved sequentially.
+        std::vector<f64> m_buffer;
+        std::vector<f64> m_lower_bounds{};
+        std::vector<f64> m_upper_bounds{};
+        std::vector<f64> m_abs_tolerance{};
+
     public:
         Parameters(
                 CTFFitter::GlobalFit fit,
@@ -28,20 +43,21 @@ namespace {
                 CTFAnisotropic64 average_ctf
         ) :
                 m_n_defocus(n_slices),
-                m_fit(fit.rotation, fit.tilt, fit.elevation, fit.phase_shift, fit.astigmatism),
-                m_buffer(size()
-        ) {
-            // Save the initial values.
+                m_fit_global(fit.rotation, fit.tilt, fit.elevation, fit.phase_shift, fit.astigmatism),
+                m_buffer(size())
+        {
+            // Save some initial values. This is in case they are not fitted, and we need to get the original values.
             m_initial_values[0] = average_ctf.phase_shift();
             m_initial_values[1] = average_ctf.defocus().astigmatism;
             m_initial_values[2] = average_ctf.defocus().angle;
-            m_initial_values[3] = average_ctf.defocus().value;
 
             // Set the indexes.
             i64 count{0};
             for (auto i: irange<size_t>(6)) { // rotation, tilt, elevation, phase_shift, astigmatism x2
-                if (m_fit[std::min(i, size_t{5})]) // astigmatism value/angle are both at 5
-                    m_indexes[i] = count++;
+                if (m_fit_global[std::min(i, size_t{4})]) { // astigmatism value/angle are both at 4
+                    m_indexes[i] = count;
+                    count += 1; // be more explicit than "count++"
+                }
             }
 
             // Initialise the continuous parameter array (the angles offsets are 0).
@@ -52,10 +68,11 @@ namespace {
                 set(astigmatism_angle_index(), m_initial_values[2]);
             }
             for (auto& defocus: defoci())
-                defocus = m_initial_values[3];
+                defocus = average_ctf.defocus().value;
         }
 
         // Sets the (low and high) bounds for every parameter.
+        // Angles are in radians.
         void set_relative_bounds(
                 Vec2<f64> rotation,
                 Vec2<f64> tilt,
@@ -92,8 +109,36 @@ namespace {
                 push_back(defocus_index() + i, defocus);
         }
 
+        void set_abs_tolerance(
+                f64 angle_tolerance,
+                f64 phase_shift_tolerance,
+                f64 astigmatism_value_tolerance,
+                f64 astigmatism_angle_tolerance,
+                f64 defocus_tolerance
+        ) {
+            m_abs_tolerance = std::vector<f64>(size(), 0);
+            if (has_rotation())
+                m_abs_tolerance[static_cast<size_t>(rotation_index())] = angle_tolerance;
+            if (has_tilt())
+                m_abs_tolerance[static_cast<size_t>(tilt_index())] = angle_tolerance;
+            if (has_elevation())
+                m_abs_tolerance[static_cast<size_t>(elevation_index())] = angle_tolerance;
+            if (has_phase_shift())
+                m_abs_tolerance[static_cast<size_t>(phase_shift_index())] = (phase_shift_tolerance);
+            if (has_astigmatism()) {
+                m_abs_tolerance[static_cast<size_t>(astigmatism_value_index())] = astigmatism_value_tolerance;
+                m_abs_tolerance[static_cast<size_t>(astigmatism_angle_index())] = astigmatism_angle_tolerance;
+            }
+            for (i64 i = 0; i < n_defocus(); ++i)
+                m_abs_tolerance[static_cast<size_t>(defocus_index() + i)] = defocus_tolerance;
+        }
+
+        void update(const f64* parameters) {
+            std::copy(parameters, parameters + size(), data());
+        }
+
     public:
-        [[nodiscard]] constexpr i64 n_globals() const noexcept { return noa::math::sum(m_fit.as<i64>()); }
+        [[nodiscard]] constexpr i64 n_globals() const noexcept { return noa::math::sum(m_fit_global.as<i64>()); }
         [[nodiscard]] constexpr i64 n_defocus() const noexcept { return m_n_defocus; }
         [[nodiscard]] constexpr i64 ssize() const noexcept { return n_globals() + n_defocus(); }
         [[nodiscard]] constexpr size_t size() const noexcept { return static_cast<size_t>(ssize()); }
@@ -102,11 +147,11 @@ namespace {
         [[nodiscard]] f64 get(i64 index) const noexcept { return m_buffer[static_cast<size_t>(index)]; }
         [[nodiscard]] f64* data() noexcept { return m_buffer.data(); }
 
-        [[nodiscard]] constexpr bool has_rotation() const noexcept { return m_fit[0]; }
-        [[nodiscard]] constexpr bool has_tilt() const noexcept { return m_fit[1]; }
-        [[nodiscard]] constexpr bool has_elevation() const noexcept { return m_fit[2]; }
-        [[nodiscard]] constexpr bool has_phase_shift() const noexcept { return m_fit[3]; }
-        [[nodiscard]] constexpr bool has_astigmatism() const noexcept { return m_fit[4]; }
+        [[nodiscard]] constexpr bool has_rotation() const noexcept { return m_fit_global[0]; }
+        [[nodiscard]] constexpr bool has_tilt() const noexcept { return m_fit_global[1]; }
+        [[nodiscard]] constexpr bool has_elevation() const noexcept { return m_fit_global[2]; }
+        [[nodiscard]] constexpr bool has_phase_shift() const noexcept { return m_fit_global[3]; }
+        [[nodiscard]] constexpr bool has_astigmatism() const noexcept { return m_fit_global[4]; }
 
         [[nodiscard]] constexpr i64 rotation_index() const noexcept { return m_indexes[0]; }
         [[nodiscard]] constexpr i64 tilt_index() const noexcept { return m_indexes[1]; }
@@ -116,12 +161,17 @@ namespace {
         [[nodiscard]] constexpr i64 astigmatism_angle_index() const noexcept { return m_indexes[5]; }
         [[nodiscard]] constexpr i64 defocus_index() const noexcept { return n_globals(); }
 
-        [[nodiscard]] Span<f64> globals() noexcept {
+    public: // access through spans.
+        [[nodiscard]] Span<f64> globals() noexcept { // can be empty
             return {m_buffer.data(), n_globals()};
         }
 
         [[nodiscard]] Span<f64> defoci() noexcept {
-            return {m_buffer.data() + n_globals(), n_defocus()};
+            return {m_buffer.data() + defocus_index(), n_defocus()};
+        }
+
+        [[nodiscard]] Span<f64> parameters() noexcept {
+            return {m_buffer.data(), ssize()};
         }
 
         [[nodiscard]] Span<f64> lower_bounds() noexcept {
@@ -132,8 +182,13 @@ namespace {
             return {m_upper_bounds.data(), ssize()};
         }
 
+        [[nodiscard]] Span<f64> abs_tolerance() noexcept {
+            return {m_abs_tolerance.data(), ssize()};
+        }
+
     public: // safe access of the parameters, whether they are fitted.
         [[nodiscard]] Vec3<f64> angle_offsets() const noexcept {
+            // These are offsets, so the initial value is always 0.
             return {
                     has_rotation() ? get(rotation_index()) : 0,
                     has_tilt() ? get(tilt_index()) : 0,
@@ -152,18 +207,29 @@ namespace {
         [[nodiscard]] f64 astigmatism_angle() const noexcept {
             return has_astigmatism() ? get(astigmatism_angle_index()) : m_initial_values[2];
         }
-
-    private:
-        i64 m_n_defocus;
-        Vec<bool, 5> m_fit; // rotation, tilt, elevation, phase_shift, astigmatism
-        std::array<f64, 4> m_initial_values{}; // phase_shift, defocus, astigmatism value, astigmatism angle
-        std::vector<f64> m_buffer;
-        std::array<i64, 6> m_indexes{}; // rotation, tilt, elevation, phase_shift, astigmatism x2
-        std::vector<f64> m_lower_bounds{};
-        std::vector<f64> m_upper_bounds{};
     };
 
     class CTFGlobalFitter {
+    private:
+        const MetadataStack* m_metadata{};
+        const CTFFitter::FittingRange* m_fitting_range{};
+        const CTFFitter::Grid* m_grid{};
+        Parameters m_parameters;
+        Memoizer m_memoizer; // must be after m_parameters
+
+        // Patches and their ctfs.
+        const CTFFitter::Patches* m_patches{};
+        Array<CTFIsotropic64> m_ctfs_isotropic;
+        Array<CTFAnisotropic64> m_ctfs_anisotropic;
+        Array<f32> m_nccs;
+
+        // 1d spectra.
+        Array<f32> m_rotational_averages;
+        Array<f32> m_rotational_weights;
+        Array<f32> m_simulated_ctfs;
+        Array<f32> m_background_curve;
+        bool m_are_rotational_averages_ready{false};
+
     public:
         CTFGlobalFitter(
                 const MetadataStack& metadata,
@@ -177,14 +243,17 @@ namespace {
                 m_fitting_range(&fitting_range),
                 m_grid(&grid),
                 m_parameters(fit, patches_rfft_ps.n_slices(), average_anisotropic_ctf),
+                m_memoizer(/*n_parameters=*/ m_parameters.ssize(), /*resolution=*/ 1),
                 m_patches(&patches_rfft_ps)
         {
             // Few checks...
             QN_CHECK(metadata.ssize() == patches_rfft_ps.n_slices() &&
-                     metadata.ssize() == m_parameters.n_defocus(), "");
+                     metadata.ssize() == m_parameters.n_defocus(),
+                     "Metadata mismatch");
             QN_CHECK(noa::math::are_almost_equal(
                      fitting_range.spacing,
-                     noa::math::sum(average_anisotropic_ctf.pixel_size()) / 2), "");
+                     noa::math::sum(average_anisotropic_ctf.pixel_size()) / 2),
+                     "Spacing mismatch");
 
             const i64 n_patches = patches_rfft_ps.n_patches_per_stack();
             const auto options = patches_rfft_ps.rfft_ps().options();
@@ -194,13 +263,13 @@ namespace {
             // Prepare for rotational averages.
             //  - These are within the fitting range, so allocate for exactly that.
             //  - Use pitched layout for performance, since accesses are per row.
-            //  - The weights are optional, but don't rely on the device-cache.
+            //  - The weights are optional here, but don't rely on the device-cache.
             m_rotational_averages = noa::memory::empty<f32>({n_patches, 1, 1, fitting_range.size}, options_pitched);
             m_rotational_weights = noa::memory::like(m_rotational_averages);
             m_simulated_ctfs = noa::memory::like(m_rotational_averages);
 
             // The background is within the fitting range too. Evaluate once and broadcast early.
-            // After this point, the background is on the device and ready to be subtracted.
+            // After this point, the background is on the device and ready to use.
             m_background_curve = noa::memory::empty<f32>(fitting_range.size);
             apply_cubic_bspline_1d(m_background_curve.view(), m_background_curve.view(), fitting_range.background,
                                    [](f32, f32 interpolant) { return interpolant; });
@@ -231,7 +300,7 @@ namespace {
         void update_slice_patches_ctfs_(
                 Span<CTFIsotropic64> patches_ctfs,
                 const Vec2<f64>& slice_shifts,
-                const Vec3<f64>& slice_angles,
+                const Vec3<f64>& slice_angles_radians,
                 f64 slice_defocus,
                 f64 phase_shift
         ) {
@@ -241,14 +310,16 @@ namespace {
             for (i64 i = 0; i < patches_ctfs.ssize(); ++i) {
                 CTFIsotropic64& patch_ctf = patches_ctfs[i];
 
-                // Get the 3d position of the patch, in micrometers.
-                const auto patch_coordinates = m_grid->patch_transformed_coordinate(
-                        slice_shifts, slice_angles,
+                // Get the z-offset of the patch.
+                const auto patch_z_offset_um = m_grid->patch_z_offset(
+                        slice_shifts, slice_angles_radians,
                         Vec2<f64>{patch_ctf.pixel_size()},
                         patches_centers[i]);
 
-                // The defocus at the patch center is simply the slice defocus plus the z offset from the tilt axis.
-                patch_ctf.set_defocus(patch_coordinates[0] + slice_defocus);
+                // The defocus at the patch center is simply the slice defocus minus the z offset from the tilt axis.
+                // Indeed, the defocus is positive, so a negative z-offset -> below the tilt axis -> further away
+                // from the defocus -> has a larger defocus.
+                patch_ctf.set_defocus(slice_defocus - patch_z_offset_um);
                 patch_ctf.set_phase_shift(phase_shift);
             }
         }
@@ -267,7 +338,7 @@ namespace {
                 for (i64 i = 0; i < n_slices; ++i) {
                     const MetadataSlice& metadata_slice = (*m_metadata)[i];
                     const Vec2<f64>& slice_shifts = metadata_slice.shifts;
-                    const Vec3<f64> slice_angles = metadata_slice.angles + angle_offsets;
+                    const Vec3<f64> slice_angles = noa::math::deg2rad(metadata_slice.angles) + angle_offsets;
                     const f64 slice_defocus = defoci[i];
 
                     // Fetch the CTFs of the patches belonging to the current slice.
@@ -326,34 +397,63 @@ namespace {
                     m_fitting_range->fftfreq.as<f32>(), /*endpoint=*/ true);
             noa::math::normalize_per_batch(m_simulated_ctfs, m_simulated_ctfs, NormalizationMode::L2_NORM);
 
+            // TODO Print per patch?
+//            if (qn::Logger::is_debug()) {
+//                save_vector_to_text(m_simulated_ctfs.view(), "/home/thomas/Projects/quinoa/tests/ribo_ctf/debug_ctf/simulated_ctfs.txt");
+//                save_vector_to_text(m_rotational_averages.view(), "/home/thomas/Projects/quinoa/tests/ribo_ctf/debug_ctf/rotational_averages.txt");
+//            }
+
             // Normalized cross-correlation.
             // This is the cost for every patch. We need to take the sum|average of these to get the total cost
             // for the stack, but let the maximization function do that since it needs the individual nccs
-            // for the gradients anyway.
+            // for the defocus gradients.
             noa::math::dot(m_rotational_averages, m_simulated_ctfs, m_nccs.subregion(nccs_index));
+
+            // We have to explicitly synchronize here, to make sure the inputs are not modified while this is running.
+            m_nccs.eval();
         }
 
-        static auto function_to_maximise(u32, const f64*, f64* gradients, void* buffer) -> f64 {
+        static auto function_to_maximise(u32, const f64* parameters, f64* gradients, void* buffer) -> f64 {
             Timer timer;
             timer.start();
             auto& self = *static_cast<CTFGlobalFitter*>(buffer);
-            auto& parameters = self.parameters();
 
             // TODO Weighted sum using cos(tilt) to increase weight of the lower tilt (where we have more signal)?
-            //      Or use exposure since we don't know the lower tilt...?
+            //      Or use exposure since we don't know the lower tilt...? The issue with that is that the higher
+            //      tilts are contributing a lot to the angle offsets because they are more sensible to it.
             auto cost_mean = [&self](i64 nccs_index = 0) -> f64 {
                 self.cost(nccs_index);
                 return static_cast<f64>(noa::math::mean(self.nccs().subregion(nccs_index)));
             };
+
+            // The optimizer may pass its own array, so update/memcpy our parameters.
+            if (parameters != self.parameters().data())
+                self.parameters().update(parameters);
+
+            if (!gradients)
+                return cost_mean();
+
+            // Memoization. This is only to skip for when the linear search is stuck.
+            std::optional<f64> memoized_cost = self.memoizer().find(self.parameters().data(), gradients, 1e-8);
+            if (memoized_cost.has_value()) {
+                f64 cost = memoized_cost.value();
+                qn::Logger::debug("cost={:.4f}, elapsed={:.2f}ms, memoized=true", cost, timer.elapsed());
+                return cost;
+            }
+
+            // For the finite central difference method, use a delta that is the 4th of the tolerance for that parameter.
+            // This is to be small enough for good accuracy, and large enough to make a significant change on the score.
+            const Span<f64> abs_tolerance = self.parameters().abs_tolerance();
 
             // Compute the gradients for the global parameters.
             // Changing one of these parameters affects every patch,
             // so we need to recompute everything every time.
             {
                 f64* gradient_globals = gradients;
-                for (auto& value: parameters.globals()) {
+                i64 i = 0;
+                for (auto& value: self.parameters().globals()) {
                     const f64 initial_value = value;
-                    const f64 delta = CentralFiniteDifference::delta(initial_value);
+                    const f64 delta = abs_tolerance[i];
 
                     value = initial_value - delta;
                     const f64 fx_minus_delta = cost_mean();
@@ -361,7 +461,10 @@ namespace {
                     const f64 fx_plus_delta = cost_mean();
 
                     value = initial_value; // back to original value
-                    *(gradient_globals++) = CentralFiniteDifference::get(fx_minus_delta, fx_plus_delta, delta);
+                    const f64 gradient = CentralFiniteDifference::get(fx_minus_delta, fx_plus_delta, delta / 4);
+                    *(gradient_globals++) = gradient;
+                    ++i;
+                    qn::Logger::debug("global: g={:.8f}, v={:.8f}", gradient, value);
                 }
             }
 
@@ -374,14 +477,15 @@ namespace {
             // then compute the partial costs with and without delta for every slice, and then compute
             // the final costs one by one.
             {
-                Span defoci = parameters.defoci();
-                f64* defoci_gradients = gradients + parameters.defocus_index();
+                Span defoci = self.parameters().defoci();
+                const auto defocus_index = self.parameters().defocus_index();
+                f64* defoci_gradients = gradients + defocus_index;
 
-                // First, save the current defoci and compute the deltas.
+                // First, save the current defoci and the deltas.
                 std::vector<Vec2<f64>> defoci_and_delta;
                 defoci_and_delta.reserve(defoci.size());
-                for (f64 i : defoci)
-                    defoci_and_delta.emplace_back(i, CentralFiniteDifference::delta(i));
+                for (i64 i = 0; i < defoci.ssize(); ++i)
+                    defoci_and_delta.emplace_back(defoci[i], abs_tolerance[i + defocus_index] / 4);
 
                 // Compute the partial costs with minus delta.
                 for (size_t i = 0; i < defoci.size(); ++i)
@@ -398,7 +502,7 @@ namespace {
                     defoci[i] = defoci_and_delta[i][0];
 
                 // Compute the gradients.
-                const auto nccs = self.nccs();
+                const auto nccs = self.nccs().eval(); // make sure to synchronize
                 const auto fx = nccs.subregion(0).span();
                 const auto fx_minus_delta = nccs.subregion(1).span();
                 const auto fx_plus_delta = nccs.subregion(2).span();
@@ -429,14 +533,17 @@ namespace {
 
                     cost_minus_delta /= mean_weight;
                     cost_plus_delta /= mean_weight;
-
-                    defoci_gradients[i] = CentralFiniteDifference::get(
+                    const auto gradient = CentralFiniteDifference::get(
                             cost_minus_delta, cost_plus_delta,
                             defoci_and_delta[static_cast<size_t>(i)][1]);
+
+                    defoci_gradients[i] = gradient;
+                    qn::Logger::debug("defocus {:>02}: g={:.8f}, v={:.8f}", i, gradient, defoci[i]);
                 }
             }
 
-            qn::Logger::debug("cost={:.3f}, elapsed={:.2f}ms", cost, timer.elapsed());
+            self.memoizer().record(self.parameters().data(), cost, gradients);
+            qn::Logger::debug("cost={:.4f}, elapsed={:.2f}ms", cost, timer.elapsed());
             return cost;
         }
 
@@ -452,24 +559,9 @@ namespace {
             return m_parameters;
         }
 
-    private:
-        const MetadataStack* m_metadata{};
-        const CTFFitter::FittingRange* m_fitting_range{};
-        const CTFFitter::Grid* m_grid{};
-        Parameters m_parameters;
-
-        // Patches and their ctfs.
-        const CTFFitter::Patches* m_patches{};
-        Array<CTFIsotropic64> m_ctfs_isotropic;
-        Array<CTFAnisotropic64> m_ctfs_anisotropic;
-        Array<f32> m_nccs;
-
-        // 1d spectra.
-        Array<f32> m_rotational_averages;
-        Array<f32> m_rotational_weights;
-        Array<f32> m_simulated_ctfs;
-        Array<f32> m_background_curve;
-        bool m_are_rotational_averages_ready{false};
+        [[nodiscard]] Memoizer& memoizer() noexcept {
+            return m_memoizer;
+        }
     };
 }
 
@@ -497,7 +589,9 @@ namespace qn {
         auto cropped_patches = Patches(grid, fitting_range, metadata.ssize(), options_managed);
 
         // Prepare the subregion origins, ready for extract_subregions().
-        const auto subregion_origins = grid.compute_subregion_origins();
+        // The grid divides sets the field-of-view in patches, meaning that the patch origins
+        // are the same for every slice.
+        const std::vector<Vec4<i32>> subregion_origins = grid.compute_subregion_origins();
         const auto patches_origins = View(subregion_origins.data(), subregion_origins.size()).to(options);
 
         i64 index{0};
@@ -507,12 +601,16 @@ namespace qn {
             noa::memory::extract_subregions(slice, patches, patches_origins);
             noa::math::normalize_per_batch(patches, patches);
 
-            if (!debug_directory.empty())
+            if (qn::Logger::is_debug())
                 noa::io::save(patches, debug_directory / noa::string::format("patches_{:>02}.mrc", index));
 
             // Compute the power-spectra of these tiles.
             noa::fft::r2c(patches, patches_rfft, noa::fft::Norm::FORWARD);
             noa::ewise_unary(patches_rfft, patches_rfft_ps, noa::abs_squared_t{});
+            if (qn::Logger::is_debug()) {
+                noa::io::save(noa::ewise_unary(patches_rfft_ps, noa::abs_one_log_t{}),
+                              debug_directory / "patches_ps_full.mrc");
+            }
 
             // Fourier crop to fitting range and store in the output.
             noa::fft::resize<fft::H2H>(
@@ -523,7 +621,7 @@ namespace qn {
             qn::Logger::debug("index={:>02.2f}", slice_metadata.angles[1]);
         }
 
-        if (!debug_directory.empty()) {
+        if (qn::Logger::is_debug()) {
             noa::io::save(noa::ewise_unary(cropped_patches.rfft_ps().to_cpu(), noa::abs_one_log_t{}),
                           debug_directory / "patches_ps.mrc");
         }
@@ -544,25 +642,34 @@ namespace qn {
                 metadata, patches_rfft_ps, fitting_range, grid, ctf_anisotropic, fit);
         auto& parameters = fitter.parameters();
 
-        // Optimizer.
-        Optimizer optimizer(NLOPT_LD_LBFGS, parameters.ssize());
-        optimizer.set_max_objective(CTFGlobalFitter::function_to_maximise);
-
         // Set bounds.
         constexpr auto PI = noa::math::Constant<f64>::PI;
         constexpr auto PI_EPSILON = PI / 32;
         parameters.set_relative_bounds(
-                /*rotation=*/ {-5, 5},
-                /*tilt=*/ {-15, 15},
-                /*elevation=*/ {-5, 5},
+                /*rotation=*/ noa::math::deg2rad(Vec2<f64>{-5, 5}),
+                /*tilt=*/ noa::math::deg2rad(Vec2<f64>{-15, 15}),
+                /*elevation=*/ noa::math::deg2rad(Vec2<f64>{-5, 5}),
                 /*phase_shift=*/ {0, PI / 6},
                 /*astigmatism_value=*/ {-0.5, 0.5},
                 /*astigmatism_angle=*/ {0 - PI_EPSILON, 2 * PI + PI_EPSILON},
                 /*defocus=*/ {-0.5, 0.5}
         );
+        parameters.set_abs_tolerance(
+                /*angle_tolerance=*/ noa::math::deg2rad(0.05),
+                /*phase_shift_tolerance=*/ noa::math::deg2rad(0.25),
+                /*astigmatism_value_tolerance=*/ 5e-4,
+                /*astigmatism_angle_tolerance=*/ noa::math::deg2rad(0.1),
+                /*defocus_tolerance=*/ 5e-4
+        );
+
+        // Optimizer.
+        Optimizer optimizer(NLOPT_LD_LBFGS, parameters.ssize());
+        optimizer.set_max_objective(CTFGlobalFitter::function_to_maximise, &fitter);
         optimizer.set_bounds(
                 parameters.lower_bounds().data(),
                 parameters.upper_bounds().data());
+        optimizer.set_x_tolerance_abs(parameters.abs_tolerance().data());
+        optimizer.optimize(parameters.data());
         optimizer.optimize(parameters.data());
 
         // Actual average defocus.
