@@ -255,7 +255,7 @@ namespace qn {
 
     template<typename Real>
     void save_vector_to_text(View<Real> x, const Path& filename) {
-        NOA_CHECK(noa::indexing::is_contiguous_vector_batched(x), "");
+        NOA_CHECK(noa::indexing::is_contiguous_vector_batched_strided(x), "");
 
         // Make sure it is dereferenceable and ready to read.
         Array<std::remove_const_t<Real>> x_cpu;
