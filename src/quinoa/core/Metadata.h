@@ -18,6 +18,7 @@ namespace qn {
     //   these are simply the angle of the slices in 3d space, so to insert a slice in 3d space,
     //   one must simply add these angles.
     struct MetadataSlice {
+    public:
         Vec3<f64> angles{}; // Euler angles, in degrees, of the slice. zyx extrinsic (rotation, tilt, elevation)
         Vec2<f64> shifts{}; // yx shifts, in pixels, of the slice.
         f64 exposure{};     // Cumulated exposure, in e-/A2.
@@ -25,6 +26,7 @@ namespace qn {
         i32 index{};        // Index [0, N) of the slice within the array.
         i32 index_file{};   // Index [0, N) of the slice within the original file.
 
+    public:
         template<typename Real = f32>
         [[nodiscard]] static constexpr auto center(i64 height, i64 width) noexcept -> Vec2<Real> {
             // Center is defined at n // 2 (integer division). We rely on this during resizing (as opposed to n / 2).
@@ -170,7 +172,7 @@ namespace qn {
 
         auto add_global_angles(Vec3<f64> global_angles) -> MetadataStack& {
             for (auto& slice: slices())
-                slice.angles = to_angle_range_(slice.angles + global_angles);
+                slice.angles = MetadataSlice::to_angle_range(slice.angles + global_angles);
             return *this;
         }
 
@@ -235,21 +237,6 @@ namespace qn {
         void sort_on_tilt_(bool ascending = true);
         void sort_on_absolute_tilt_(bool ascending = true);
         void sort_on_exposure_(bool ascending = true);
-
-        // Convert the angle (in degrees) to the [-180,180]degrees range.
-        [[nodiscard]] static constexpr auto to_angle_range_(f64 angle) -> f64 {
-            if (angle < -180)
-                angle += 360;
-            else if (angle > 180)
-                angle -= 360;
-            return angle;
-        }
-
-        [[nodiscard]] static constexpr auto to_angle_range_(Vec3<f64> angles) -> Vec3<f64> {
-            return {to_angle_range_(angles[0]),
-                    to_angle_range_(angles[1]),
-                    to_angle_range_(angles[2])};
-        }
 
     private:
         std::vector<MetadataSlice> m_slices;
