@@ -9,21 +9,21 @@
 
 
 - [Tilt Scheme](#tilt-scheme)
-  - `tilt_scheme:order:starting_angle`: float
-  - `tilt_scheme:order:starting_direction`: string, float
-  - `tilt_scheme:order:angle_increment`: float
+  - `tilt_scheme:order:starting_angle`: real
+  - `tilt_scheme:order:starting_direction`: string, real
+  - `tilt_scheme:order:angle_increment`: real
   - `tilt_scheme:order:group`: integer
   - `tilt_scheme:order:exclude_start`: boolean
-  - `tilt_scheme:order:per_view_exposure`: float
-  - `tilt_scheme:rotation_offset`: float
-  - `tilt_scheme:tilt_offset`: float
-  - `tilt_scheme:elevation_offset`: float
-  - `tilt_scheme:voltage`: float
-  - `tilt_scheme:amplitude`: float
-  - `tilt_scheme:cs`: float
-  - `tilt_scheme:phase_shift`: float
-  - `tilt_scheme:astigmatism_value`: float
-  - `tilt_scheme:astigmatism_angle`: float
+  - `tilt_scheme:order:per_view_exposure`: real
+  - `tilt_scheme:rotation_offset`: real
+  - `tilt_scheme:tilt_offset`: real
+  - `tilt_scheme:elevation_offset`: real
+  - `tilt_scheme:voltage`: real
+  - `tilt_scheme:amplitude`: real
+  - `tilt_scheme:cs`: real
+  - `tilt_scheme:phase_shift`: real
+  - `tilt_scheme:astigmatism_value`: real
+  - `tilt_scheme:astigmatism_angle`: real
 
 
 - [Preprocessing](#preprocessing)
