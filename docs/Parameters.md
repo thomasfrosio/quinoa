@@ -9,21 +9,21 @@
 
 
 - [Tilt Scheme](#tilt-scheme)
-  - `order:starting_angle`: float
-  - `order:starting_direction`: string, float
-  - `order:angle_increment`: float
-  - `order:group`: integer
-  - `order:exclude_start`: boolean
-  - `order:per_view_exposure`: float
-  - `rotation_offset`: float
-  - `tilt_offset`: float
-  - `elevation_offset`: float
-  - `voltage`: float
-  - `amplitude`: float
-  - `cs`: float
-  - `phase_shift`: float
-  - `astigmatism_value`: float
-  - `astigmatism_angle`: float
+  - `tilt_scheme:order:starting_angle`: float
+  - `tilt_scheme:order:starting_direction`: string, float
+  - `tilt_scheme:order:angle_increment`: float
+  - `tilt_scheme:order:group`: integer
+  - `tilt_scheme:order:exclude_start`: boolean
+  - `tilt_scheme:order:per_view_exposure`: float
+  - `tilt_scheme:rotation_offset`: float
+  - `tilt_scheme:tilt_offset`: float
+  - `tilt_scheme:elevation_offset`: float
+  - `tilt_scheme:voltage`: float
+  - `tilt_scheme:amplitude`: float
+  - `tilt_scheme:cs`: float
+  - `tilt_scheme:phase_shift`: float
+  - `tilt_scheme:astigmatism_value`: float
+  - `tilt_scheme:astigmatism_angle`: float
 
 
 - [Preprocessing](#preprocessing)
@@ -44,9 +44,9 @@
   - `alignment:use_projection_matching`: bool
 
 - [Compute](#compute)
-  - `device`: string
-  - `n_cpu_threads`: integer
-  - `verbosity`: string
+  - `compute:device`: string
+  - `compute:n_cpu_threads`: integer
+  - `compute:verbosity`: string
 
 
 # Files
@@ -154,6 +154,6 @@ The alignments can be turned off using `alignment:run: false` (defaults to `true
 
 # Compute
 
-- `device`: Compute-device. Either `auto` (default), `cpu`, `gpu` or `gpu:X`, where `X` is the gpu index, starting from `0`. `auto` will check if there are GPUs on the system, and if so, will use the most free GPU. `gpu` will also use the most free GPU.
-- `n_cpu_threads`: maximum number of CPU threads to use. Defaults to the maximum number of threads available on the system, clamped to `16`.
-- `log_level`: Level of logging in the console. `off`, `error`, `info` (default), `trace` or `debug`. Note that the log file is at least set to `trace`. `debug` has special meaning and should not be used in production, as it is only intended for debugging. In `debug` mode, a bunch of logs are emitted, possibly including a lot of (sometimes large) files, considerably slowing down the execution and storage footprint.
+- `compute:device`: Compute-device. Either `auto` (default), `cpu`, `gpu` or `gpu:X`, where `X` is the gpu index, starting from `0`. `auto` will check if there are GPUs on the system, and if so, will use the most free GPU. `gpu` will also use the most free GPU.
+- `compute:n_cpu_threads`: maximum number of CPU threads to use. Defaults to the maximum number of threads available on the system, clamped to `16`.
+- `compute:log_level`: Level of logging in the console. `off`, `error`, `info` (default), `trace` or `debug`. Note that the log file is at least set to `trace`. `debug` has special meaning and should not be used in production, as it is only intended for debugging. In `debug` mode, a bunch of logs are emitted, possibly including a lot of (sometimes large) files, considerably slowing down the execution and storage footprint.
