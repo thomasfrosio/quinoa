@@ -75,13 +75,18 @@ namespace {
         noa::io::save_text(out.c_str(), output_filename);
     }
 
-    void save_global_ctf_(
+    void save_global_ctfs_(
+            const MetadataStack& metadata,
             const CTFAnisotropic64& average_ctf,
-            const std::array<f64, 3>& defoci,
+            const Vec3<f64>& total_angles_offset,
             const Path& output_filename
     ) {
         YAML::Emitter out;
         out << YAML::BeginMap;
+
+        out << YAML::Key << "total_angle_offsets";
+        out << YAML::Value << total_angles_offset;
+        out << YAML::Comment("in degrees");
 
         out << YAML::Key << "defocus";
         out << YAML::Value << average_ctf.defocus().value;
@@ -99,10 +104,10 @@ namespace {
         out << YAML::Value << noa::math::rad2deg(average_ctf.phase_shift());
         out << YAML::Comment("in degrees");
 
-        out << YAML::Key << "defoci" << YAML::Comment("micrometers");
+        out << YAML::Key << "defoci" << YAML::Comment("(slice index, defocus in micrometers)");
         out << YAML::BeginMap;
-        for (size_t i = 0; i < defoci.size(); ++i)
-            out << YAML::Key << i << YAML::Value << defoci[i];
+        for (const auto& slice: metadata.slices())
+            out << YAML::Key << slice.index_file << YAML::Value << slice.defocus;
         out << YAML::EndMap;
 
         out << YAML::EndMap;
@@ -111,6 +116,64 @@ namespace {
         noa::io::save_text(out.c_str(), output_filename);
     }
 
+    // Loads the input stack and wraps PairwiseShift.
+    struct PairwiseShiftWrapper {
+    private:
+        MetadataStack m_metadata;
+        Array<f32> m_stack;
+        Vec2<f64> m_stack_spacing;
+        Vec2<f64> m_file_spacing;
+        PairwiseShift m_runner;
+        PairwiseShiftParameters m_runner_parameters;
+
+    public:
+        PairwiseShiftWrapper() = default;
+
+        PairwiseShiftWrapper(
+                const LoadStackParameters& loading_parameters,
+                const Path& stack_filename,
+                const MetadataStack& metadata,
+                const Path& debug_directory
+        ) : m_metadata(metadata) {
+
+            // Load the stack eagerly.
+            auto [stack, stack_spacing, file_spacing] = qn::load_stack(stack_filename, m_metadata, loading_parameters);
+            m_stack = stack;
+            m_stack_spacing = stack_spacing;
+            m_file_spacing = file_spacing;
+
+            // Prepare for the pairwise alignment.
+            m_metadata.rescale_shifts(m_file_spacing, m_stack_spacing);
+            m_runner = PairwiseShift(stack.shape(), loading_parameters.compute_device, loading_parameters.allocator);
+            m_runner_parameters = {
+                    /*highpass_filter=*/ {0.03, 0.03},
+                    /*lowpass_filter=*/ {0.3, 0.1},
+                    /*interpolation_mode=*/ noa::InterpMode::LINEAR_FAST,
+                    /*debug_directory=*/ debug_directory,
+            };
+        }
+
+        void align(
+                bool cosine_stretch,
+                bool area_match,
+                f64 smooth_edge_percent,
+                f64 max_area_loss_percent,
+                f64 max_shift_percent
+        ) {
+            m_runner.update(
+                    stack(), metadata(), m_runner_parameters,
+                    cosine_stretch, area_match, smooth_edge_percent,
+                    max_area_loss_percent, max_shift_percent);
+        }
+
+        [[nodiscard]] auto metadata() -> MetadataStack& { return m_metadata; }
+        [[nodiscard]] auto metadata() const -> const MetadataStack& { return m_metadata; }
+        [[nodiscard]] auto stack() const -> const Array<f32>& { return m_stack; }
+        [[nodiscard]] auto stack_spacing() const -> const Vec2<f64>& { return m_stack_spacing; }
+    };
+}
+
+namespace {
     struct InitialPairwiseAlignmentParameters {
         Device compute_device;
         Path debug_directory;
@@ -170,11 +233,10 @@ namespace {
         }
 
         // Scale the metadata shifts to the current sampling rate.
-        const auto pre_scale = file_scaling / stack_scaling;
-        for (auto& slice: metadata.slices())
-            slice.shifts *= pre_scale;
+        metadata.rescale_shifts(file_scaling, stack_scaling);
 
-        // TODO tilt offset can be estimated using CC first. Also try the quick profile projection and COM?
+        // TODO tilt offset can be estimated using CC first.
+        // TODO Try the quick profile projection and COM instead, to get the tilt offset?
 
         auto pairwise_shift = PairwiseShift(tilt_series.shape(), tilt_series.device());
         auto global_rotation =
@@ -235,12 +297,10 @@ namespace {
                 /*cosine_stretch=*/ true,
                 /*area_match=*/ true,
                 /*smooth_edge_percent=*/ 0.08,
-                /*max_size_loss_percent=*/ 0.1); // TODO Double phase?
+                /*max_size_loss_percent=*/ 0.1);
 
         // Scale the metadata back to the original resolution.
-        const auto post_scale = 1 / pre_scale;
-        for (auto& slice: metadata.slices())
-            slice.shifts *= post_scale;
+        metadata.rescale_shifts(stack_scaling, file_scaling);
 
         const auto saving_parameters = LoadStackParameters{
                 /*compute_device=*/ parameters.compute_device,
@@ -281,12 +341,6 @@ namespace {
         Vec2<f64> resolution_range;
         bool refine_pairwise_shift;
 
-        // CTF.
-        f64 voltage;
-        f64 amplitude;
-        f64 cs;
-        f64 phase_shift;
-
         // Average fitting.
         Vec2<f64> delta_z_range_nanometers;
         f64 delta_z_shift_nanometers;
@@ -298,11 +352,12 @@ namespace {
         f64 max_tilt_for_global;
     };
 
-    auto ctf_alignment(
+    void ctf_alignment(
             const Path& stack_filename,
             const CTFAlignmentParameters& parameters,
-            MetadataStack& metadata
-    ) -> std::pair<CTFAnisotropic64, std::vector<f64>> {
+            MetadataStack& metadata,
+            CTFAnisotropic64& average_ctf
+    ) {
         // Load stack
         const auto loading_parameters = LoadStackParameters{
                 /*compute_device=*/ parameters.compute_device,
@@ -319,27 +374,19 @@ namespace {
                 /*zero_pad_to_fast_fft_shape=*/ false,
         };
         auto stack_loader = StackLoader(stack_filename, loading_parameters);
-        Vec2<f64> spacing_file = stack_loader.file_spacing();
-        Vec2<f64> spacing_fitting = stack_loader.stack_spacing(); // isotropic
+        const Vec2<f64> spacing_file = stack_loader.file_spacing();
+        const Vec2<f64> spacing_fitting = stack_loader.stack_spacing(); // precise_cutoff=true ensures it is isotropic
+        const f64 spacing_fitting_iso = noa::math::sum(spacing_fitting) / 2;
 
         auto grid = CTFFitter::Grid(stack_loader.slice_shape(), parameters.patch_size, parameters.patch_step);
         auto fitting_range = CTFFitter::FittingRange(
-                parameters.resolution_range, noa::math::sum(spacing_fitting) / 2, parameters.patch_size);
-
-        auto average_ctf = CTFAnisotropic64(
-                spacing_fitting,
-                /*defocus=*/ {},
-                parameters.voltage,
-                parameters.amplitude,
-                parameters.cs,
-                noa::math::deg2rad(parameters.phase_shift),
-                /*bfactor=*/ 0
-        );
+                parameters.resolution_range, spacing_fitting_iso, parameters.patch_size);
+        average_ctf.set_pixel_size(spacing_fitting);
 
         {
             // Fit on the average power-spectrum.
             auto metadata_for_average_fitting = metadata;
-            rescale_shifts(metadata_for_average_fitting, spacing_file, spacing_fitting);
+            metadata_for_average_fitting.rescale_shifts(spacing_file, spacing_fitting);
             auto [defocus_ramp, ncc_ramp] = CTFFitter::fit_average_ps(
                     stack_loader, grid, metadata_for_average_fitting, parameters.debug_directory / "ctf_average",
                     parameters.delta_z_range_nanometers, parameters.delta_z_shift_nanometers,
@@ -360,7 +407,7 @@ namespace {
 
             } else if (!region_below_eucentric_has_higher_defocus && !region_above_eucentric_has_lower_defocus) {
                 if (parameters.flip_rotation_to_match_defocus_ramp) {
-                    add_global_angles(metadata, {180, 0, 0});
+                    metadata.add_global_angles({180, 0, 0});
                     std::swap(defocus_ramp[0], defocus_ramp[2]);
                     qn::Logger::info("Defocus ramp was reversed, so flipping rotation by 180 degrees. "
                                      "defocus={::.3f} (below, at, and above eucentric height)",
@@ -384,124 +431,93 @@ namespace {
                     noa::string::format("{}_average_ctf.yaml", stack_filename.stem().string()));
         }
 
-        // For the global fitting, allow to remove high tilts to save memory.
+        // At this point, we have a first estimate of the (astigmatic) defocus and background.
+        // So prepare for the global fitting.
         auto metadata_for_global_fitting = metadata;
+        metadata_for_global_fitting.rescale_shifts(spacing_file, spacing_fitting);
+
+        // TODO This isn't used anymore, and was mostly for debugging.
         metadata_for_global_fitting.exclude(
                 [&](const MetadataSlice& slice) {
                     return std::abs(slice.angles[1]) > parameters.max_tilt_for_global;
                 });
-        rescale_shifts(metadata_for_global_fitting, spacing_file, spacing_fitting);
 
-        // Compute the patches.
-        qn::Logger::set_level("trace");
+        // Initialize the vector of CTFs (one per slice, same order as in metadata) with the average CTF.
+        for (auto& slice: metadata_for_global_fitting.slices())
+            slice.defocus = average_ctf.defocus().value;
+
+        const CTFFitter::GlobalFit global_fit{
+                /*rotation=*/ parameters.fit_angle_offset[0],
+                /*tilt=*/ parameters.fit_angle_offset[1],
+                /*elevation=*/ parameters.fit_angle_offset[2],
+                /*phase_shift=*/ parameters.fit_phase_shift,
+                /*astigmatism=*/ parameters.fit_astigmatism,
+        };
+
+        // Compute the patches. This is where most of the memory is allocated.
         const CTFFitter::Patches patches_rfft_ps = CTFFitter::compute_patches_rfft_ps(
                 parameters.compute_device, stack_loader, metadata_for_global_fitting,
                 fitting_range, grid, parameters.debug_directory);
 
-        // From that point, everything is loaded, release the loader.
+        // From that point, everything is loaded, so release the loader.
         stack_loader = StackLoader();
 
-//        // Initialize pairwise shift alignment, to refine the shifts after finding the stage angles.
-//        struct PairwiseShiftAlignment {
-//            MetadataStack metadata;
-//            Array<f32> stack;
-//            Vec2<f64> spacing;
-//            PairwiseShift runner;
-//            PairwiseShiftParameters parameters;
-//        } pairwise_shift;
-//
-//        if (parameters.refine_pairwise_shift) {
-//            const auto pairwise_loading_parameters = LoadStackParameters{
-//                    /*compute_device=*/ parameters.compute_device,
-//                    /*allocator=*/ Allocator::MANAGED,
-//                    /*median_filter_window=*/ int32_t{1},
-//                    /*precise_cutoff=*/ false,
-//                    /*rescale_target_resolution=*/ 10.,
-//                    /*rescale_min_size=*/ 1024,
-//                    /*exposure_filter=*/ false,
-//                    /*highpass_parameters=*/ {0.03, 0.03},
-//                    /*lowpass_parameters=*/ {0.5, 0.05},
-//                    /*normalize_and_standardize=*/ true,
-//                    /*smooth_edge_percent=*/ 0.03f,
-//                    /*zero_pad_to_fast_fft_shape=*/ true,
-//            };
-//            auto [stack, stack_spacing, _] = load_stack(stack_filename, metadata, loading_parameters);
-//            pairwise_shift.metadata = metadata;
-//            pairwise_shift.stack = stack;
-//            pairwise_shift.spacing = stack_spacing;
-//            pairwise_shift.runner = PairwiseShift(
-//                    pairwise_shift.stack.shape(), parameters.compute_device, Allocator::MANAGED);
-//            pairwise_shift.parameters = {
-//                    /*highpass_filter=*/ {0.03, 0.03},
-//                    /*lowpass_filter=*/ {0.3, 0.1},
-//                    /*interpolation_mode=*/ noa::InterpMode::LINEAR_FAST,
-//                    /*debug_directory=*/ parameters.debug_directory / "debug_pairwise_shifts",
-//            };
-//            rescale_shifts(pairwise_shift.metadata, spacing_file, pairwise_shift.spacing);
-//        }
-
-        // FIXME tests
-        add_global_angles(metadata_for_global_fitting, {0, 0, 3.});
-
-        qn::Logger::set_level("debug");
-        CTFFitter::GlobalFit global_fit{
-                /*rotation=*/ true,
-                /*tilt=*/ true,
-                /*elevation=*/ true,
-                /*phase_shift=*/ false,
-                /*astigmatism=*/ false,
+        // Cycle through stages of angle and shift refinements. The CTF fitting refines the stage angles,
+        // and the pairwise alignment refines the shifts. Iterate since both steps depend on the global geometry.
+        const auto pairwise_loading_parameters = LoadStackParameters{
+                /*compute_device=*/ parameters.compute_device,
+                /*allocator=*/ Allocator::MANAGED,
+                /*median_filter_window=*/ int32_t{1},
+                /*precise_cutoff=*/ false,
+                /*rescale_target_resolution=*/ 8.,
+                /*rescale_min_size=*/ 1024,
+                /*exposure_filter=*/ false,
+                /*highpass_parameters=*/ {0.03, 0.03},
+                /*lowpass_parameters=*/ {0.5, 0.05},
+                /*normalize_and_standardize=*/ true,
+                /*smooth_edge_percent=*/ 0.03f,
+                /*zero_pad_to_fast_fft_shape=*/ true,
         };
-        CTFFitter::GlobalFitOutput output;
-//        for (i64 i = 0; i < 1 + parameters.refine_pairwise_shift; ++i) {
-//            // Global fit.
-             output = CTFFitter::fit_ctf_to_patches(
-                    metadata_for_global_fitting, patches_rfft_ps,
-                    fitting_range, grid, average_ctf, global_fit,
-                    parameters.debug_directory
-            );
+        auto pairwise_shift =
+                !parameters.refine_pairwise_shift ?
+                PairwiseShiftWrapper() :
+                PairwiseShiftWrapper(pairwise_loading_parameters,stack_filename, metadata,
+                                     parameters.debug_directory / "debug_pairwise_shifts");
 
-//            // Update and output.
-//            add_global_angles(metadata_for_global_fitting, output.angle_offsets);
-//            average_ctf.set_defocus({output.average_defocus, output.astigmatism_value, output.astigmatism_angle});
-//            average_ctf.set_phase_shift(output.phase_shift);
-//
-//            // Scaling shift: pairwise->fitting
-//            if (parameters.refine_pairwise_shift) {
-//                // Update angles.
-//                add_global_angles(pairwise_shift.metadata, output.angle_offsets);
-//
-//                pairwise_shift.runner.update(
-//                        pairwise_shift.stack, pairwise_shift.metadata,
-//                        pairwise_shift_parameters,
-//                        /*cosine_stretch=*/ true,
-//                        /*area_match=*/ true,
-//                        /*smooth_edge_percent=*/ 0.08,
-//                        /*max_size_loss_percent=*/ 0.1);
-//
-//                // Update shifts for the CTF fitting.
-//                const auto scaling_factor = pairwise_shift.spacing / spacing_fitting;
-//                for (const MetadataSlice& shifted_slice: pairwise_shift.metadata.slices()) {
-//                    for (MetadataSlice& fitting_slice: metadata_for_global_fitting.slices()) {
-//                        if (shifted_slice.index == fitting_slice.index) {
-//                            fitting_slice.shifts = shifted_slice.shifts * scaling_factor;
-//                        }
-//                    }
-//                }
-//            }
-//        }
-//
-//        // Update metadata.
-//        if (parameters.refine_pairwise_shift) {
-//            // Here the angle offsets are already added, so we just need to add the shifts.
-//            rescale_shifts(pairwise_shift.metadata, pairwise_shift.spacing, spacing_file);
-//            metadata = pairwise_shift.metadata;
-//        } else {
-//            add_global_angles(metadata, output.angle_offsets);
-//        }
+        qn::Logger::set_level("debug"); // FIXME
+        Vec3<f64> total_angles_offset;
+        for (i64 i = 0; i < 1 + parameters.refine_pairwise_shift * 2; ++i) {
+            // Global fit. Metadata and ctfs are updated.
+            const Vec3<f64> angles_offset = CTFFitter::fit_ctf_to_patches(
+                    metadata_for_global_fitting, average_ctf,
+                    patches_rfft_ps, fitting_range, grid, global_fit,
+                    parameters.debug_directory);
+            total_angles_offset += angles_offset;
 
-        // TODO print per-view defocus
+            // Pairwise shift alignment.
+            pairwise_shift.metadata().add_global_angles(angles_offset);
+            pairwise_shift.align(
+                    /*cosine_stretch=*/ true,
+                    /*area_match=*/ true,
+                    /*smooth_edge_percent=*/ 0.08,
+                    /*max_area_loss_percent=*/ 0.1,
+                    /*max_shift_percent=*/ 1);
 
-        return {average_ctf, std::vector<f64>{}};
+            // Update metadata used for CTF fitting.
+            metadata_for_global_fitting.update_shift_from(
+                    pairwise_shift.metadata(),
+                    pairwise_shift.stack_spacing(),
+                    spacing_fitting);
+        }
+
+        // Update original metadata.
+        metadata.add_global_angles(total_angles_offset);
+        metadata.update_shift_from(pairwise_shift.metadata(), pairwise_shift.stack_spacing(), spacing_file);
+
+        save_global_ctfs_(
+                metadata, average_ctf, total_angles_offset,
+                parameters.output_directory /
+                noa::string::format("{}_global_ctf.yaml", stack_filename.stem().string()));
     }
 
 //    struct ProjectionMatchingAlignmentParameters {
@@ -646,10 +662,10 @@ namespace {
 }
 
 namespace qn {
-    auto align(
+    auto tilt_series_alignment(
             const Options& options,
             const MetadataStack& metadata
-    ) -> std::tuple<MetadataStack, CTFAnisotropic64, std::vector<f64>> {
+    ) -> std::tuple<MetadataStack, CTFAnisotropic64> {
         MetadataStack output_metadata = metadata;
 
         // First, extract the angle offsets.
@@ -657,55 +673,71 @@ namespace qn {
         QN_CHECK(has_user_angle_offset[0] || fit_angle_offset[0],
                  "An initial estimate of rotation-angle offset was not provided and "
                  "the rotation-angle offset alignment was turned off");
-        add_global_angles(output_metadata, angle_offset);
+        output_metadata.add_global_angles(angle_offset);
+
+        qn::Logger::set_level("trace"); // FIXME
 
         // 1. Initial pairwise alignment:
-        //  -
-        //  -
-        qn::Logger::set_level("trace");
-        const auto pairwise_alignment_parameters = InitialPairwiseAlignmentParameters{
-                /*compute_device=*/ options.compute.device,
-                /*debug_directory=*/ options.files.output_directory / "debug_pairwise_matching",
-                /*maximum_resolution=*/ 10.,
-                /*fit_angle_offset=*/ fit_angle_offset,
-                /*has_user_angle_offset=*/ has_user_angle_offset,
-        };
-        initial_pairwise_alignment(options.files.input_stack, output_metadata, pairwise_alignment_parameters);
+        //  - Find the shifts, using the pairwise cosine-stretching alignment.
+        //  - Find/refine the rotation offset, using the global cosine-stretching method.
+        if (options.alignment.use_initial_pairwise_alignment) {
+            const auto pairwise_alignment_parameters = InitialPairwiseAlignmentParameters{
+                    /*compute_device=*/ options.compute.device,
+                    /*debug_directory=*/ options.files.output_directory / "debug_pairwise_matching",
+                    /*maximum_resolution=*/ 10.,
+                    /*fit_angle_offset=*/ fit_angle_offset,
+                    /*has_user_angle_offset=*/ has_user_angle_offset,
+            };
+            initial_pairwise_alignment(
+                    options.files.input_stack,
+                    output_metadata, // updated: .angles[0], .shifts
+                    pairwise_alignment_parameters);
+        }
 
         // 2. CTF alignment:
-        //  -
-        //  -
-        qn::Logger::set_level("trace");
-        const auto ctf_alignment_parameters = CTFAlignmentParameters{
-                /*compute_device=*/ options.compute.device,
-                /*output_directory=*/ options.files.output_directory,
-                /*debug_directory=*/ options.files.output_directory / "debug_ctf",
-
-                /*patch_size=*/ 1024,
-                /*patch_step=*/ 512,
-                /*fit_phase_shift=*/ options.alignment.fit_phase_shift,
-                /*fit_astigmatism=*/ options.alignment.fit_astigmatism,
-                /*resolution_range=*/ Vec2<f64>{ 40, 8 },
-                /*refine_pairwise_shift=*/ options.alignment.use_pairwise_matching,
-
-                /*voltage=*/ options.tilt_scheme.voltage,
-                /*amplitude=*/ options.tilt_scheme.amplitude,
-                /*cs=*/ options.tilt_scheme.cs,
-                /*phase_shift=*/ options.tilt_scheme.phase_shift,
-
-                /*delta_z_range_nanometers=*/ Vec2<f64>{-50, 50},
-                /*delta_z_shift_nanometers=*/ 150,
-                /*max_tilt_for_average=*/ 90,
-                /*flip_rotation_to_match_defocus_ramp=*/ !has_user_angle_offset[0],
-
-                /*fit_angle_offset=*/ fit_angle_offset,
-                /*max_tilt_for_global=*/ 70,
-        };
-        auto [average_ctf, per_view_defocus] = ctf_alignment(
-                options.files.input_stack,
-                ctf_alignment_parameters,
-                output_metadata
+        //  - Fit the CTF to the average power spectrum. This outputs the (astigmatic) defocus and the phase shift.
+        //  - Fit the CTF globally. This outputs a per-slice defocus, can refine the astigmatism and phase shift,
+        //    but most importantly, returns the very accurate stage angle offsets (rotation, tilt, elevation).
+        //  - The shifts are refined using the new angle offsets, using the pairwise cosine-stretching alignment.
+        auto average_ctf = CTFAnisotropic64(
+                /*pixel_size=*/ {0, 0},
+                {0, options.tilt_scheme.astigmatism_value, noa::math::deg2rad(options.tilt_scheme.astigmatism_angle)},
+                options.tilt_scheme.voltage,
+                options.tilt_scheme.amplitude,
+                options.tilt_scheme.cs,
+                noa::math::deg2rad(options.tilt_scheme.phase_shift),
+                /*bfactor=*/ 0
         );
+        if (options.alignment.use_ctf_estimate) {
+            const auto ctf_alignment_parameters = CTFAlignmentParameters{
+                    /*compute_device=*/ options.compute.device,
+                    /*output_directory=*/ options.files.output_directory,
+                    /*debug_directory=*/ options.files.output_directory / "debug_ctf",
+
+                    /*patch_size=*/ 1024,
+                    /*patch_step=*/ 512,
+                    /*fit_phase_shift=*/ options.alignment.fit_phase_shift,
+                    /*fit_astigmatism=*/ options.alignment.fit_astigmatism,
+                    /*resolution_range=*/ Vec2<f64>{40, 8},
+                    /*refine_pairwise_shift=*/ true,
+
+                    /*delta_z_range_nanometers=*/ Vec2<f64>{-50, 50},
+                    /*delta_z_shift_nanometers=*/ 150,
+                    /*max_tilt_for_average=*/ 90,
+                    /*flip_rotation_to_match_defocus_ramp=*/ !has_user_angle_offset[0],
+
+                    /*fit_angle_offset=*/ fit_angle_offset,
+                    /*max_tilt_for_global=*/ 90,
+            };
+            ctf_alignment(
+                    options.files.input_stack,
+                    ctf_alignment_parameters,
+                    output_metadata, // updated: .angles, .shifts, .defocus
+                    average_ctf // updated: .pixel_size, .defocus, .phase_shift
+            );
+        }
+
+        // 3. Projection matching.
 
 //        const auto projection_matching_alignment_parameters = ProjectionMatchingAlignmentParameters{
 //                /*compute_device=*/ options.compute.device,
@@ -731,6 +763,6 @@ namespace qn {
 //                original_stack_filename, metadata,
 //                projection_matching_alignment_parameters);
 
-        return {output_metadata, average_ctf, per_view_defocus};
+        return {output_metadata, average_ctf};
     }
 }

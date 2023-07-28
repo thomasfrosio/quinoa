@@ -207,7 +207,6 @@ namespace qn {
                 read_slice(stack.subregion(batch), slice_metadata.index_file);
                 slice_metadata.index = static_cast<i32>(batch); // reset order of the slices in the stack.
                 ++batch;
-
             }
             qn::Logger::trace("Loading the stack... done. Took {:.2f}ms\n", timer.elapsed());
         }

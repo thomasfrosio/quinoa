@@ -6,7 +6,54 @@
 #include "quinoa/io/Logging.h"
 #include "quinoa/io/Options.h"
 
-int main(int argc, char* argv[]) {
+#include <noa/Geometry.hpp>
+
+namespace {
+    void defocus_field() {
+        using namespace noa;
+
+        f64 slice_spacing = 2.1; // A/pix
+        Vec2<f64> slice_shape{4000, 4000}; // pix;
+        Vec3<f64> slice_angles{175, -45, 0}; // deg
+
+        // preprocess:
+        slice_spacing *= 1e-4;
+        slice_angles = noa::math::deg2rad(slice_angles);
+        fmt::print("{}\n", slice_angles);
+        Vec2<f64> slice_center = slice_shape / 2;
+
+        auto compute_z_offset_micrometers = [&](Vec2<f64> point){
+            const auto slice_center_3d = (slice_center * slice_spacing).push_front(0);
+
+            // Apply the tilt and elevation.
+            const Double44 image2microscope_matrix = // FIXME
+                    noa::geometry::translate(slice_center_3d) * // 6. shift back
+                    noa::geometry::linear2affine(noa::geometry::rotate_z(slice_angles[0])) * // 5. rotate back
+                    noa::geometry::linear2affine(noa::geometry::rotate_x(slice_angles[2])) * // 4. elevation
+                    noa::geometry::linear2affine(noa::geometry::rotate_y(slice_angles[1])) * // 3. tilt
+                    noa::geometry::linear2affine(noa::geometry::rotate_z(-slice_angles[0])) * // 2. align tilt-axis
+                    noa::geometry::translate(-slice_center_3d); // 1. slice rotation center
+
+            const auto point_3d = (point * slice_spacing).push_front(0).push_back(1);
+            const Vec3<f64> patch_center_transformed = (image2microscope_matrix * point_3d).pop_back();
+            return patch_center_transformed[0];
+        };
+
+        // 4 points at the edges.
+        Vec2<f64> a00{0, 0};
+        Vec2<f64> a01{0, slice_shape[0] - 1};
+        Vec2<f64> a10{slice_shape[1] - 1, 0};
+        Vec2<f64> a11{slice_shape[1] - 1, slice_shape[0] - 1};
+
+        // Compute the z-offset in micrometers.
+        fmt::print("{}\n", compute_z_offset_micrometers(a00));
+        fmt::print("{}\n", compute_z_offset_micrometers(a01));
+        fmt::print("{}\n", compute_z_offset_micrometers(a10));
+        fmt::print("{}\n", compute_z_offset_micrometers(a11));
+    }
+}
+
+auto main(int argc, char* argv[]) -> int {
     try {
         // Initialize logger before doing anything else.
         qn::Logger::initialize("quinoa.log");
@@ -39,9 +86,8 @@ int main(int argc, char* argv[]) {
 
         // Alignment.
         qn::CTFAnisotropic64 average_ctf;
-        std::vector<noa::f64> per_view_defocus;
         if (options.alignment.run) {
-            std::tie(metadata, average_ctf, per_view_defocus) = align(options, metadata);
+            std::tie(metadata, average_ctf) = tilt_series_alignment(options, metadata);
         }
 
         // Reconstruction.

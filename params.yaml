@@ -35,9 +35,9 @@ alignment:
   fit_elevation_offset:
   fit_phase_shift: false
   fit_astigmatism: false
-  use_pairwise_matching:
+  use_initial_pairwise_alignment: true
+  use_ctf_estimate: true
   use_projection_matching: false
-  use_ctf_estimate:
 
 reconstruction:
   run: false

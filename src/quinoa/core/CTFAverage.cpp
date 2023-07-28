@@ -239,7 +239,7 @@ namespace {
                 return static_cast<size_t>(value < 0 ? (value + 3) : value);
             };
             size_t circular_count = 2;
-            std::array<f64, 3> ctf_values{
+            Vec<f64, 3> ctf_values{
                     std::abs(ctf.value_at(static_cast<f64>(simulated_start + 0) * SIMULATED_FREQUENCY_STEP)),
                     std::abs(ctf.value_at(static_cast<f64>(simulated_start + 1) * SIMULATED_FREQUENCY_STEP)),
                     0
@@ -364,32 +364,32 @@ namespace {
         }
 
     public:
-        [[nodiscard]] constexpr bool has_phase_shift() const noexcept { return m_fit_phase_shift; }
-        [[nodiscard]] constexpr bool has_astigmatism() const noexcept { return m_fit_astigmatism; }
+        [[nodiscard]] constexpr auto has_phase_shift() const noexcept -> bool { return m_fit_phase_shift; }
+        [[nodiscard]] constexpr auto has_astigmatism() const noexcept -> bool { return m_fit_astigmatism; }
 
-        [[nodiscard]] constexpr i64 ssize() const noexcept { return 1 + has_phase_shift() + 2 * has_astigmatism(); }
-        [[nodiscard]] constexpr size_t size() const noexcept { return static_cast<size_t>(ssize()); }
-        [[nodiscard]] constexpr f64* data() noexcept { return m_parameters.data(); }
+        [[nodiscard]] constexpr auto ssize() const noexcept -> i64 { return 1 + has_phase_shift() + 2 * has_astigmatism(); }
+        [[nodiscard]] constexpr auto size() const noexcept -> size_t { return static_cast<size_t>(ssize()); }
+        [[nodiscard]] constexpr auto data() noexcept -> f64* { return m_parameters.data(); }
 
-        [[nodiscard]] constexpr Span<f64> span() noexcept { return {m_parameters.data(), ssize()}; }
-        [[nodiscard]] constexpr Span<f64> lower_bounds() noexcept { return {m_lower_bounds.data(), ssize()}; }
-        [[nodiscard]] constexpr Span<f64> upper_bounds() noexcept { return {m_upper_bounds.data(), ssize()}; }
-        [[nodiscard]] constexpr Span<f64> abs_tolerance() noexcept { return {m_abs_tolerance.data(), ssize()}; }
+        [[nodiscard]] constexpr auto span() noexcept -> Span<f64> { return {m_parameters.data(), ssize()}; }
+        [[nodiscard]] constexpr auto lower_bounds() noexcept -> Span<f64> { return {m_lower_bounds.data(), ssize()}; }
+        [[nodiscard]] constexpr auto upper_bounds() noexcept -> Span<f64> { return {m_upper_bounds.data(), ssize()}; }
+        [[nodiscard]] constexpr auto abs_tolerance() noexcept -> Span<f64> { return {m_abs_tolerance.data(), ssize()}; }
 
     public: // safe access of the globals, whether they are fitted or not.
-        [[nodiscard]] constexpr f64 defocus() const noexcept {
+        [[nodiscard]] constexpr auto defocus() const noexcept -> f64 {
             return m_parameters[0];
         }
 
-        [[nodiscard]] constexpr f64 phase_shift() const noexcept {
+        [[nodiscard]] constexpr auto phase_shift() const noexcept -> f64 {
             return has_phase_shift() ? m_parameters[1] : m_initial_values[0];
         }
 
-        [[nodiscard]] constexpr f64 astigmatism_value() const noexcept {
+        [[nodiscard]] constexpr auto astigmatism_value() const noexcept -> f64 {
             return has_astigmatism() ? m_parameters[2 - !has_phase_shift()] : m_initial_values[1];
         }
 
-        [[nodiscard]] constexpr f64 astigmatism_angle() const noexcept {
+        [[nodiscard]] constexpr auto astigmatism_angle() const noexcept -> f64 {
             return has_astigmatism() ? m_parameters[3 - !has_phase_shift()] : m_initial_values[2];
         }
 
@@ -466,7 +466,7 @@ namespace {
             m_memoizer.reset_cache();
         }
 
-        f64 cost(bool print = true) {
+        auto cost(bool print = true) -> f64 {
             const f64 defocus = m_parameters->defocus();
             const f64 phase_shift = m_parameters->phase_shift();
 
@@ -647,7 +647,7 @@ namespace qn {
         return {defocus_ramp, ncc_ramp};
     }
 
-    Array<f32> CTFFitter::compute_average_patch_rfft_ps_(
+    auto CTFFitter::compute_average_patch_rfft_ps_(
             Device compute_device,
             StackLoader& stack_loader,
             const MetadataStack& metadata,
@@ -655,7 +655,7 @@ namespace qn {
             Vec2<f64> delta_z_range_nanometers,
             f64 max_tilt_for_average,
             const Path& debug_directory
-    ) {
+    ) -> Array<f32> {
         // The patches are loaded one slice at a time. So allocate enough for one slice.
         const auto options = ArrayOption(compute_device, Allocator::DEFAULT_ASYNC);
         const auto n_patches_max = grid.n_patches();
@@ -747,14 +747,14 @@ namespace qn {
         return patches_rfft_ps_average;
     }
 
-    f64 CTFFitter::fit_ctf_to_patch_(
+    auto CTFFitter::fit_ctf_to_patch_(
             Array<f32> patch_rfft_ps,
-            FittingRange& fitting_range, // background is updated
-            CTFAnisotropic64& ctf_anisotropic, // defocus and phase shift are updated
+            FittingRange& fitting_range, // updated: .background
+            CTFAnisotropic64& ctf_anisotropic, // updated: .phase_shift, .defocus
             bool fit_phase_shift,
             bool fit_astigmatism,
             const Path& debug_directory
-    ) {
+    ) -> f64 {
         Timer timer;
         timer.start();
 

@@ -108,6 +108,16 @@ namespace YAML {
         }
         return os;
     }
+
+    template<typename T, size_t N>
+    YAML::Emitter& operator<<(YAML::Emitter& out, const noa::Vec<T, N>& vec) {
+        out << YAML::Flow;
+        out << YAML::BeginSeq;
+        for (size_t i = 0; i < N; ++i)
+            out << vec[i];
+        out << YAML::EndSeq;
+        return out;
+    }
 }
 
 namespace fmt {

@@ -51,7 +51,7 @@ namespace qn {
             bool fit_elevation_offset{};
             bool fit_phase_shift{};
             bool fit_astigmatism{};
-            bool use_pairwise_matching{};
+            bool use_initial_pairwise_alignment{};
             bool use_ctf_estimate{};
             bool use_projection_matching{};
         } alignment;

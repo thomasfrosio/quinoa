@@ -6,19 +6,19 @@
 #include "quinoa/Exception.h"
 
 namespace qn {
-    std::vector<MetadataSlice> TiltScheme::generate(i32 n_slices) const {
+    auto TiltScheme::generate(i64 n_slices) const -> std::vector<MetadataSlice> {
         std::vector<MetadataSlice> slices;
         slices.reserve(static_cast<size_t>(n_slices));
 
-        auto direction = static_cast<f32>(starting_direction);
-        f32 angle0 = starting_angle;
-        f32 angle1 = angle0;
-        f32 exposure = per_view_exposure;
+        auto direction = static_cast<f64>(starting_direction);
+        f64 angle0 = starting_angle;
+        f64 angle1 = angle0;
+        f64 exposure = per_view_exposure;
 
-        slices.push_back({{0, angle0, 0}, {}, 0.f}); // TODO C++20 use emplace_back()
-        i32 group_count = !exclude_start;
+        slices.push_back({{0, angle0, 0}}); // TODO C++20 use emplace_back()
+        i64 group_count = !exclude_start;
 
-        for (i32 i = 1; i < n_slices; ++i) {
+        for (i64 i = 1; i < n_slices; ++i) {
             angle0 += direction * angle_increment;
             slices.push_back({{0, angle0, 0}, {}, exposure});
 
@@ -53,12 +53,12 @@ namespace qn {
 
             const Options::TiltScheme::Order order = options.tilt_scheme.order.value();
             const TiltScheme scheme{
-                    static_cast<f32>(order.starting_angle),
-                    static_cast<i32>(order.starting_direction),
-                    static_cast<f32>(order.angle_increment),
-                    static_cast<i32>(order.group),
+                    order.starting_angle,
+                    order.starting_direction,
+                    order.angle_increment,
+                    order.group,
                     order.exclude_start,
-                    static_cast<f32>(order.per_view_exposure),
+                    order.per_view_exposure,
             };
             generate_(scheme, count);
 
@@ -67,24 +67,26 @@ namespace qn {
         }
     }
 
-    MetadataStack& MetadataStack::sort(std::string_view key, bool ascending) {
-        key = noa::string::lower(key);
-        if (key == "index")
+    auto MetadataStack::sort(std::string_view key, bool ascending) -> MetadataStack& {
+        std::string lower_key = noa::string::lower(key);
+        if (lower_key == "index")
             sort_on_indexes_(ascending);
-        else if (key == "index_file")
+        else if (lower_key == "index_file")
             sort_on_file_indexes_(ascending);
-        else if (key == "tilt")
+        else if (lower_key == "tilt")
             sort_on_tilt_(ascending);
-        else if (key == "absolute_tilt")
+        else if (lower_key == "absolute_tilt")
             sort_on_absolute_tilt_(ascending);
-        else if (key == "exposure")
+        else if (lower_key == "exposure")
             sort_on_exposure_(ascending);
-        else
-            QN_THROW("The key should be \"index\", \"tilt\",  \"absolute_tilt\" or \"exposure\", but got \"{}\"", key);
+        else {
+            QN_THROW("The key should be \"index\", \"tilt\",  \"absolute_tilt\" or \"exposure\", but got \"{}\"",
+                     lower_key);
+        }
         return *this;
     }
 
-    i64 MetadataStack::find_lowest_tilt_index() const {
+    auto MetadataStack::find_lowest_tilt_index() const -> i64 {
         const auto iter = std::min_element(
                 m_slices.begin(), m_slices.end(),
                 [](const auto& lhs, const auto& rhs) {
@@ -93,8 +95,7 @@ namespace qn {
         return iter - m_slices.begin();
     }
 
-    void MetadataStack::log_update(const MetadataStack& origin,
-                                   const MetadataStack& current) {
+    void MetadataStack::log_update(const MetadataStack& origin, const MetadataStack& current) {
         const size_t size = current.size();
         QN_CHECK(origin.size() == size,
                  "The two metadata should have the same number of slices, but got {} and {}",
@@ -146,12 +147,12 @@ namespace qn {
         file = noa::io::read_text(tlt_filename);
         lines = noa::string::split<std::string>(file, '\n'); // TODO add "keep_empty"? Also, default to std::string
         lines.erase(std::remove_if(lines.begin(), lines.end(), is_empty), lines.end());
-        const std::vector<f32> tlt_file = noa::string::parse<f32>(lines);
+        const std::vector<f64> tlt_file = noa::string::parse<f64>(lines);
 
         file = noa::io::read_text(exposure_filename);
         lines = noa::string::split<std::string>(file, '\n');
         lines.erase(std::remove_if(lines.begin(), lines.end(), is_empty), lines.end());
-        const std::vector<f32> exposure_file = noa::string::parse<f32>(lines);
+        const std::vector<f64> exposure_file = noa::string::parse<f64>(lines);
 
         QN_CHECK(tlt_file.size() == exposure_file.size(),
                  "The tilt ({}) and exposure ({}) files do not have the same number of lines",
@@ -162,6 +163,7 @@ namespace qn {
             m_slices.push_back({{0, tlt_file[i], 0},
                                 {},
                                 exposure_file[i],
+                                0,
                                 static_cast<i32>(i),
                                 static_cast<i32>(i)});
         }

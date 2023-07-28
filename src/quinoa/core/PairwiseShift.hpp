@@ -57,9 +57,9 @@ namespace qn {
                        noa::Allocator allocator = noa::Allocator::DEFAULT_ASYNC);
 
         // Updates the shifts in the metadata using pairwise cross-correlation.
-        //  - Starts with the view at the lowest tilt angle. To align a neighbouring view
+        //  - Starts with the view at the lowest tilt angle. To align a neighboring view
         //    (which has a higher tilt angle), stretch that view by a factor of cos(x)
-        //    perpendicular to the tilt-axis, where x is the tilt angle of the neighbouring
+        //    perpendicular to the tilt-axis, where x is the tilt angle of the neighboring
         //    view, in radians. Then use conventional correlation to find the XY shift between images.
         void update(const Array<f32>& stack,
                     MetadataStack& metadata,
@@ -83,24 +83,27 @@ namespace qn {
         // As explained below, the output shift is the shift of the targets relative to their reference in the
         // "microscope" reference frame (i.e. 0-degree tilt and pitch). This simplifies computation later
         // when the global shifts and centering needs to be computed.
-        Vec2<f64> find_relative_shifts_(const Array<f32>& stack,
-                                        const MetadataSlice& reference_slice,
-                                        const MetadataSlice& target_slice,
-                                        const PairwiseShiftParameters& parameters,
-                                        bool cosine_stretch,
-                                        bool area_match,
-                                        f64 smooth_edge_percent,
-                                        f64 max_shift_percent);
+        auto find_relative_shifts_(
+                const Array<f32>& stack,
+                const MetadataSlice& reference_slice,
+                const MetadataSlice& target_slice,
+                const PairwiseShiftParameters& parameters,
+                bool cosine_stretch,
+                bool area_match,
+                f64 smooth_edge_percent,
+                f64 max_shift_percent
+        ) -> Vec2<f64>;
 
         // Compute the global shifts, i.e. the shifts to apply to a slice so that it becomes aligned with the
         // global reference slice (i.e. the lowest tilt). At this point, we have the relative (i.e. slice-to-slice)
         // shifts in the 0deg reference frame, so we need to accumulate the shifts of the lower degree slices.
         // At the same time, we can center the global shifts to minimize the overall movement of the slices, a step
         // referred to as "centering".
-        static std::vector<Vec2<f64>> relative2global_shifts_(
+        static auto relative2global_shifts_(
                 const std::vector<Vec2<f64>>& relative_shifts,
                 const MetadataStack& metadata,
-                i64 index_lowest_tilt);
+                i64 index_lowest_tilt
+        ) -> std::vector<Vec2<f64>>;
 
     private:
         noa::Array<c32> m_buffer_rfft;

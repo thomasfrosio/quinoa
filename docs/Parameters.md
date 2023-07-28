@@ -9,22 +9,21 @@
 
 
 - [Tilt Scheme](#tilt-scheme)
-  - `tilt_scheme:starting_angle`: float
-  - `tilt_scheme:starting_direction`: string, float
-  - `tilt_scheme:angle_increment`: float
-  - `tilt_scheme:group`: integer
-  - `tilt_scheme:exclude_start`: boolean
-  - `tilt_scheme:per_view_exposure`: float
-  - `angle_offsets:rotation`: float
-  - `angle_offsets:tilt`: float
-  - `angle_offsets:elevation`: float
-
-
-- [CTF](#ctf)
-  - `ctf:voltage`: float
-  - `ctf:amplitude`: float
-  - `ctf:cs`: float
-  - `ctf:phase_shift`: float
+  - `order:starting_angle`: float
+  - `order:starting_direction`: string, float
+  - `order:angle_increment`: float
+  - `order:group`: integer
+  - `order:exclude_start`: boolean
+  - `order:per_view_exposure`: float
+  - `rotation_offset`: float
+  - `tilt_offset`: float
+  - `elevation_offset`: float
+  - `voltage`: float
+  - `amplitude`: float
+  - `cs`: float
+  - `phase_shift`: float
+  - `astigmatism_value`: float
+  - `astigmatism_angle`: float
 
 
 - [Preprocessing](#preprocessing)
@@ -35,12 +34,14 @@
 
 - [Alignment](#alignment)
   - `alignment:run`: bool
-  - `alignment:rotation_offset`: bool
-  - `alignment:tilt_offset`: bool
-  - `alignment:elevation_offset`: bool
-  - `alignment:pairwise_matching`: bool
-  - `alignment:ctf_estimate`: bool
-  - `alignment:projection_matching`: bool
+  - `alignment:fit_rotation_offset`: bool
+  - `alignment:fit_tilt_offset`: bool
+  - `alignment:fit_elevation_offset`: bool
+  - `alignment:fit_phase_shift`: bool
+  - `alignment:fit_astigmatism`: bool
+  - `alignment:use_initial_pairwise_alignment`: bool
+  - `alignment:use_ctf_estimate`: bool
+  - `alignment:use_projection_matching`: bool
 
 - [Compute](#compute)
   - `device`: string
@@ -59,10 +60,10 @@ If `files:input_directory` is entered, the program tries to look for the other i
 - `files:input_stack`: Input stack. Currently, only MRC files are supported.
 
 
-- `files:input_tlt`: File with the tilt angles of each slice, in degrees, as saved in the input stack. Each slice can be separated with a comma or a new line. This file is optional if the [tilt scheme](#tilt-scheme) is entered. Note that this file takes precedence over the [tilt scheme](#tilt-scheme) entries.
+- `files:input_tlt`: File with the tilt angles of each slice, in degrees, as saved in the input stack. Each slice should be separated by a new line. This file is optional if the [tilt scheme:order](#tilt-scheme) parameters are entered. Note that this file takes precedence over the [tilt scheme:order](#tilt-scheme) entries.
 
 
-- `files:input_exposure`: File with the accumulated exposure of each slice, in e/A^2, as saved in the input stack. This is used for exposure weighting and is optional. Note that this file takes precedence over the [tilt scheme](#tilt-scheme) entry `per_view_exposure`.
+- `files:input_exposure`: File with the accumulated exposure of each slice, in e/A^2, as saved in the input stack. This is used for exposure weighting and is optional. It should have the same format as `files:input_tlt`. Note that this file takes precedence over the [tilt scheme:order](#tilt-scheme) entry `per_view_exposure`.
 
 ### Output directory
 
@@ -72,45 +73,46 @@ If `files:input_directory` is entered, the program tries to look for the other i
 
 # Tilt-scheme
 
-The tilt-scheme includes the number slices, their angles, their order of collection, and optionally their accumulated exposure. There are 2 ways to specify the tilt-scheme. These are presented by priority order.
+The tilt-scheme includes the number slices, their angles, their order of collection, optionally their accumulated exposure, and everything related to the data acquisition (e.g. voltage, cs, etc.). There are 2 ways to specify the tilt-scheme.
 
 ### Input files
 
-As mentioned in [Files](#files), `files:input_tlt` and `files:input_exposure` can be used to specify the tilt-scheme. These files, if specified, overwrite the `tilt_scheme` parameters.
+As mentioned in [Files](#files), `files:input_tlt` and `files:input_exposure` can be used to specify the `tilt_scheme:order` parameters. These files, if specified, overwrite the `tilt_scheme:order` parameters.
 
-### `tilt_scheme` parameters
+### `tilt_scheme:order` parameters
 
-These parameters allow to easily specify the tilt-scheme and is often the simplest option if the exposure and tilt increment are constant through the stack.
+These parameters allow to easily specify the collection order and is often the simplest way to start if the exposure and tilt increment are constant through the stack.
 
-- `starting_angle`: The angle, in degrees, of the first collected image. Usually, `0`.
-- `starting_direction`: The direction after collecting the first image. This should be `pos`, `positive`, `neg`, `negative`, or a positive or negative number (only the sign is used).
-- `angle_increment`: Angle increment, in degrees, between images. Usually, `3`.
-- `group`: Number of images that are collected before switching to the opposite side. This refers to the "group"
+- `tilt_scheme:order:starting_angle`: The angle, in degrees, of the first collected image. Usually, `0`.
+- `tilt_scheme:order:starting_direction`: The direction after collecting the first image. This should be `pos`, `positive`, `neg`, `negative`, or a positive or negative number (only the sign is used).
+- `tilt_scheme:order:angle_increment`: Angle increment, in degrees, between images. Usually, `3`.
+- `tilt_scheme:order:group`: Number of images that are collected before switching to the opposite side. This refers to the "group"
   for dose-symmetric schemes. For unidirectional schemes, this should correspond to the number of views (there's
   only one group). For bidirectional schemes, this should correspond to the number of views in the first direction.
-- `exclude_start`: Whether to exclude the first image from the first group.
-- `per_view_exposure`: Per view exposure, in e-/A^2.
+- `tilt_scheme:order:exclude_start`: Whether to exclude the first image from the first group.
+- `tilt_scheme:order:per_view_exposure`: Per view exposure, in e-/A^2.
 
-Note that these parameters should not account for any known tilt offset added during data collection. Instead, these angle offsets should be specified using the `angles_offset` parameters.
+Note that these parameters should not account for any known tilt offset added during data collection. Instead, these angle offsets should be specified using the `tilt_scheme:*_offset` parameters.
 
-### `angle_offets` parameters
+### `tilt_scheme:*_offets` parameters
 
 Angle offsets to add to every slice in the stack. See the [geometry conventions](Geometry.md) for more details.
 
-- `rotation`: known offset in around the z-axis, in degrees. Defaults to `0`. This is often refered to as the tilt-axis or rotation angle.
-- `tilt`: known offset in around y-axis, in degrees. Defaults to `0`. If any known tilt offset is added during data collection, this is where it should be specified.
-- `elevation`:  known offset in around x-axis, in degrees. Defaults to `0`.
+- `tilt_scheme:rotation_offset`: known offset in around the z-axis, in degrees. Defaults to `0`. This is often refered to as the tilt-axis or rotation angle.
+- `tilt_scheme:tilt_offset`: known offset in around y-axis, in degrees. Defaults to `0`. If any known tilt offset is added during data collection, this is where it should be specified.
+- `tilt_scheme:elevation_offset`:  known offset in around x-axis, in degrees. Defaults to `0`.
 
 
-# CTF
+### CTF-related parameters
 
-Microscope parameters. These are used for simulating the CTF during CTF estimate.
+Microscope parameters. These are used for simulating the CTF during CTF estimate. See the [ctf conventions](CTF.md) for more details.
 
-- `voltage`: acceleration voltage, in kV. Defaults to `300`.
-- `amplitude`: amplitude fraction. Defaults to `0.07`.
-- `cs`: Spherical aberration, in micrometers. Defaults to `2.7`.
-- `phase_shift`: Phase shift, in degrees. Defaults to `0`.
-
+- `tilt_scheme:voltage`: acceleration voltage, in kV. Defaults to `300`.
+- `tilt_scheme:amplitude`: amplitude fraction. Defaults to `0.07`.
+- `tilt_scheme:cs`: Spherical aberration, in micrometers. Defaults to `2.7`.
+- `tilt_scheme:phase_shift`: Phase shift, in degrees. Defaults to `0`.
+- `tilt_scheme:astigmatism_value`: Known astigmatism value, in micrometers. This is usually not necessary, but if for some reason the data has a known and significant astigmatism, specifying it here may help the fitting. Default to `0`.
+- `tilt_scheme:astigmatism_angle`: Known astigmatism angles, in degrees. This is usually not necessary, but if for some reason the data has a known and significant astigmatism, specifying it here may help the fitting. Default to `0`.
 
 # Preprocessing
 
@@ -138,20 +140,20 @@ The preprocessing stage can run a mass-normalization function and try to identif
 
 The alignments can be turned off using `alignment:run: false` (defaults to `true`).
 
-### Angle offsets
-- `alignment:rotation_offset`: Whether to search for and/or refine the rotation offset. Defaults to `true`.
-- `alignment:tilt_offset`: Whether to search for and/or refine the tilt offset. Defaults to `true`.
-- `alignment:elevation_offset`: Whether to search for and/or refine the elevation offset. Defaults to `true`.
+- `alignment:fit_rotation_offset`: Whether to search for and/or refine the rotation offset. Defaults to `true`.
+- `alignment:fit_tilt_offset`: Whether to search for and/or refine the tilt offset. Defaults to `true`.
+- `alignment:fit_elevation_offset`: Whether to search for and/or refine the elevation offset. Defaults to `true`.
+- `alignment:fit_phase_shift`: Whether to search for and/or refine the phase shift. Defaults to `false`.
+- `alignment:fit_astigmatism`: Whether to search for and/or refine the astigmatism. Defaults to `true`.
 
-### Algorithms
 
-- `alignment:pairwise_matching`: Activate the pairwise matching. Defaults to `true`.
-- `alignment:ctf_estimate`: Activate the ctf estimate. Defaults to `true`.
-- `alignment:projection_matching`: Activate the projection matching. Defaults to `true`.
+- `alignment:use_initial_pairwise_alignment`: Activate the initial pairwise matching alignment. This searches for the per-slice shifts and can fit and/or refine the rotation offset. Defaults to `true`. If `false`, the input tilt-series should already roughly be aligned.
+- `alignment:use_ctf_estimate`: Activate the ctf estimate. This searches for the angle offsets and the per-slice defocus, refines the per-slice shifts with the pairwise cosine-stretching alignment (using the new angle offsets) and can also fit and/or refine the phase shift and global astigmatism. Defaults to `true`.
+- `alignment:use_projection_matching`: Activate the projection matching. Defaults to `true`.
 
 
 # Compute
 
-- `device`: Compute device. Either `auto` (default), `cpu`, `gpu` or `gpu:X`, where `X` is the gpu index, starting from `0`. `auto` will check if there are GPUs on the system, and if so, will use the most free GPU. `gpu` will also use the most free GPU.
+- `device`: Compute-device. Either `auto` (default), `cpu`, `gpu` or `gpu:X`, where `X` is the gpu index, starting from `0`. `auto` will check if there are GPUs on the system, and if so, will use the most free GPU. `gpu` will also use the most free GPU.
 - `n_cpu_threads`: maximum number of CPU threads to use. Defaults to the maximum number of threads available on the system, clamped to `16`.
-- `log_level`: Level of logging in the console. `off`, `error`, `info` (default), `trace` or `debug`. Note that log file is at least set to `trace`. `debug` has special meaning and should not be used in production, as it is only intended for debugging. In `debug` mode, a bunch of logs are emitted, possibly including a lot of (sometimes large) files, considerably slowing down the execution and storage footprint.
+- `log_level`: Level of logging in the console. `off`, `error`, `info` (default), `trace` or `debug`. Note that the log file is at least set to `trace`. `debug` has special meaning and should not be used in production, as it is only intended for debugging. In `debug` mode, a bunch of logs are emitted, possibly including a lot of (sometimes large) files, considerably slowing down the execution and storage footprint.

@@ -11,7 +11,6 @@
 
 #include "quinoa/Types.h"
 #include "quinoa/core/Metadata.h"
-#include "quinoa/core/Utilities.h"
 #include "quinoa/core/Optimizer.hpp"
 #include "quinoa/core/CubicGrid.hpp"
 #include "quinoa/core/Stack.hpp"
@@ -35,15 +34,15 @@ namespace qn {
             }
 
         public:
-            [[nodiscard]] const Shape2<i64>& slice_shape() const noexcept { return m_slice_shape; }
+            [[nodiscard]] auto slice_shape() const noexcept -> const Shape2<i64>& { return m_slice_shape; }
 
-            [[nodiscard]] constexpr i64 patch_size() const noexcept { return m_patch_size; }
-            [[nodiscard]] constexpr Shape2<i64> patch_shape() const noexcept { return {patch_size(), patch_size()}; }
-            [[nodiscard]] i64 n_patches() const noexcept { return static_cast<i64>(patches_centers().size()); }
+            [[nodiscard]] constexpr auto patch_size() const noexcept -> i64 { return m_patch_size; }
+            [[nodiscard]] constexpr auto patch_shape() const noexcept -> Shape2<i64> { return {patch_size(), patch_size()}; }
+            [[nodiscard]] auto n_patches() const noexcept -> i64 { return static_cast<i64>(patches_centers().size()); }
 
             // Returns the center of each patch within the slice/grid.
             // These coordinates are 0 at the slice origin.
-            [[nodiscard]] Span<const Vec2<f64>> patches_centers() const noexcept {
+            [[nodiscard]] auto patches_centers() const noexcept -> Span<const Vec2<f64>> {
                 return {m_centers.data(), m_centers.size()};
             }
 
@@ -182,7 +181,7 @@ namespace qn {
             // Compute the Fourier cropped logical shape.
             // This corresponds to the range [0, fftfreq[1]], i.e. the high frequencies are removed,
             // but of course the low frequencies cannot be cropped by simple Fourier cropping.
-            [[nodiscard]] constexpr Shape2<i64> fourier_cropped_shape() const noexcept {
+            [[nodiscard]] constexpr auto fourier_cropped_shape() const noexcept -> Shape2<i64> {
                 const i64 fourier_cropped_logical_size = (slice.end - 1) * 2; // even size
                 return {fourier_cropped_logical_size, fourier_cropped_logical_size};
             }
@@ -191,7 +190,7 @@ namespace qn {
             // We still need to remove the low frequencies, but we cannot do this with a Fourier cropping.
             // Instead, we'll use the rotational average output frequency range to only output the frequencies
             // that are within the fitting range by excluding the low frequencies before the range.
-            [[nodiscard]] constexpr Vec2<f64> fourier_cropped_fftfreq_range() const noexcept {
+            [[nodiscard]] constexpr auto fourier_cropped_fftfreq_range() const noexcept -> Vec2<f64> {
                 constexpr f64 NYQUIST = 0.5; // logical size is even, so max fftfreq is 0.5
                 const f64 rescale = NYQUIST / fftfreq[1]; // fftfreq[1] becomes NYQUIST after Fourier crop
                 return {fftfreq[0] * rescale, NYQUIST}; // NYQUIST=NYQUIST*rescale
@@ -217,7 +216,7 @@ namespace qn {
         ) -> std::pair<std::array<f64, 3>, std::array<f64, 3>>; // defocus and ncc ramp
 
     private:
-        static Array<f32> compute_average_patch_rfft_ps_(
+        static auto compute_average_patch_rfft_ps_(
                 Device compute_device,
                 StackLoader& stack_loader,
                 const MetadataStack& metadata,
@@ -225,34 +224,24 @@ namespace qn {
                 Vec2<f64> delta_z_range_nanometers,
                 f64 max_tilt_for_average,
                 const Path& debug_directory
-        );
+        ) -> Array<f32>;
 
-        static f64 fit_ctf_to_patch_(
+        static auto fit_ctf_to_patch_(
                 Array<f32> patch_rfft_ps,
                 FittingRange& fitting_range,
                 CTFAnisotropic64& ctf_anisotropic, // contains the initial defocus and phase shift, return best
                 bool fit_phase_shift,
                 bool fit_astigmatism,
                 const Path& debug_directory
-        );
+        ) -> f64;
 
     public: // -- Global fitting --
-
         struct GlobalFit {
             bool rotation{};
             bool tilt{};
             bool elevation{};
             bool phase_shift{};
             bool astigmatism{};
-        };
-
-        struct GlobalFitOutput {
-            Vec3<f64> angle_offsets{};
-            f64 phase_shift{};
-            f64 astigmatism_value{};
-            f64 astigmatism_angle{};
-            f64 average_defocus{};
-            std::vector<f64> defoci{};
         };
 
         // The cropped power-spectra, of every patch, of every slice.
@@ -287,28 +276,28 @@ namespace qn {
                 m_rfft_ps = noa::memory::empty<f32>(cropped_patch_shape.rfft(), option);
             }
 
-            [[nodiscard]] View<f32> rfft_ps() const noexcept { return m_rfft_ps.view(); }
+            [[nodiscard]] auto rfft_ps() const noexcept -> View<f32> { return m_rfft_ps.view(); }
 
             // Retrieves the patches of a given slice.
-            [[nodiscard]] View<f32> rfft_ps(i64 chunk_index) const {
+            [[nodiscard]] auto rfft_ps(i64 chunk_index) const -> View<f32> {
                 return rfft_ps().subregion(chunk(chunk_index));
             }
 
         public:
-            [[nodiscard]] i64 n_slices() const noexcept { return m_n_slices; }
-            [[nodiscard]] i64 n_patches_per_slice() const noexcept { return m_n_patches_per_slice; }
-            [[nodiscard]] i64 n_patches_per_stack() const noexcept { return m_rfft_ps.shape()[0]; }
+            [[nodiscard]] auto n_slices() const noexcept -> i64 { return m_n_slices; }
+            [[nodiscard]] auto n_patches_per_slice() const noexcept -> i64 { return m_n_patches_per_slice; }
+            [[nodiscard]] auto n_patches_per_stack() const noexcept -> i64 { return m_rfft_ps.shape()[0]; }
 
-            [[nodiscard]] Shape2<i64> shape() const noexcept {
+            [[nodiscard]] auto shape() const noexcept -> Shape2<i64> {
                 const i64 logical_size = m_rfft_ps.shape()[2]; // patches are square
                 return {logical_size, logical_size};
             }
 
-            [[nodiscard]] Shape4<i64> chunk_shape() const noexcept {
+            [[nodiscard]] auto chunk_shape() const noexcept -> Shape4<i64> {
                 return shape().push_front<2>({n_patches_per_slice(), 1});
             }
 
-            [[nodiscard]] noa::indexing::Slice chunk(i64 chunk_index) const noexcept {
+            [[nodiscard]] auto chunk(i64 chunk_index) const noexcept -> noa::indexing::Slice {
                 const i64 start = chunk_index * n_patches_per_slice();
                 return noa::indexing::Slice{start, start + n_patches_per_slice()};
             }
@@ -319,23 +308,23 @@ namespace qn {
             i64 m_n_patches_per_slice;
         };
 
-        static Patches compute_patches_rfft_ps(
+        static auto compute_patches_rfft_ps(
                 Device compute_device,
                 StackLoader& stack_loader,
                 const MetadataStack& metadata,
                 const FittingRange& fitting_range,
                 const Grid& grid,
                 const Path& debug_directory
-        );
+        ) -> Patches;
 
         static auto fit_ctf_to_patches(
-                const MetadataStack& metadata,
+                MetadataStack& metadata,
+                CTFAnisotropic64& ctf_anisotropic,
                 const Patches& patches_rfft_ps,
                 const FittingRange& fitting_range,
                 const Grid& grid,
-                const CTFAnisotropic64& ctf_anisotropic,
-                GlobalFit fit,
+                const GlobalFit& fit,
                 const Path& debug_directory
-        ) -> CTFFitter::GlobalFitOutput;
+        ) -> Vec3<f64>;
     };
 }

@@ -6,7 +6,7 @@
 #include "quinoa/Exception.h"
 #include "quinoa/io/Options.h"
 #include "quinoa/io/YAML.h"
-#include "quinoa/core/Utilities.h"
+#include "quinoa/core/Metadata.h"
 
 namespace {
     template<size_t N>
@@ -31,7 +31,7 @@ namespace {
 
     using namespace qn;
 
-    Options::Files parse_files_(YAML::Node files_node) {
+    auto parse_files_(YAML::Node files_node) -> Options::Files {
         constexpr std::array QN_OPTIONS_FILES{
                 "input_directory",
                 "input_stack",
@@ -140,7 +140,7 @@ namespace {
         return files;
     }
 
-    Options::TiltScheme parse_tilt_scheme_(YAML::Node tilt_scheme_node) {
+    auto parse_tilt_scheme_(YAML::Node tilt_scheme_node) -> Options::TiltScheme {
         constexpr std::array QN_OPTIONS_TILT_SCHEME{
                 "order",
                 "rotation_offset",
@@ -219,8 +219,8 @@ namespace {
         tilt_scheme.astigmatism_angle = parse_parameter("astigmatism_angle", 0.);
 
         // Angle range (this is optional).
-        tilt_scheme.phase_shift = to_angle_range(tilt_scheme.phase_shift);
-        tilt_scheme.astigmatism_angle = to_angle_range(tilt_scheme.astigmatism_angle);
+        tilt_scheme.phase_shift = MetadataSlice::to_angle_range(tilt_scheme.phase_shift);
+        tilt_scheme.astigmatism_angle = MetadataSlice::to_angle_range(tilt_scheme.astigmatism_angle);
 
         // Sanitize.
         QN_CHECK(tilt_scheme.voltage >= 50 && tilt_scheme.voltage <= 450,
@@ -242,7 +242,7 @@ namespace {
         return tilt_scheme;
     }
 
-    Options::Preprocessing parse_preprocessing_(YAML::Node preprocessing_node) {
+    auto parse_preprocessing_(YAML::Node preprocessing_node) -> Options::Preprocessing {
         constexpr std::array QN_OPTIONS_PREPROCESSING{
                 "run",
                 "exclude_blank_views",
@@ -280,7 +280,7 @@ namespace {
         return preprocessing;
     }
 
-    Options::Alignment parse_alignment_(YAML::Node alignment_node) {
+    auto parse_alignment_(YAML::Node alignment_node) -> Options::Alignment {
         constexpr std::array QN_OPTIONS_ALIGNMENT{
                 "run",
                 "fit_rotation_offset",
@@ -288,9 +288,9 @@ namespace {
                 "fit_elevation_offset",
                 "fit_phase_shift",
                 "fit_astigmatism",
-                "use_pairwise_matching",
-                "use_projection_matching",
+                "use_initial_pairwise_alignment",
                 "use_ctf_estimate",
+                "use_projection_matching",
         };
         sanitize_node_(alignment_node, QN_OPTIONS_ALIGNMENT);
 
@@ -314,13 +314,13 @@ namespace {
         alignment.fit_elevation_offset = parse_parameter("fit_elevation_offset", true);
         alignment.fit_phase_shift = parse_parameter("fit_phase_shift", false);
         alignment.fit_astigmatism = parse_parameter("fit_astigmatism", true);
-        alignment.use_pairwise_matching = parse_parameter("use_pairwise_matching", true);
+        alignment.use_initial_pairwise_alignment = parse_parameter("use_initial_pairwise_alignment", true);
         alignment.use_ctf_estimate = parse_parameter("use_ctf_estimate", true);
         alignment.use_projection_matching = parse_parameter("use_projection_matching", true);
         return alignment;
     }
 
-    Options::Compute parse_compute_(const YAML::Node& compute_node) {
+    auto parse_compute_(const YAML::Node& compute_node) -> Options::Compute {
         constexpr std::array QN_OPTIONS_COMPUTE{
                 "device",
                 "n_cpu_threads",

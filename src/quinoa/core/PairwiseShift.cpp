@@ -56,7 +56,7 @@ namespace qn {
 
         // The main processing loop. From the lowest to the highest tilt, find the relative shifts.
         // These shifts are the slice-to-slice shifts, i.e. the shift to apply to the target to align
-        // it onto its neighbour reference.
+        // it onto its neighbor reference.
         std::vector<Vec2<f64>> slice_to_slice_shifts;
         slice_to_slice_shifts.reserve(static_cast<size_t>(slice_count));
         for (i64 idx_target = 0; idx_target < slice_count; ++idx_target) {

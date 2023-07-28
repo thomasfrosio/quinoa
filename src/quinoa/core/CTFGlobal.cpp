@@ -38,15 +38,16 @@ namespace {
 
     public:
         Parameters(
-                CTFFitter::GlobalFit fit,
-                i64 n_slices,
-                CTFAnisotropic64 average_ctf
+                const CTFFitter::GlobalFit& fit,
+                const MetadataStack& metadata,
+                const CTFAnisotropic64& average_ctf
         ) :
-                m_n_defocus(n_slices),
+                m_n_defocus(metadata.ssize()),
                 m_fit_global(fit.rotation, fit.tilt, fit.elevation, fit.phase_shift, fit.astigmatism),
                 m_buffer(size())
         {
             // Save some initial values. This is in case they are not fitted, and we need to get the original values.
+            // Assume phase shift and astigmatism are the same for every slice.
             m_initial_values[0] = average_ctf.phase_shift();
             m_initial_values[1] = average_ctf.defocus().astigmatism;
             m_initial_values[2] = average_ctf.defocus().angle;
@@ -67,8 +68,9 @@ namespace {
                 set(astigmatism_value_index(), m_initial_values[1]);
                 set(astigmatism_angle_index(), m_initial_values[2]);
             }
-            for (auto& defocus: defoci())
-                defocus = average_ctf.defocus().value;
+            auto defocus_span = defoci();
+            for (i64 i = 0; i < n_defocus(); ++i)
+                defocus_span[i] = metadata[i].defocus;
         }
 
         // Sets the (low and high) bounds for every parameter.
@@ -138,56 +140,56 @@ namespace {
         }
 
     public:
-        [[nodiscard]] constexpr i64 n_globals() const noexcept { return noa::math::sum(m_fit_global.as<i64>()); }
-        [[nodiscard]] constexpr i64 n_defocus() const noexcept { return m_n_defocus; }
-        [[nodiscard]] constexpr i64 ssize() const noexcept { return n_globals() + n_defocus(); }
-        [[nodiscard]] constexpr size_t size() const noexcept { return static_cast<size_t>(ssize()); }
+        [[nodiscard]] constexpr auto n_globals() const noexcept -> i64 { return noa::math::sum(m_fit_global.as<i64>()); }
+        [[nodiscard]] constexpr auto n_defocus() const noexcept -> i64 { return m_n_defocus; }
+        [[nodiscard]] constexpr auto ssize() const noexcept -> i64 { return n_globals() + n_defocus(); }
+        [[nodiscard]] constexpr auto size() const noexcept -> size_t { return static_cast<size_t>(ssize()); }
 
         void set(i64 index, f64 value) noexcept { m_buffer[static_cast<size_t>(index)] = value; }
-        [[nodiscard]] f64 get(i64 index) const noexcept { return m_buffer[static_cast<size_t>(index)]; }
-        [[nodiscard]] f64* data() noexcept { return m_buffer.data(); }
+        [[nodiscard]] auto get(i64 index) const noexcept -> f64 { return m_buffer[static_cast<size_t>(index)]; }
+        [[nodiscard]] auto data() noexcept -> f64* { return m_buffer.data(); }
 
-        [[nodiscard]] constexpr bool has_rotation() const noexcept { return m_fit_global[0]; }
-        [[nodiscard]] constexpr bool has_tilt() const noexcept { return m_fit_global[1]; }
-        [[nodiscard]] constexpr bool has_elevation() const noexcept { return m_fit_global[2]; }
-        [[nodiscard]] constexpr bool has_phase_shift() const noexcept { return m_fit_global[3]; }
-        [[nodiscard]] constexpr bool has_astigmatism() const noexcept { return m_fit_global[4]; }
+        [[nodiscard]] constexpr auto has_rotation() const noexcept -> bool { return m_fit_global[0]; }
+        [[nodiscard]] constexpr auto has_tilt() const noexcept -> bool { return m_fit_global[1]; }
+        [[nodiscard]] constexpr auto has_elevation() const noexcept -> bool { return m_fit_global[2]; }
+        [[nodiscard]] constexpr auto has_phase_shift() const noexcept -> bool { return m_fit_global[3]; }
+        [[nodiscard]] constexpr auto has_astigmatism() const noexcept -> bool { return m_fit_global[4]; }
 
-        [[nodiscard]] constexpr i64 rotation_index() const noexcept { return m_indexes[0]; }
-        [[nodiscard]] constexpr i64 tilt_index() const noexcept { return m_indexes[1]; }
-        [[nodiscard]] constexpr i64 elevation_index() const noexcept { return m_indexes[2]; }
-        [[nodiscard]] constexpr i64 phase_shift_index() const noexcept { return m_indexes[3]; }
-        [[nodiscard]] constexpr i64 astigmatism_value_index() const noexcept { return m_indexes[4]; }
-        [[nodiscard]] constexpr i64 astigmatism_angle_index() const noexcept { return m_indexes[5]; }
-        [[nodiscard]] constexpr i64 defocus_index() const noexcept { return n_globals(); }
+        [[nodiscard]] constexpr auto rotation_index() const noexcept -> i64 { return m_indexes[0]; }
+        [[nodiscard]] constexpr auto tilt_index() const noexcept -> i64 { return m_indexes[1]; }
+        [[nodiscard]] constexpr auto elevation_index() const noexcept -> i64 { return m_indexes[2]; }
+        [[nodiscard]] constexpr auto phase_shift_index() const noexcept -> i64 { return m_indexes[3]; }
+        [[nodiscard]] constexpr auto astigmatism_value_index() const noexcept -> i64 { return m_indexes[4]; }
+        [[nodiscard]] constexpr auto astigmatism_angle_index() const noexcept -> i64 { return m_indexes[5]; }
+        [[nodiscard]] constexpr auto defocus_index() const noexcept -> i64 { return n_globals(); }
 
     public: // access through spans.
-        [[nodiscard]] Span<f64> globals() noexcept { // can be empty
+        [[nodiscard]] auto globals() noexcept -> Span<f64> { // can be empty
             return {m_buffer.data(), n_globals()};
         }
 
-        [[nodiscard]] Span<f64> defoci() noexcept {
+        [[nodiscard]] auto defoci() noexcept -> Span<f64> {
             return {m_buffer.data() + defocus_index(), n_defocus()};
         }
 
-        [[nodiscard]] Span<f64> parameters() noexcept {
+        [[nodiscard]] auto parameters() noexcept -> Span<f64> {
             return {m_buffer.data(), ssize()};
         }
 
-        [[nodiscard]] Span<f64> lower_bounds() noexcept {
+        [[nodiscard]] auto lower_bounds() noexcept -> Span<f64> {
             return {m_lower_bounds.data(), ssize()};
         }
 
-        [[nodiscard]] Span<f64> upper_bounds() noexcept {
+        [[nodiscard]] auto upper_bounds() noexcept -> Span<f64> {
             return {m_upper_bounds.data(), ssize()};
         }
 
-        [[nodiscard]] Span<f64> abs_tolerance() noexcept {
+        [[nodiscard]] auto abs_tolerance() noexcept -> Span<f64> {
             return {m_abs_tolerance.data(), ssize()};
         }
 
     public: // safe access of the parameters, whether they are fitted.
-        [[nodiscard]] Vec3<f64> angle_offsets() const noexcept {
+        [[nodiscard]] auto angle_offsets() const noexcept -> Vec3<f64> {
             // These are offsets, so the initial value is always 0.
             return {
                     has_rotation() ? get(rotation_index()) : 0,
@@ -196,15 +198,15 @@ namespace {
             };
         }
 
-        [[nodiscard]] f64 phase_shift() const noexcept {
+        [[nodiscard]] auto phase_shift() const noexcept -> f64 {
             return has_phase_shift() ? get(phase_shift_index()) : m_initial_values[0];
         }
 
-        [[nodiscard]] f64 astigmatism_value() const noexcept {
+        [[nodiscard]] auto astigmatism_value() const noexcept -> f64 {
             return has_astigmatism() ? get(astigmatism_value_index()) : m_initial_values[1];
         }
 
-        [[nodiscard]] f64 astigmatism_angle() const noexcept {
+        [[nodiscard]] auto astigmatism_angle() const noexcept -> f64 {
             return has_astigmatism() ? get(astigmatism_angle_index()) : m_initial_values[2];
         }
     };
@@ -233,16 +235,16 @@ namespace {
     public:
         CTFGlobalFitter(
                 const MetadataStack& metadata,
+                const CTFAnisotropic64& average_anisotropic_ctf,
                 const CTFFitter::Patches& patches_rfft_ps,
                 const CTFFitter::FittingRange& fitting_range,
                 const CTFFitter::Grid& grid,
-                const CTFAnisotropic64& average_anisotropic_ctf,
                 const CTFFitter::GlobalFit& fit
         ) :
                 m_metadata(&metadata),
                 m_fitting_range(&fitting_range),
                 m_grid(&grid),
-                m_parameters(fit, patches_rfft_ps.n_slices(), average_anisotropic_ctf),
+                m_parameters(fit, metadata, average_anisotropic_ctf),
                 m_memoizer(/*n_parameters=*/ m_parameters.ssize(), /*resolution=*/ 1),
                 m_patches(&patches_rfft_ps)
         {
@@ -278,18 +280,33 @@ namespace {
             m_background_curve = noa::indexing::broadcast(m_background_curve, m_rotational_averages.shape());
 
             // Prepare per-patch ctfs. This needs to be dereferenceable.
-            // Regardless of whether the astigmatism is fitted, the isotropic ctfs are needed.
+            // In the case of astigmatism, we need an extra array with the anisotropic ctfs.
             m_ctfs_isotropic = noa::memory::empty<CTFIsotropic64>(n_patches, options_managed);
-            const auto average_isotropic_ctf = CTFIsotropic64(average_anisotropic_ctf);
-            for (auto& ctf: m_ctfs_isotropic.span())
-                ctf = average_isotropic_ctf;
+            m_ctfs_anisotropic =
+                    m_parameters.has_astigmatism() ?
+                    noa::memory::empty<CTFAnisotropic64>(n_patches, options_managed) :
+                    Array<CTFAnisotropic64>{};
 
-            // Astigmatism. In this case, we need an extra array with the anisotropic ctfs.
+            // Initialize ctfs.
             // The defocus is going to be overwritten, but we still need to initialize everything else.
-            if (m_parameters.has_astigmatism()) {
-                m_ctfs_anisotropic = noa::memory::empty<CTFAnisotropic64>(n_patches, options_managed);
-                for (auto& ctf: m_ctfs_anisotropic.span())
-                    ctf = average_anisotropic_ctf;
+            // Regardless of whether the astigmatism is fitted, the isotropic ctfs are needed.
+            auto defocus = average_anisotropic_ctf.defocus();
+            for (i64 i = 0; i < patches_rfft_ps.n_slices(); ++i) {
+                auto slice_anisotropic_ctf = average_anisotropic_ctf;
+                slice_anisotropic_ctf.set_defocus({metadata[i].defocus, defocus.astigmatism, defocus.angle});
+                const auto slice_isotropic_ctf = CTFIsotropic64(slice_anisotropic_ctf);
+
+                const auto slice_isotropic_ctfs = m_ctfs_isotropic
+                        .subregion(noa::indexing::Ellipsis{}, m_patches->chunk(i));
+                for (auto& ctf: slice_isotropic_ctfs.span())
+                    ctf = slice_isotropic_ctf;
+
+                if (m_parameters.has_astigmatism()) {
+                    const auto slice_anisotropic_ctfs = m_ctfs_anisotropic
+                            .subregion(noa::indexing::Ellipsis{}, m_patches->chunk(i));
+                    for (auto& ctf: slice_anisotropic_ctfs.span())
+                        ctf = slice_anisotropic_ctf;
+                }
             }
 
             // Allocate buffers for the cross-correlation. In total, to compute the gradients efficiently,
@@ -453,7 +470,7 @@ namespace {
                 i64 i = 0;
                 for (auto& value: self.parameters().globals()) {
                     const f64 initial_value = value;
-                    const f64 delta = abs_tolerance[i];
+                    const f64 delta = abs_tolerance[i] / 4;
 
                     value = initial_value - delta;
                     const f64 fx_minus_delta = cost_mean();
@@ -461,7 +478,7 @@ namespace {
                     const f64 fx_plus_delta = cost_mean();
 
                     value = initial_value; // back to original value
-                    const f64 gradient = CentralFiniteDifference::get(fx_minus_delta, fx_plus_delta, delta / 4);
+                    const f64 gradient = CentralFiniteDifference::get(fx_minus_delta, fx_plus_delta, delta);
                     *(gradient_globals++) = gradient;
                     ++i;
                     qn::Logger::debug("global: g={:.8f}, v={:.8f}", gradient, value);
@@ -547,33 +564,33 @@ namespace {
             return cost;
         }
 
-        [[nodiscard]] const CTFFitter::Patches& patches() noexcept {
+        [[nodiscard]] auto patches() noexcept -> const CTFFitter::Patches& {
             return *m_patches;
         }
 
-        [[nodiscard]] View<const f32> nccs() const noexcept {
+        [[nodiscard]] auto nccs() const noexcept -> View<const f32> {
             return m_nccs.view();
         }
 
-        [[nodiscard]] Parameters& parameters() noexcept {
+        [[nodiscard]] auto parameters() noexcept -> Parameters& {
             return m_parameters;
         }
 
-        [[nodiscard]] Memoizer& memoizer() noexcept {
+        [[nodiscard]] auto memoizer() noexcept -> Memoizer& {
             return m_memoizer;
         }
     };
 }
 
 namespace qn {
-    CTFFitter::Patches CTFFitter::compute_patches_rfft_ps(
+    auto CTFFitter::compute_patches_rfft_ps(
             Device compute_device,
             StackLoader& stack_loader,
             const MetadataStack& metadata,
             const FittingRange& fitting_range,
             const Grid& grid,
             const Path& debug_directory
-    ) {
+    ) -> CTFFitter::Patches {
         const auto options = ArrayOption(compute_device, Allocator::DEFAULT_ASYNC);
         const auto slice_patches_shape = grid.patch_shape().push_front<2>({grid.n_patches(), 1});
 
@@ -629,17 +646,16 @@ namespace qn {
     }
 
     auto CTFFitter::fit_ctf_to_patches(
-            const MetadataStack& metadata,
+            MetadataStack& metadata, // updated: .angles, .defocus
+            CTFAnisotropic64& anisotropic_ctf, // updated: .phase_shift, .defocus
             const Patches& patches_rfft_ps,
             const FittingRange& fitting_range,
             const Grid& grid,
-            const CTFAnisotropic64& ctf_anisotropic,
-            GlobalFit fit,
+            const GlobalFit& fit,
             const Path& debug_directory
-    ) -> CTFFitter::GlobalFitOutput {
-
+    ) -> Vec3<f64> {
         auto fitter = CTFGlobalFitter(
-                metadata, patches_rfft_ps, fitting_range, grid, ctf_anisotropic, fit);
+                metadata, anisotropic_ctf, patches_rfft_ps, fitting_range, grid, fit);
         auto& parameters = fitter.parameters();
 
         // Set bounds.
@@ -670,24 +686,22 @@ namespace qn {
                 parameters.upper_bounds().data());
         optimizer.set_x_tolerance_abs(parameters.abs_tolerance().data());
         optimizer.optimize(parameters.data());
-        optimizer.optimize(parameters.data());
 
-        // Actual average defocus.
-        std::vector<f64> defoci;
+        // Update metadata and average ctf.
         f64 average_defocus{0};
-        for (f64 defocus: parameters.defoci()) {
+        const auto defoci = parameters.defoci();
+        for (i64 i = 0; i < metadata.ssize(); ++i) {
+            const auto defocus = defoci[i];
             average_defocus += defocus;
-            defoci.push_back(defocus);
+            metadata[i].defocus = defocus;
         }
-        average_defocus /= static_cast<f64>(parameters.n_defocus());
+        average_defocus /= static_cast<f64>(metadata.ssize());
 
-        return {
-            /*angle_offsets=*/ parameters.angle_offsets(),
-            /*phase_shift=*/ parameters.phase_shift(),
-            /*astigmatism_value=*/ parameters.astigmatism_value(),
-            /*astigmatism_angle=*/ parameters.astigmatism_angle(),
-            /*average_defocus=*/ average_defocus,
-            /*defoci=*/ defoci
-        };
+        anisotropic_ctf.set_phase_shift(parameters.phase_shift());
+        anisotropic_ctf.set_defocus({average_defocus, parameters.astigmatism_value(), parameters.astigmatism_angle()});
+
+        const auto angle_offsets = noa::math::rad2deg(parameters.angle_offsets());
+        metadata.add_global_angles(angle_offsets);
+        return angle_offsets;
     }
 }
