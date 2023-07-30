@@ -127,6 +127,7 @@ namespace qn {
                 const MetadataStack& input,
                 bool update_angles,
                 bool update_shifts,
+                bool update_defocus,
                 Vec2<f64> input_spacing = {1, 1},
                 Vec2<f64> current_spacing = {1, 1}
         ) -> MetadataStack& {
@@ -138,6 +139,8 @@ namespace qn {
                             output_slice.angles = input_slice.angles;
                         if (update_shifts)
                             output_slice.shifts = input_slice.shifts * scale;
+                        if (update_defocus)
+                            output_slice.defocus = input_slice.defocus;
                     }
                 }
             }
@@ -145,14 +148,17 @@ namespace qn {
         }
 
         auto update_angles_from(const MetadataStack& input) -> MetadataStack& {
-            return update_from(input, true, false);
+            return update_from(input, true, false, false);
         }
         auto update_shift_from(
                 const MetadataStack& input,
                 Vec2<f64> input_spacing,
                 Vec2<f64> current_spacing
         ) -> MetadataStack& {
-            return update_from(input, false, true, input_spacing, current_spacing);
+            return update_from(input, false, true, false, input_spacing, current_spacing);
+        }
+        auto update_defocus_from(const MetadataStack& input) -> MetadataStack& {
+            return update_from(input, false, false, true);
         }
 
         // Shift the sample by a given amount.

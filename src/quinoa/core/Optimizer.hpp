@@ -84,7 +84,7 @@ namespace qn {
 
         void optimize(f64* x, f64* fx) const {
             const nlopt_result result = nlopt_optimize(pointer, x, fx);
-            qn::Logger::debug("Optimizer terminated with status code = {}", nlopt_result_to_string(result));
+            qn::Logger::trace("Optimizer terminated with status code = {}", nlopt_result_to_string(result));
         }
 
         f64 optimize(f64* x) const {
@@ -96,7 +96,7 @@ namespace qn {
         void force_stop() const {
             const nlopt_result result = nlopt_force_stop(pointer);
             if (result < 0)
-                qn::Logger::debug("Optimizer failed to stop, status={}", nlopt_result_to_string(result));
+                qn::Logger::trace("Optimizer failed to stop, status={}", nlopt_result_to_string(result));
         }
 
         [[nodiscard]] i32 number_of_evaluations() const noexcept {

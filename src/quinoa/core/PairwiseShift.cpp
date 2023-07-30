@@ -19,6 +19,10 @@ namespace qn {
         const auto options = noa::ArrayOption(compute_device, allocator);
         m_buffer_rfft = noa::memory::empty<c32>({3, 1, shape[2], shape[3] / 2 + 1}, options);
         m_xmap = noa::memory::empty<f32>({1, 1, shape[2], shape[3]}, options);
+
+        const auto bytes = m_xmap.size() * sizeof(f32) + m_buffer_rfft.size() * sizeof(c32);
+        qn::Logger::trace("PairwiseShift(): allocated for {} MB on {} (allocator={})",
+                          static_cast<f64>(bytes) * 10e-6, options.device(), options.allocator());
     }
 
     void PairwiseShift::update(
@@ -135,10 +139,10 @@ namespace qn {
         const auto target = buffer.subregion(2);
 
         // Real-space masks to guide the alignment and not compare things that cannot or shouldn't be compared.
-        // This is relevant for large shifts between images and high tilt angles, but also to restrict the
-        // alignment to a specific region, i.e. the center of the image.
+        // This is relevant for large shifts between images and high-tilt angles, but also to restrict the
+        // alignment to a specific region, i.e., the center of the image.
         if (area_match) {
-            // Copy if stack isn't on the compute device.
+            // Copy if stack isn't on the compute-device.
             View<f32> input_reference = stack.view().subregion(reference_slice.index);
             View<f32> input_target = stack.view().subregion(target_slice.index);
             if (stack.device() != buffer.device()) {
@@ -159,21 +163,21 @@ namespace qn {
             // The area match can be very restrictive in the high tilts. When the shifts are not known and
             // large shifts are present, it is best to turn off the area match and enforce a common FOV only between
             // the two images that are being compared.
-            const auto reference_target = buffer.subregion(noa::indexing::Slice{1, 3});
-            const auto hw = reference_target.shape().pop_front<2>();
+            const auto reference_and_target = buffer.subregion(noa::indexing::Slice{1, 3});
+            const auto hw = reference_and_target.shape().pop_front<2>();
             const auto smooth_edge_size = static_cast<f32>(
                     static_cast<f64>(noa::math::max(hw)) *
                     smooth_edge_percent);
 
             std::array indexes{reference_slice.index, target_slice.index};
-            noa::memory::copy_batches(stack.view(), reference_target, View<i32>(indexes.data(), 2));
+            noa::memory::copy_batches(stack.view(), reference_and_target, View<i32>(indexes.data(), 2));
 
             noa::geometry::rectangle(
-                    reference_target, reference_target, slice_center,
+                    reference_and_target, reference_and_target, slice_center,
                     slice_center - smooth_edge_size, smooth_edge_size,
                     fwd_stretch_target_to_reference);
             noa::geometry::rectangle(
-                    reference_target, reference_target, slice_center,
+                    reference_and_target, reference_and_target, slice_center,
                     slice_center - smooth_edge_size, smooth_edge_size,
                     inv_stretch_target_to_reference);
         }
@@ -205,7 +209,7 @@ namespace qn {
                 target_stretched_and_reference.shape(),
                 parameters.highpass_filter[0], parameters.lowpass_filter[0],
                 parameters.highpass_filter[1], parameters.lowpass_filter[1]);
-        // TODO Apply sampling functions (exposure, mtf)
+        // TODO Apply sampling functions (exposure, mtf)?
         noa::signal::fft::xmap<noa::fft::H2F>(
                 target_stretched_and_reference_rfft.subregion(0),
                 target_stretched_and_reference_rfft.subregion(1),
@@ -227,7 +231,7 @@ namespace qn {
         const auto [peak_coordinate, peak_value] = noa::signal::fft::xpeak_2d<noa::fft::F2F>(
                 xmap, max_shift.as<f32>(), noa::signal::PeakMode::PARABOLA_1D, Vec2<i64>{1});
         const auto shift_reference = (peak_coordinate - slice_center).as<f64>();
-        qn::Logger::debug("{:>2} peak: pos={::> 8.3f}, value={:.6g}",
+        qn::Logger::trace("{:>2} peak: pos={::> 8.3f}, value={:.6g}",
                           reference_slice.index, shift_reference, peak_value);
 
         // We could destretch the shift to bring it back to the original target. However, we'll need
@@ -246,10 +250,6 @@ namespace qn {
         return shift_0deg;
     }
 
-    // Compute the global shifts, i.e. the shifts to apply to a slice so that it becomes aligned with the
-    // reference slice. At this point, we have the relative (i.e. slice-to-slice) shifts in the 0deg reference
-    // frame, so we need to accumulate the shifts of the lower degree slices.
-    // At the same time, we can center the global shifts to minimize the overall movement of the slices.
     auto PairwiseShift::relative2global_shifts_(
             const std::vector<Vec2<f64>>& relative_shifts,
             const MetadataStack& metadata,
@@ -276,7 +276,7 @@ namespace qn {
                             global_shifts.rbegin() + index_rpivot,
                             scan_op);
 
-        qn::Logger::trace("Average shift: {::.3f}", mean);
+        qn::Logger::info("Average shift: {::.3f}", mean);
 
         // Center the global shifts (optional) and scale them back to the original reference frame
         // of their respective slice, i.e. shrink the shifts to account for the slice's tilt and pitch.
@@ -288,7 +288,7 @@ namespace qn {
                     noa::geometry::rotate(-angles[0])
             };
             const auto corrected_shift = fwd_shrink_matrix * (global_shifts[i] - mean);
-            qn::Logger::debug("view={:>02}, global shift={::> 8.3f}, global corrected shift={::> 8.3f}",
+            qn::Logger::trace("view={:>02}, global shift={::> 8.3f}, global corrected shift={::> 8.3f}",
                               i, global_shifts[i], corrected_shift);
 
             global_shifts[i] = corrected_shift;

@@ -454,7 +454,7 @@ namespace {
             std::optional<f64> memoized_cost = self.memoizer().find(self.parameters().data(), gradients, 1e-8);
             if (memoized_cost.has_value()) {
                 f64 cost = memoized_cost.value();
-                qn::Logger::debug("cost={:.4f}, elapsed={:.2f}ms, memoized=true", cost, timer.elapsed());
+                qn::Logger::trace("cost={:.4f}, elapsed={:.2f}ms, memoized=true", cost, timer.elapsed());
                 return cost;
             }
 
@@ -481,7 +481,7 @@ namespace {
                     const f64 gradient = CentralFiniteDifference::get(fx_minus_delta, fx_plus_delta, delta);
                     *(gradient_globals++) = gradient;
                     ++i;
-                    qn::Logger::debug("global: g={:.8f}, v={:.8f}", gradient, value);
+                    qn::Logger::trace("global: g={:.8f}, v={:.8f}", gradient, value);
                 }
             }
 
@@ -555,12 +555,12 @@ namespace {
                             defoci_and_delta[static_cast<size_t>(i)][1]);
 
                     defoci_gradients[i] = gradient;
-                    qn::Logger::debug("defocus {:>02}: g={:.8f}, v={:.8f}", i, gradient, defoci[i]);
+                    qn::Logger::trace("defocus {:>02}: g={:.8f}, v={:.8f}", i, gradient, defoci[i]);
                 }
             }
 
             self.memoizer().record(self.parameters().data(), cost, gradients);
-            qn::Logger::debug("cost={:.4f}, elapsed={:.2f}ms", cost, timer.elapsed());
+            qn::Logger::trace("cost={:.4f}, elapsed={:.2f}ms", cost, timer.elapsed());
             return cost;
         }
 
@@ -618,13 +618,13 @@ namespace qn {
             noa::memory::extract_subregions(slice, patches, patches_origins);
             noa::math::normalize_per_batch(patches, patches);
 
-            if (qn::Logger::is_debug())
+            if (!debug_directory.empty())
                 noa::io::save(patches, debug_directory / noa::string::format("patches_{:>02}.mrc", index));
 
             // Compute the power-spectra of these tiles.
             noa::fft::r2c(patches, patches_rfft, noa::fft::Norm::FORWARD);
             noa::ewise_unary(patches_rfft, patches_rfft_ps, noa::abs_squared_t{});
-            if (qn::Logger::is_debug()) {
+            if (!debug_directory.empty()) {
                 noa::io::save(noa::ewise_unary(patches_rfft_ps, noa::abs_one_log_t{}),
                               debug_directory / "patches_ps_full.mrc");
             }
@@ -635,10 +635,10 @@ namespace qn {
                     cropped_patches.rfft_ps(index), cropped_patches.chunk_shape());
 
             ++index;
-            qn::Logger::debug("index={:>02.2f}", slice_metadata.angles[1]);
+            qn::Logger::trace("index={:>02.2f}", slice_metadata.angles[1]);
         }
 
-        if (qn::Logger::is_debug()) {
+        if (!debug_directory.empty()) {
             noa::io::save(noa::ewise_unary(cropped_patches.rfft_ps().to_cpu(), noa::abs_one_log_t{}),
                           debug_directory / "patches_ps.mrc");
         }

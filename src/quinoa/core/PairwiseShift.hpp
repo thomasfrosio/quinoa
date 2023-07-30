@@ -30,13 +30,14 @@
 //
 // Issues:
 //  Since the neighboring views are aligned together, to get the global shift (the shift relative to the global
-//  reference), we need to add the relative shifts (by an inclusive sum operation), effectively accumulating the errors
-//  to the higher tilts.
-//  The tilt (and elevation) difference cannot be correctly accounted for, and the cosine stretching is only an
-//  approximation. While it mostly holds for thin samples and at low tilt, it quickly becomes imprecise at high tilt.
-//  This implementation tries to limit the drift that these errors can cause, mostly by restricting and enforcing
-//  a common area for the cross-correlation, excluding the regions perpendicular to the tilt axis that move a lot
-//  from one tilt to the next.
+//  reference, i.e., the lowest tilt), we need to add the relative shifts (by an inclusive sum operation),
+//  effectively accumulating the errors to the higher tilts.
+//  The tilt (and elevation) difference cannot be correctly accounted for, and the cosine stretching is only a
+//  2d approximation of what these 3d geometric differences would look like in the projections. While it mostly holds
+//  for thin samples and at low tilt, it quickly becomes imprecise at high tilt. This implementation tries to limit
+//  the drift that these errors can cause, mostly by restricting and enforcing a common area for the cross-correlation,
+//  excluding (mostly at high tilt) the regions perpendicular to the tilt axis that move a lot from one tilt to the
+//  next.
 
 namespace qn {
     struct PairwiseShiftParameters {
@@ -94,11 +95,11 @@ namespace qn {
                 f64 max_shift_percent
         ) -> Vec2<f64>;
 
-        // Compute the global shifts, i.e. the shifts to apply to a slice so that it becomes aligned with the
-        // global reference slice (i.e. the lowest tilt). At this point, we have the relative (i.e. slice-to-slice)
+        // Compute the global shifts, i.e., the shifts to apply to a slice so that it becomes aligned with the
+        // global reference slice (i.e., the lowest tilt). At this point, we have the relative (i.e., slice-to-slice)
         // shifts in the 0deg reference frame, so we need to accumulate the shifts of the lower degree slices.
         // At the same time, we can center the global shifts to minimize the overall movement of the slices, a step
-        // referred to as "centering".
+        // we referred to as "centering".
         static auto relative2global_shifts_(
                 const std::vector<Vec2<f64>>& relative_shifts,
                 const MetadataStack& metadata,

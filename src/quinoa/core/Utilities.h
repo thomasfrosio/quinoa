@@ -157,7 +157,7 @@ namespace qn {
                     best_size = i_size;
                 }
                 // Try again with a larger size. Since this padded size is likely to be fft'ed,
-                // keep it even sized. We could go to the next fast fft size, but this often end
+                // keep it even sized. We could go to the next fast fft size, but this often ends
                 // up padding large amounts, for little performance benefits vs memory usage.
                 i_size += (1 - (i_size % 2)) + 1;
             }
@@ -170,14 +170,14 @@ namespace qn {
         const auto current_shape_f64 = current_shape.vec().template as<f64>();
         auto new_shape_f64 = current_shape_f64 * current_spacing / target_spacing;
 
-        // Round to nearest integer (this is where the cropping happens).
+        // Round to the nearest integer (this is where the cropping happens).
         // We'll need to recompute the actual frequency after rounding, but of course,
         // this new frequency should be within a "maximum_relative_error" from the target spacing.
         new_shape_f64 = noa::math::round(new_shape_f64);
         const auto new_shape = Shape2<i64>(new_shape_f64.template as<i64>());
         const auto new_spacing = current_spacing * current_shape_f64 / new_shape_f64;
 
-        // In order to preserve the image (real-space) center, we may need to shift the Fourier cropped image.
+        // In order to preserve the image (real-space) center, we may need to shift the Fourier-cropped image.
         // Here "current_shape" is the padded shape, and we do assume that the initial padding keeps the centers
         // of the input and the padded input aligned.
         const auto current_center = MetadataSlice::center<f64>(current_shape);

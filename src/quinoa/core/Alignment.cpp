@@ -104,7 +104,7 @@ namespace {
         out << YAML::Value << noa::math::rad2deg(average_ctf.phase_shift());
         out << YAML::Comment("in degrees");
 
-        out << YAML::Key << "defoci" << YAML::Comment("(slice index, defocus in micrometers)");
+        out << YAML::Key << "defoci" << YAML::Comment("(slice file-index, defocus in micrometers)");
         out << YAML::BeginMap;
         for (const auto& slice: metadata.slices())
             out << YAML::Key << slice.index_file << YAML::Value << slice.defocus;
@@ -188,6 +188,7 @@ namespace {
             MetadataStack& metadata,
             const InitialPairwiseAlignmentParameters& parameters
     ) {
+        const auto debug = !parameters.debug_directory.empty();
         const auto loading_parameters = LoadStackParameters{
                 /*compute_device=*/ parameters.compute_device,
                 /*allocator=*/ Allocator::DEFAULT_ASYNC,
@@ -208,14 +209,15 @@ namespace {
                 /*lowpass_filter=*/ {0.25, 0.15},
                 /*absolute_max_tilt_difference=*/ 70,
                 /*solve_using_estimated_gradient=*/ false,
-                /*interpolation_mode=*/ noa::InterpMode::LINEAR_FAST
+                /*interpolation_mode=*/ noa::InterpMode::LINEAR_FAST,
+                /*debug_directory=*/ debug ? "" : parameters.debug_directory / "rotation_offset"
         };
 
         const auto pairwise_shift_parameters = PairwiseShiftParameters{
                 /*highpass_filter=*/ {0.03, 0.03},
                 /*lowpass_filter=*/ {0.25, 0.1},
                 /*interpolation_mode=*/ noa::InterpMode::LINEAR_FAST,
-                /*debug_directory=*/ parameters.debug_directory
+                /*debug_directory=*/  debug ? "" : parameters.debug_directory / "pairwise_shift"
         };
 
         // These alignments are quite robust, and we shouldn't need to
@@ -223,7 +225,7 @@ namespace {
         const auto [tilt_series, stack_scaling, file_scaling] =
                 load_stack(stack_filename, metadata, loading_parameters);
 
-        if (Logger::is_debug()) {
+        if (debug) {
             const auto cropped_stack_filename =
                     parameters.debug_directory /
                     noa::string::format("{}_preprocessed{}",
@@ -243,8 +245,8 @@ namespace {
                 !parameters.fit_angle_offset[0] ?
                 GlobalRotation() :
                 GlobalRotation(
-                        tilt_series, metadata,
-                        tilt_series.device(), rotation_parameters);
+                        tilt_series, metadata, rotation_parameters,
+                        tilt_series.device(), Allocator::DEFAULT_ASYNC);
 
         if (!parameters.has_user_angle_offset[0]) {
             // Find a good estimate of the shifts, without cosine-stretching.
@@ -317,7 +319,7 @@ namespace {
                 /*zero_pad_to_fast_fft_shape=*/ false,
         };
 
-        if (Logger::is_debug()) {
+        if (debug) {
             const auto aligned_stack_filename =
                     parameters.debug_directory /
                     noa::string::format("{}_coarse_aligned{}",
@@ -349,7 +351,6 @@ namespace {
 
         // Global fitting.
         Vec3<bool> fit_angle_offset;
-        f64 max_tilt_for_global;
     };
 
     void ctf_alignment(
@@ -358,7 +359,7 @@ namespace {
             MetadataStack& metadata,
             CTFAnisotropic64& average_ctf
     ) {
-        // Load stack
+        const bool debug = !parameters.debug_directory.empty();
         const auto loading_parameters = LoadStackParameters{
                 /*compute_device=*/ parameters.compute_device,
                 /*allocator=*/ Allocator::MANAGED,
@@ -388,7 +389,8 @@ namespace {
             auto metadata_for_average_fitting = metadata;
             metadata_for_average_fitting.rescale_shifts(spacing_file, spacing_fitting);
             auto [defocus_ramp, ncc_ramp] = CTFFitter::fit_average_ps(
-                    stack_loader, grid, metadata_for_average_fitting, parameters.debug_directory / "ctf_average",
+                    stack_loader, grid, metadata_for_average_fitting,
+                    debug ? parameters.debug_directory / "ctf_average" : "",
                     parameters.delta_z_range_nanometers, parameters.delta_z_shift_nanometers,
                     parameters.max_tilt_for_average, parameters.fit_phase_shift, parameters.fit_astigmatism,
                     parameters.compute_device,
@@ -436,12 +438,6 @@ namespace {
         auto metadata_for_global_fitting = metadata;
         metadata_for_global_fitting.rescale_shifts(spacing_file, spacing_fitting);
 
-        // TODO This isn't used anymore, and was mostly for debugging.
-        metadata_for_global_fitting.exclude(
-                [&](const MetadataSlice& slice) {
-                    return std::abs(slice.angles[1]) > parameters.max_tilt_for_global;
-                });
-
         // Initialize the vector of CTFs (one per slice, same order as in metadata) with the average CTF.
         for (auto& slice: metadata_for_global_fitting.slices())
             slice.defocus = average_ctf.defocus().value;
@@ -482,9 +478,8 @@ namespace {
                 !parameters.refine_pairwise_shift ?
                 PairwiseShiftWrapper() :
                 PairwiseShiftWrapper(pairwise_loading_parameters,stack_filename, metadata,
-                                     parameters.debug_directory / "debug_pairwise_shifts");
+                                     debug ? parameters.debug_directory / "debug_pairwise_shifts" : "");
 
-        qn::Logger::set_level("debug"); // FIXME
         Vec3<f64> total_angles_offset;
         for (i64 i = 0; i < 1 + parameters.refine_pairwise_shift * 2; ++i) {
             // Global fit. Metadata and ctfs are updated.
@@ -513,6 +508,7 @@ namespace {
         // Update original metadata.
         metadata.add_global_angles(total_angles_offset);
         metadata.update_shift_from(pairwise_shift.metadata(), pairwise_shift.stack_spacing(), spacing_file);
+        metadata.update_defocus_from(metadata_for_global_fitting);
 
         save_global_ctfs_(
                 metadata, average_ctf, total_angles_offset,
@@ -683,7 +679,7 @@ namespace qn {
         if (options.alignment.use_initial_pairwise_alignment) {
             const auto pairwise_alignment_parameters = InitialPairwiseAlignmentParameters{
                     /*compute_device=*/ options.compute.device,
-                    /*debug_directory=*/ options.files.output_directory / "debug_pairwise_matching",
+                    /*debug_directory=*/ qn::Logger::is_debug() ? options.files.output_directory / "debug_initial_alignment" : "",
                     /*maximum_resolution=*/ 10.,
                     /*fit_angle_offset=*/ fit_angle_offset,
                     /*has_user_angle_offset=*/ has_user_angle_offset,
@@ -727,8 +723,7 @@ namespace qn {
                     /*flip_rotation_to_match_defocus_ramp=*/ !has_user_angle_offset[0],
 
                     /*fit_angle_offset=*/ fit_angle_offset,
-                    /*max_tilt_for_global=*/ 90,
-            };
+                    };
             ctf_alignment(
                     options.files.input_stack,
                     ctf_alignment_parameters,

@@ -48,4 +48,4 @@ reconstruction:
 compute:
   device: gpu
   n_cpu_threads: 4
-  log_level: debug
+  log_level: trace

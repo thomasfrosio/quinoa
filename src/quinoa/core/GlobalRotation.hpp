@@ -1,18 +1,30 @@
 #pragma once
 
-#include <noa/Array.hpp>
-#include <noa/Memory.hpp>
-#include <noa/Math.hpp>
-#include <noa/Geometry.hpp>
-#include <noa/FFT.hpp>
-#include <noa/Signal.hpp>
-#include <noa/core/utils/Timer.hpp>
-
 #include "quinoa/Types.h"
 #include "quinoa/core/Metadata.h"
 #include "quinoa/io/Logging.h"
 
-#include "noa/IO.hpp"
+
+// Rotation-offset alignment using cosine-stretching.
+// ------------------------------------
+//
+// Concept:
+//  Select the lowest tilt as reference. Then cosine-stretch the other higher-tilt views perpendicular to various
+//  tilt-axes. Cross-correlate the stretched views with the reference and find the tilt-axis, i.e., the rotation offset,
+//  that gives the best cross-correlation. Indeed, the cosine-stretching should be best where the actual tilt-axis is.
+//
+// Strength:
+//  While a good enough estimate of the shifts is required*, it is the only requisite we need to run this alignment.
+//  It is also very efficient, so can be used iteratively with the PairwiseShift alignment for instance.
+//  TODO *we use the cross-correlation coefficient, but we could use the cross-correlation peak
+//       and make the optimization cost shift-invariant.
+//
+// Issues:
+//  - This method will be more accurate if high tilts are included, simply because the cosine-stretching is more
+//    "visible" as the tilt increases, so even a small rotation change will end up making a big change in the
+//    high-tilts.
+//  - This method cannot distinguish between x and x+pi. Indeed, the cosine-stretching is exactly the same for these
+//    two rotation offsets. However, the CTF fitting is aware of that and will be able to select the correct rotation.
 
 namespace qn {
     struct GlobalRotationParameters {
@@ -21,54 +33,39 @@ namespace qn {
         f64 absolute_max_tilt_difference{40};
         bool solve_using_estimated_gradient{false};
         noa::InterpMode interpolation_mode = noa::InterpMode::LINEAR_FAST;
+        Path debug_directory;
     };
 
-    /// Solve for the global rotation, i.e. the average tilt-axis rotation.
-    /// \details A reference image is selected (the lowest tilt), as well as a set of target images (the
-    ///          neighbouring views of the reference). These images are transformed and tilt-stretched onto the
-    ///          reference image using different tilt-axes. The goal is to find the rotation that gives the overall
-    ///          maximum normalized cross-correlation between the reference and the stretched target images.
     class GlobalRotation {
     public:
         GlobalRotation() = default;
 
-        GlobalRotation(const Array<f32>& stack,
-                        const MetadataStack& metadata,
-                        Device compute_device,
-                        const GlobalRotationParameters& parameters);
-
-        // This initializes the rotation by looking at the 360deg range.
-        // We do expect two symmetric roots (separated by 180 deg). The info we have doesn't allow us to select the
-        // correct root (the defocus gradient could be a solution to that). Therefore, try to find the two peaks and
-        // select the one with the highest score (which doesn't mean it's the correct one since the difference is likely
-        // to be non-significant).
-        void initialize(MetadataStack& metadata,
-                        const GlobalRotationParameters& parameters);
-
-        void update(MetadataStack& metadata,
-                    const GlobalRotationParameters& parameters,
-                    f64 bound);
-
-    private:
-        [[nodiscard]] f32 max_objective_fx_(
-                f32 rotation_offset,
+        GlobalRotation(
+                const Array<f32>& stack,
                 const MetadataStack& metadata,
-                const GlobalRotationParameters& parameters) const;
+                const GlobalRotationParameters& parameters,
+                Device compute_device,
+                Allocator allocator = Allocator::DEFAULT_ASYNC
+        );
 
-        [[nodiscard]] f32 max_objective_gx_(
-                f32 rotation_offset,
-                const MetadataStack& metadata,
-                const GlobalRotationParameters& parameters) const;
+        void initialize(
+                MetadataStack& metadata,
+                const GlobalRotationParameters& parameters
+        );
 
-        void update_stretching_matrices_(const MetadataStack& metadata, f32 rotation_offset) const;
+        void update(
+                MetadataStack& metadata,
+                const GlobalRotationParameters& parameters,
+                f64 range_degrees
+        );
 
     private:
         noa::Texture<f32> m_targets;
         noa::Array<c32> m_targets_stretched_rfft;
         noa::Array<c32> m_reference_rfft;
 
-        Array<Float33> m_inv_stretching_matrices;
-        Array<f32> m_xcorr_coefficients;
+        noa::Array<Float33> m_inv_stretching_matrices;
+        noa::Array<f32> m_xcorr_coefficients;
 
         std::vector<i32> m_target_indexes;
         i32 m_reference_index{};
