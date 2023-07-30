@@ -56,12 +56,13 @@ namespace {
 auto main(int argc, char* argv[]) -> int {
     try {
         // Initialize logger before doing anything else.
-        qn::Logger::initialize("quinoa.log");
+        qn::Logger::initialize();
 
         // Parse the options.
         qn::Options options(argc, argv);
 
         // Adjust global settings.
+        qn::Logger::add_logfile(options.files.output_directory / "quinoa.log");
         qn::Logger::set_level(options.compute.log_level);
         noa::Session::set_cuda_lazy_loading();
         noa::Session::set_thread_limit(options.compute.n_cpu_threads);

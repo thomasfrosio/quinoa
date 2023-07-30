@@ -379,7 +379,7 @@ namespace {
             compute.log_level = "info";
         } else if (log_level_node.IsScalar()) {
             const auto level = string::lower(string::trim(compute_node["log_level"].as<std::string>()));
-            constexpr std::array valid_levels{"off", "error", "warn", "info", "trace", "debug"};
+            constexpr std::array valid_levels{"off", "error", "warn", "status", "info", "trace", "debug"};
             QN_CHECK(std::find(valid_levels.begin(), valid_levels.end(), level) != valid_levels.end(),
                      "compute:log_level={} is not valid. Should be {}",
                      level, valid_levels);

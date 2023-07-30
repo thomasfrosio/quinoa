@@ -1,25 +1,25 @@
 #pragma once
 
+#include <filesystem>
 #include <spdlog/common.h>
 #include <spdlog/spdlog.h>
 
 namespace qn {
-    // Static logger, with priority error > warn > info > trace > debug.
+    // Static logger.
     class Logger {
     public:
-        // Initializes the logger.
-        // - If "logfile" can be empty, the logs are not saved to a file.
-        // - The log level is set to debug (our lowest level). Use set_level() to change it.
-        static void initialize(std::string_view logfile);
-
-        // Set the level of the console sink.
+        static void initialize();
+        static void add_logfile(const std::filesystem::path& logfile);
         static void set_level(const std::string& level_name);
 
         template<typename... Args>
-        static void error(Args&& ... args) { s_logger.error(std::forward<Args>(args)...); }
+        static void error(Args&& ... args) { s_logger.critical(std::forward<Args>(args)...); }
 
         template<typename... Args>
-        static void warn(Args&& ... args) { s_logger.warn(std::forward<Args>(args)...); }
+        static void warn(Args&& ... args) { s_logger.error(std::forward<Args>(args)...); }
+
+        template<typename... Args>
+        static void status(Args&& ... args) { s_logger.warn(std::forward<Args>(args)...); }
 
         template<typename... Args>
         static void info(Args&& ... args) { s_logger.info(std::forward<Args>(args)...); }

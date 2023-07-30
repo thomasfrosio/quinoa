@@ -20,10 +20,10 @@ else ()
     set(SPDLOG_FMT_EXTERNAL ON)
     FetchContent_MakeAvailable(spdlog)
 
-    # Change debug<->trace priority
+    # original: "trace","debug","info","warn","error","critical","off"
     target_compile_definitions(spdlog
         PRIVATE
-        SPDLOG_LEVEL_NAMES={"debug","trace","info","warn","error","critical","off"})
+        SPDLOG_LEVEL_NAMES={"debug","trace","info","status","warn","error","off"})
 
     message(STATUS "New imported target available: spdlog::spdlog")
 endif ()
