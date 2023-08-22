@@ -59,6 +59,7 @@ namespace qn {
         struct Compute {
             Device device{};
             i64 n_cpu_threads{};
+            bool register_input_stack{};
             std::string log_level{};
         } compute;
     };

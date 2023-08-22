@@ -3,7 +3,8 @@
 #include "quinoa/core/GridSearch1D.hpp"
 #include "quinoa/core/Optimizer.hpp"
 #include "quinoa/core/PairwiseShift.hpp"
-#include "quinoa/core/ProjectionMatching.h"
+#include "quinoa/core/ProjectionMatching.hpp"
+#include "quinoa/core/Thickness.hpp"
 #include "quinoa/core/Stack.hpp"
 
 namespace {
@@ -188,11 +189,14 @@ namespace {
             MetadataStack& metadata,
             const InitialPairwiseAlignmentParameters& parameters
     ) {
+        noa::Timer timer;
+        timer.start();
+        qn::Logger::status("Initial alignment...");
+
         const auto debug = !parameters.debug_directory.empty();
         const auto loading_parameters = LoadStackParameters{
                 /*compute_device=*/ parameters.compute_device,
                 /*allocator=*/ Allocator::DEFAULT_ASYNC,
-                /*median_filter_window=*/ int32_t{1},
                 /*precise_cutoff=*/ false,
                 /*rescale_target_resolution=*/ std::max(parameters.maximum_resolution, 16.),
                 /*rescale_min_size=*/ 1024,
@@ -210,19 +214,19 @@ namespace {
                 /*absolute_max_tilt_difference=*/ 70,
                 /*solve_using_estimated_gradient=*/ false,
                 /*interpolation_mode=*/ noa::InterpMode::LINEAR_FAST,
-                /*debug_directory=*/ debug ? "" : parameters.debug_directory / "rotation_offset"
+                /*debug_directory=*/ debug ? parameters.debug_directory / "rotation_offset" : "",
         };
 
         const auto pairwise_shift_parameters = PairwiseShiftParameters{
                 /*highpass_filter=*/ {0.03, 0.03},
                 /*lowpass_filter=*/ {0.25, 0.1},
                 /*interpolation_mode=*/ noa::InterpMode::LINEAR_FAST,
-                /*debug_directory=*/  debug ? "" : parameters.debug_directory / "pairwise_shift"
+                /*debug_directory=*/  debug ? parameters.debug_directory / "pairwise_shift" : "",
         };
 
         // These alignments are quite robust, and we shouldn't need to
         // run multiple resolution cycles. Just load the stack once and align it.
-        const auto [tilt_series, stack_scaling, file_scaling] =
+        const auto [tilt_series, stack_spacing, file_spacing] =
                 load_stack(stack_filename, metadata, loading_parameters);
 
         if (debug) {
@@ -231,11 +235,11 @@ namespace {
                     noa::string::format("{}_preprocessed{}",
                                         stack_filename.stem().string(),
                                         stack_filename.extension().string());
-            noa::io::save(tilt_series, stack_scaling.as<f32>(), cropped_stack_filename);
+            noa::io::save(tilt_series, stack_spacing.as<f32>(), cropped_stack_filename);
         }
 
         // Scale the metadata shifts to the current sampling rate.
-        metadata.rescale_shifts(file_scaling, stack_scaling);
+        metadata.rescale_shifts(file_spacing, stack_spacing);
 
         // TODO tilt offset can be estimated using CC first.
         // TODO Try the quick profile projection and COM instead, to get the tilt offset?
@@ -302,12 +306,11 @@ namespace {
                 /*max_size_loss_percent=*/ 0.1);
 
         // Scale the metadata back to the original resolution.
-        metadata.rescale_shifts(stack_scaling, file_scaling);
+        metadata.rescale_shifts(stack_spacing, file_spacing);
 
         const auto saving_parameters = LoadStackParameters{
                 /*compute_device=*/ parameters.compute_device,
                 /*allocator=*/ Allocator::DEFAULT_ASYNC,
-                /*median_filter_window=*/ int32_t{1},
                 /*precise_cutoff=*/ true,
                 /*rescale_target_resolution=*/ std::max(parameters.maximum_resolution, 16.),
                 /*rescale_min_size=*/ 1024,
@@ -328,7 +331,16 @@ namespace {
             qn::save_stack(stack_filename, aligned_stack_filename,
                            metadata, saving_parameters,
                            noa::InterpMode::LINEAR_FAST);
+            qn::Logger::debug("{} saved", aligned_stack_filename);
+
+            const Path csv_filename =
+                    parameters.debug_directory /
+                    noa::string::format("{}_coarse_aligned.csv", stack_filename.stem().string());
+            metadata.save(csv_filename, tilt_series.shape().pop_front<2>(), file_spacing);
+            qn::Logger::debug("{} saved", csv_filename);
         }
+
+        qn::Logger::status("Initial alignment... done. Took {:.3f}s", timer.elapsed() * 1e-3);
     }
 
     struct CTFAlignmentParameters {
@@ -359,11 +371,14 @@ namespace {
             MetadataStack& metadata,
             CTFAnisotropic64& average_ctf
     ) {
+        noa::Timer timer;
+        timer.start();
+        qn::Logger::status("CTF alignment...");
+
         const bool debug = !parameters.debug_directory.empty();
         const auto loading_parameters = LoadStackParameters{
                 /*compute_device=*/ parameters.compute_device,
                 /*allocator=*/ Allocator::MANAGED,
-                /*median_filter_window=*/ int32_t{1},
                 /*precise_cutoff=*/ true,
                 /*rescale_target_resolution=*/ -1,
                 /*rescale_min_size=*/ 1024,
@@ -427,10 +442,13 @@ namespace {
             }
 
             // Save average fit to an output yaml file.
-            save_average_ctf_(
-                    average_ctf, defocus_ramp, ncc_ramp,
-                    parameters.output_directory /
-                    noa::string::format("{}_average_ctf.yaml", stack_filename.stem().string()));
+            if (debug) {
+                const auto filename =
+                        parameters.debug_directory /
+                        noa::string::format("{}_average_ctf.yaml", stack_filename.stem().string());
+                save_average_ctf_(average_ctf, defocus_ramp, ncc_ramp, filename);
+                qn::Logger::debug("{} saved", filename);
+            }
         }
 
         // At this point, we have a first estimate of the (astigmatic) defocus and background.
@@ -463,7 +481,6 @@ namespace {
         const auto pairwise_loading_parameters = LoadStackParameters{
                 /*compute_device=*/ parameters.compute_device,
                 /*allocator=*/ Allocator::MANAGED,
-                /*median_filter_window=*/ int32_t{1},
                 /*precise_cutoff=*/ false,
                 /*rescale_target_resolution=*/ 8.,
                 /*rescale_min_size=*/ 1024,
@@ -510,151 +527,103 @@ namespace {
         metadata.update_shift_from(pairwise_shift.metadata(), pairwise_shift.stack_spacing(), spacing_file);
         metadata.update_defocus_from(metadata_for_global_fitting);
 
-        save_global_ctfs_(
-                metadata, average_ctf, total_angles_offset,
-                parameters.output_directory /
-                noa::string::format("{}_global_ctf.yaml", stack_filename.stem().string()));
+        if (debug) {
+            const Path csv_filename =
+                    parameters.debug_directory /
+                    noa::string::format("{}_ctf_aligned.csv", stack_filename.stem().string());
+            metadata.save(csv_filename, grid.slice_shape(), spacing_file,
+                          average_ctf.defocus().astigmatism,
+                          noa::math::rad2deg(average_ctf.defocus().angle),
+                          noa::math::rad2deg(average_ctf.phase_shift()));
+            qn::Logger::debug("{} saved", csv_filename);
+        }
+
+        qn::Logger::status("CTF alignment... done. Took {:.3f}s", timer.elapsed() * 1e-3);
     }
 
-//    struct ProjectionMatchingAlignmentParameters {
-//        Device compute_device;
-//        f64 maximum_resolution;
-//
-//        bool search_rotation{true};
-//
-//        Path output_directory;
-//        Path debug_directory;
-//    };
-//
-//    MetadataStack projection_matching_alignment(
-//            const Path& tilt_series_filename,
-//            const MetadataStack& tilt_series_metadata,
-//            const ProjectionMatchingAlignmentParameters& parameters
-//    ) {
-//
-//        auto loading_parameters = LoadStackParameters{
-//                /*compute_device=*/ parameters.compute_device,
-//                /*median_filter_window=*/ 1,
-//                /*precise_cutoff=*/ false,
-//                /*rescale_target_resolution=*/ -1.,
-//                /*rescale_min_size=*/ 1024,
-//                /*exposure_filter=*/ false,
-//                /*highpass_parameters=*/ {0.03, 0.03},
-//                /*lowpass_parameters=*/ {0.5, 0.05},
-//                /*normalize_and_standardize=*/ true,
-//                /*smooth_edge_percent=*/ 0.03f,
-//                /*zero_pad_to_fast_fft_shape=*/ true,
-//        };
-//
-//        auto projection_matching_parameters = ProjectionMatchingParameters{
-//                /*zero_pad_to_fast_fft_size=*/ true,
-//
-//                /*rotation_tolerance_abs=*/ 0.005,
-//                /*rotation_range=*/ 0,
-//                /*rotation_initial_step=*/ 0.15,
-//
-//                /*smooth_edge_percent=*/ 0.1,
-//
-//                /*projection_slice_z_radius=*/ 0.0001f,
-//                /*projection_cutoff=*/ 0.5f,
-//                /*projection_max_tilt_angle_difference=*/ 120,
-//
-//                /*highpass_filter=*/ {0.08, 0.05},
-//                /*lowpass_filter=*/ {0.4, 0.1}, // FIXME
-//
-//                /*allowed_shift_percent=*/ 0.005,
-//
-//                /*debug_directory=*/ parameters.debug_directory
-//        };
-//
-//        //
-//        MetadataStack metadata = tilt_series_metadata;
-//
-//        // To find the global rotation, start at low resolution and progressively decrease the resolution
-//        // to focus and increase the accuracy of the grid search. The final iteration is there to find
-//        // the best shifts, without any changes on the rotation.
-//        std::vector target_size{512, 1024, 2048};
-//        std::vector target_resolutions{20., 16., 10.};
-//        std::vector cubic_spline_resolution{1, 1, 1};
-//        std::vector global_rotation_bound{5., 2., 2.};
-//        std::vector global_rotation_tolerance{0.05, 0.05, 0.01};
-//
-//        for (size_t i : noa::irange(3)) {
-//
-//            loading_parameters.rescale_target_resolution = 20.;
-//            loading_parameters.rescale_min_size = target_size[i];
-//
-//            //
-//            projection_matching_parameters.rotation_tolerance_abs = global_rotation_tolerance[i];
-//            projection_matching_parameters.rotation_range = global_rotation_bound[i];
-//            projection_matching_parameters.rotation_initial_step = global_rotation_bound[i] / 3;
-//
-//            // Load stack at the current resolution.
-//
-//            const auto [tilt_series, stack_spacing, file_spacing] =
-//                    load_stack(tilt_series_filename, metadata, loading_parameters);
-//            const auto stack = tilt_series.view();
-//
-//            // Rescale metadata to this resolution.
-//            center_shifts(metadata);
-//            rescale_shifts(metadata, file_spacing / stack_spacing);
-//
-//            // Set the common area. For projection matching it should be more important to make sure
-//            // the views that do not fully contain the common area are excluded. So 1) allow smaller
-//            // common areas to exclude fewer views, and 2) exclude the views that are still too far off.
-//            constexpr f64 maximum_size_loss = 0.2; // FIXME Make this a user parameter
-//            auto common_area = CommonArea(metadata.size(), stack.device());
-//            const std::vector<i64> excluded_indexes = common_area.set_geometry(
-//                    stack.shape().filter(2, 3), metadata, maximum_size_loss);
-//            if (!excluded_indexes.empty())
-//                metadata.exclude(excluded_indexes);
-//
-//            // TODO Clean fft cache
-//            // TODO Move stack back to CPU to save GPU memory
-//
-//            auto projection_matching = ProjectionMatching(
-//                    stack.shape().filter(2, 3),
-//                    parameters.compute_device,
-//                    metadata, projection_matching_parameters
-//            );
-//
-//            // Initialize the rotation model.
-//            auto cubic_spline_grid = CubicSplineGrid<f64, 1>(/*resolution=*/ cubic_spline_resolution[i]);
-//            cubic_spline_grid.data()[0] = metadata[0].angles[0];
-//
-//            projection_matching.update(stack, metadata, common_area,
-//                                       cubic_spline_grid,
-//                                       projection_matching_parameters);
-//
-//            // Rescale metadata back to original resolution.
-//            rescale_shifts(metadata, stack_spacing / file_spacing);
-//        }
-//
-//        // Final centering of the alignment's field-of-view.
-//        center_shifts(metadata);
-//
-//        const auto saving_parameters = LoadStackParameters{
-//                parameters.compute_device, // Device compute_device
-//                int32_t{0}, // int32_t median_filter_window
-//                /*precise_cutoff=*/ true,
-//                parameters.maximum_resolution,
-//                1024,
-//                false, // bool exposure_filter
-//                {0.01, 0.01}, // float2_t highpass_parameters
-//                {0.5, 0.05}, // float2_t lowpass_parameters
-//                true, // bool normalize_and_standardize
-//                0.02f, // float smooth_edge_percent
-//        };
-//
-//        const auto aligned_stack_filename =
-//                parameters.output_directory /
-//                noa::string::format("{}_aligned{}",
-//                                    tilt_series_filename.stem().string(),
-//                                    tilt_series_filename.extension().string());
-//        qn::save_stack(tilt_series_filename, aligned_stack_filename, metadata, saving_parameters);
-//
-//        return metadata;
-//    }
+    struct ProjectionMatchingAlignmentParameters {
+        Device compute_device;
+        Path output_directory;
+        Path debug_directory;
+
+        f64 maximum_resolution;
+        f64 thickness_estimate_nm;
+        bool fit_rotation{true};
+    };
+
+    void projection_matching_alignment(
+            const Path& stack_filename,
+            const ProjectionMatchingAlignmentParameters& parameters,
+            const CTFAnisotropic64& average_ctf,
+            MetadataStack& metadata
+    ) {
+        noa::Timer timer;
+        timer.start();
+        qn::Logger::status("Projection-matching alignment...");
+
+        const bool debug = !parameters.debug_directory.empty();
+
+        // Load the stack. Make sure spacing is isotropic.
+        const auto loading_parameters = LoadStackParameters{
+                /*compute_device=*/ parameters.compute_device,
+                /*allocator=*/ Allocator::MANAGED,
+                /*precise_cutoff=*/ true,
+                /*rescale_target_resolution=*/ std::max(8., parameters.maximum_resolution),
+                /*rescale_min_size=*/ 1024,
+                /*exposure_filter=*/ false,
+                /*highpass_parameters=*/ {0.02, 0.02},
+                /*lowpass_parameters=*/ {0.5, 0.05},
+                /*normalize_and_standardize=*/ true,
+                /*smooth_edge_percent=*/ 0.02f,
+                /*zero_pad_to_fast_fft_shape=*/ false,
+        };
+        const auto [stack, stack_spacing, file_spacing] =
+                load_stack(stack_filename, metadata, loading_parameters);
+        metadata.center_shifts();
+        metadata.rescale_shifts(file_spacing, stack_spacing);
+
+        // Just in case memory is tight, make sure to free everything that is not needed,
+        // even if it means recomputing it later.
+        noa::Session::clear_cufft_cache(parameters.compute_device);
+
+        // Set the spacing and CTF.
+        f64 spacing = noa::math::sum(stack_spacing) / 2;
+        CTFAnisotropic64 ctf = average_ctf;
+        ctf.set_pixel_size(stack_spacing);
+
+        // Set the common area. For projection-matching, it should be more important to make sure
+        // the views that do not fully contain the common area are excluded. So 1) allow smaller
+        // common areas to exclude fewer views, and 2) exclude the views that are still too far off.
+        constexpr f64 maximum_size_loss = 0.2; // FIXME Make this a user parameter?
+        auto common_area = CommonArea(metadata.size(), parameters.compute_device);
+        const std::vector<i64> excluded_indexes = common_area.set_geometry(
+                stack.shape().filter(2, 3), metadata, maximum_size_loss);
+        if (!excluded_indexes.empty())
+            metadata.exclude(excluded_indexes);
+
+        // Windowed sinc and projection-matching parameters.
+        f64 thickness_estimate_pixels = parameters.thickness_estimate_nm / (spacing * 1e-1);
+        auto projection_matching_parameters = ProjectionMatchingParameters{
+                /*smooth_edge_percent=*/ 0.1,
+                /*use_estimated_gradients=*/ true,
+                /*fftfreq_sinc=*/ -1,
+                /*fftfreq_blackman=*/ 0.05, // FIXME?
+                /*fftfreq_z_sinc=*/ 1 / thickness_estimate_pixels,
+                /*fftfreq_z_blackman=*/ 0.1, // FIXME?
+                /*highpass_filter=*/ {},
+                /*lowpass_filter=*/ {},
+                /*debug_directory=*/ parameters.debug_directory,
+        };
+
+        auto projection_matching = ProjectionMatching(stack.shape().filter(2, 3), parameters.compute_device);
+        projection_matching.update(stack.view(), common_area, projection_matching_parameters, ctf, metadata);
+
+        // Rescale back to original spacing and center.
+        metadata.rescale_shifts(stack_spacing, file_spacing);
+        metadata.center_shifts();
+
+        qn::Logger::status("Projection-matching alignment... done. Took {:.3f}s", timer.elapsed() * 1e-3);
+    }
 }
 
 namespace qn {
@@ -670,8 +639,6 @@ namespace qn {
                  "An initial estimate of rotation-angle offset was not provided and "
                  "the rotation-angle offset alignment was turned off");
         output_metadata.add_global_angles(angle_offset);
-
-        qn::Logger::set_level("trace"); // FIXME
 
         // 1. Initial pairwise alignment:
         //  - Find the shifts, using the pairwise cosine-stretching alignment.
@@ -702,13 +669,14 @@ namespace qn {
                 options.tilt_scheme.amplitude,
                 options.tilt_scheme.cs,
                 noa::math::deg2rad(options.tilt_scheme.phase_shift),
-                /*bfactor=*/ 0
+                /*bfactor=*/ 0,
+                /*scale=*/ 1
         );
         if (options.alignment.use_ctf_estimate) {
             const auto ctf_alignment_parameters = CTFAlignmentParameters{
                     /*compute_device=*/ options.compute.device,
                     /*output_directory=*/ options.files.output_directory,
-                    /*debug_directory=*/ options.files.output_directory / "debug_ctf",
+                    /*debug_directory=*/ qn::Logger::is_debug() ? options.files.output_directory / "debug_ctf" : "",
 
                     /*patch_size=*/ 1024,
                     /*patch_step=*/ 512,
@@ -732,8 +700,16 @@ namespace qn {
             );
         }
 
-        // 3. Projection matching.
+        // 3. Sample thickness.
+        estimate_sample_thickness(options.files.input_stack, output_metadata, {
+                /*resolution=*/ 20.,
+                /*compute_device=*/ options.compute.device,
+                /*allocator=*/ Allocator::DEFAULT_ASYNC,
+                /*debug_directory=*/ options.files.output_directory / "debug_thickness"
+        });
 
+        // 4. Projection matching.
+        if (options.alignment.use_projection_matching) {
 //        const auto projection_matching_alignment_parameters = ProjectionMatchingAlignmentParameters{
 //                /*compute_device=*/ options.compute.device,
 //                /*maximum_resolution=*/ 10.,
@@ -741,9 +717,6 @@ namespace qn {
 //                /*output_directory=*/ options.files.output_directory,
 //                /*debug_directory=*/ options.files.output_directory / "debug_projection_matching"
 //        };
-
-
-
 
 //        const auto projection_matching_alignment_parameters = ProjectionMatchingAlignmentParameters{
 //                /*compute_device=*/ compute_device,
@@ -757,6 +730,20 @@ namespace qn {
 //                metadata = projection_matching_alignment(
 //                original_stack_filename, metadata,
 //                projection_matching_alignment_parameters);
+        }
+
+        const Path csv_filename =
+                options.files.output_directory /
+                noa::string::format("{}.csv", options.files.input_stack.stem().string());
+        const auto input_file = noa::io::ImageFile(options.files.input_stack, noa::io::READ);
+        output_metadata.save(
+                csv_filename,
+                input_file.shape().pop_front<2>(),
+                input_file.pixel_size().pop_front().as<f64>(),
+                average_ctf.defocus().astigmatism,
+                noa::math::rad2deg(average_ctf.defocus().angle),
+                noa::math::rad2deg(average_ctf.phase_shift()));
+        qn::Logger::info("{} saved", csv_filename);
 
         return {output_metadata, average_ctf};
     }

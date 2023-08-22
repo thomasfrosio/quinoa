@@ -141,7 +141,7 @@ namespace qn {
         // This function may be asynchronous depending on the device's current stream,
         // a stream synchronization should be done between calls.
         void mask_views(
-                const View<f32>& input,
+                const View<const f32>& input,
                 const View<f32>& output,
                 const MetadataStack& metadata,
                 const std::vector<i64>& indexes,
@@ -201,7 +201,7 @@ namespace qn {
 
         // Applies the common area to a single view.
         void mask_view(
-                const View<f32>& input,
+                const View<const f32>& input,
                 const View<f32>& output,
                 const MetadataSlice& metadata,
                 f64 smooth_edge_percent

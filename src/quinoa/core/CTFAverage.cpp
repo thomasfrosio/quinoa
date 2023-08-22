@@ -43,14 +43,16 @@ namespace {
             noa::signal::convolve(
                     m_full_rotational_average.view(),
                     m_full_rotational_average_smooth.view(),
-                    noa::signal::gaussian_window<f32>(7, 1.25, /*normalize=*/ true));
+                    noa::signal::window_gaussian<f32>(7, 1.25, /*normalize=*/ true));
         }
 
     public:
         void fit_spline(CTFFitter::FittingRange& fitting_range, i64 spline_resolution = 3) {
+            qn::Logger::trace("Fitting cubic B-spline through background...");
             const auto rotational_average = m_full_rotational_average
                     .view().subregion(noa::indexing::Ellipsis{}, fitting_range.slice);
             fitting_range.background = smooth_curve_fitting_(rotational_average.span(), spline_resolution);
+            qn::Logger::trace("Fitting cubic B-spline through background... Done");
         }
 
         void fit_accurate(
@@ -61,6 +63,7 @@ namespace {
                 f64 astigmatism_angle,
                 i64 spline_resolution = 3
         ) {
+            qn::Logger::trace("Fitting cubic B-spline through CTF zeros...");
             if (fit_astigmatism) {
                 // In this case, we need to recompute the rotational average,
                 // correcting for the given astigmatism.
@@ -73,7 +76,7 @@ namespace {
                 noa::signal::convolve(
                         m_full_rotational_average.view(),
                         m_full_rotational_average_smooth.view(),
-                        noa::signal::gaussian_window<f32>(7, 1.25, /*normalize=*/ true));
+                        noa::signal::window_gaussian<f32>(7, 1.25, /*normalize=*/ true));
             }
 
             // The background is within the fitting range.
@@ -96,6 +99,7 @@ namespace {
             } else {
                 fitting_range.background = smooth_curve_fitting_(rotational_average.span(), spline_resolution);
             }
+            qn::Logger::trace("Fitting cubic B-spline through CTF zeros... Done");
         }
 
     private:
@@ -510,9 +514,13 @@ namespace {
                     m_fitting_range->fftfreq.as<f32>(), /*endpoint=*/ true);
             noa::math::normalize(m_simulated_ctf, m_simulated_ctf, NormalizationMode::L2_NORM);
 
-            if (qn::Logger::is_debug()) {
-                save_vector_to_text(m_rotational_average, *m_debug_directory / "fit_average_rotational_average.txt");
-                save_vector_to_text(m_simulated_ctf, *m_debug_directory / "fit_average_simulated_ctf.txt");
+            if (!m_debug_directory->empty()) {
+                const auto filename_rotational_average = *m_debug_directory / "fit_average_rotational_average.txt";
+                const auto filename_simulated_ctf = *m_debug_directory / "fit_average_simulated_ctf.txt";
+                save_vector_to_text(m_rotational_average, filename_rotational_average);
+                save_vector_to_text(m_simulated_ctf, filename_simulated_ctf);
+                qn::Logger::debug("{} saved", filename_rotational_average);
+                qn::Logger::debug("{} saved", filename_simulated_ctf);
             }
 
             // Normalized cross-correlation.
@@ -529,7 +537,7 @@ namespace {
 
         void log(f64 ncc, bool memoized = false) const {
             using namespace noa::string;
-            qn::Logger::debug(
+            qn::Logger::trace(
                     "CTF average fitting: {}, {}ncc={:.8f}{}",
 
                     // Defocus.
@@ -584,7 +592,7 @@ namespace {
                     f64 gradient = CentralFiniteDifference::get(
                             fx_minus_delta, fx_plus_delta, static_cast<f64>(delta));
 
-                    qn::Logger::debug("g={:.8f}", gradient);
+                    qn::Logger::trace("g={:.8f}", gradient);
                     *(gradients++) = gradient;
                 }
             }
@@ -701,7 +709,7 @@ namespace qn {
             View(patches_origins_vector.data(), n_patches).to(patches_origins);
 
             total += n_patches;
-            qn::Logger::debug("index={:0>2.2f}, patches={:0>3}, total={:0>5}",
+            qn::Logger::trace("index={:>+6.2f}, patches={:0>3}, total={:0>5}",
                               slice_metadata.angles[1], n_patches, total);
 
             // Prepare the patches for extraction.
@@ -709,12 +717,15 @@ namespace qn {
             const auto patches = noa::fft::alias_to_real(patches_rfft, patch_shape.set<0>(n_patches));
 
             // Extract the patches. Assume the slice is normalized and edges are tapered.
-            stack_loader.read_slice(slice.view(), slice_metadata.index_file);
+            stack_loader.read_slice(slice.view(), slice_metadata.index_file, /*cache=*/ true);
             noa::memory::extract_subregions(slice, patches, patches_origins);
             noa::math::normalize_per_batch(patches, patches);
 
-            if (qn::Logger::is_debug())
-                noa::io::save(patches, debug_directory / noa::string::format("patches_{:>02}.mrc", index));
+            if (!debug_directory.empty()) {
+                const auto filename = debug_directory / noa::string::format("patches_{:>02}.mrc", index);
+                noa::io::save(patches, filename);
+                qn::Logger::debug("{} saved", filename);
+            }
 
             // Compute the average power-spectrum of these tiles.
             noa::fft::r2c(patches, patches_rfft, noa::fft::Norm::FORWARD);
@@ -730,9 +741,10 @@ namespace qn {
                         patches_rfft_ps_average, noa::plus_divide_t{});
             }
 
-            if (qn::Logger::is_debug()) {
-                noa::io::save(noa::ewise_unary(patches_rfft_ps_average_tmp, noa::abs_one_log_t{}),
-                              debug_directory / noa::string::format("patches_ps_average_{:>02}.mrc", index));
+            if (!debug_directory.empty()) {
+                const auto filename = debug_directory / noa::string::format("patches_ps_average_{:>02}.mrc", index);
+                noa::io::save(noa::ewise_unary(patches_rfft_ps_average_tmp, noa::abs_one_log_t{}), filename);
+                qn::Logger::debug("{} saved", filename);
             }
             ++index;
 
@@ -740,9 +752,10 @@ namespace qn {
             patches_rfft_ps_average.eval();
         }
 
-        if (qn::Logger::is_debug()) {
-            noa::io::save(noa::ewise_unary(patches_rfft_ps_average, noa::abs_one_log_t{}),
-                          debug_directory / "patches_ps_average.mrc");
+        if (!debug_directory.empty()) {
+            const auto filename = debug_directory / "patches_ps_average.mrc";
+            noa::io::save(noa::ewise_unary(patches_rfft_ps_average, noa::abs_one_log_t{}), filename);
+            qn::Logger::debug("{} saved", filename);
         }
         return patches_rfft_ps_average;
     }

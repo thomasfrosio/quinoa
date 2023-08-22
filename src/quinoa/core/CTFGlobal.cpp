@@ -618,15 +618,19 @@ namespace qn {
             noa::memory::extract_subregions(slice, patches, patches_origins);
             noa::math::normalize_per_batch(patches, patches);
 
-            if (!debug_directory.empty())
-                noa::io::save(patches, debug_directory / noa::string::format("patches_{:>02}.mrc", index));
+            if (!debug_directory.empty()) {
+                const auto filename = debug_directory / noa::string::format("patches_{:>02}.mrc", index);
+                noa::io::save(patches, filename);
+                qn::Logger::debug("{} saved", filename);
+            }
 
             // Compute the power-spectra of these tiles.
             noa::fft::r2c(patches, patches_rfft, noa::fft::Norm::FORWARD);
             noa::ewise_unary(patches_rfft, patches_rfft_ps, noa::abs_squared_t{});
             if (!debug_directory.empty()) {
-                noa::io::save(noa::ewise_unary(patches_rfft_ps, noa::abs_one_log_t{}),
-                              debug_directory / "patches_ps_full.mrc");
+                const auto filename = debug_directory / "patches_ps_full.mrc";
+                noa::io::save(noa::ewise_unary(patches_rfft_ps, noa::abs_one_log_t{}), filename);
+                qn::Logger::debug("{} saved", filename);
             }
 
             // Fourier crop to fitting range and store in the output.
@@ -635,12 +639,13 @@ namespace qn {
                     cropped_patches.rfft_ps(index), cropped_patches.chunk_shape());
 
             ++index;
-            qn::Logger::trace("index={:>02.2f}", slice_metadata.angles[1]);
+            qn::Logger::trace("index={:>+6.2f}", slice_metadata.angles[1]);
         }
 
         if (!debug_directory.empty()) {
-            noa::io::save(noa::ewise_unary(cropped_patches.rfft_ps().to_cpu(), noa::abs_one_log_t{}),
-                          debug_directory / "patches_ps.mrc");
+            const auto filename = debug_directory / "patches_ps.mrc";
+            noa::io::save(noa::ewise_unary(cropped_patches.rfft_ps().to_cpu(), noa::abs_one_log_t{}), filename);
+            qn::Logger::debug("{} saved", filename);
         }
         return cropped_patches;
     }

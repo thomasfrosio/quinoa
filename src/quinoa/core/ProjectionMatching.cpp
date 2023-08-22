@@ -100,8 +100,7 @@ namespace qn {
                 f64* gradients, void* instance
         ) -> f64 {
             auto& data = *static_cast<OptimizerData*>(instance);
-            // TODO memoize parameters/gradients/score
-            //      Memoizer<std::array<f64, 3>, std::pair<std::array<f64, 3>, std::array<f64, 3>>>;
+            // TODO memoize
 
             // Take a copy of the metadata, because the projection matching updates it and
             // 1) we actually don't care about the shift updates from the projection matching at this point,
@@ -422,22 +421,22 @@ namespace qn {
         const auto references_padded_shape = Shape4<i64>{references_count, 1, size_padded(), size_padded()};
         const auto slice_padded_shape = Shape4<i64>{1, 1, size_padded(), size_padded()};
 
-        noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
-                input_target_references_padded_fft.subregion(noa::indexing::Slice{1, references_count + 1}),
-                references_padded_shape,
-                reference_padded_fft, slice_padded_shape,
-                Float22{}, insert_inv_references_rotation,
-                Float22{}, extract_fwd_target_rotation,
-                parameters.projection_slice_z_radius, false,
-                parameters.projection_cutoff);
-        noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
-                noa::indexing::broadcast(reference_weights, references_padded_shape.rfft()),
-                references_padded_shape,
-                multiplicity_padded_fft, slice_padded_shape,
-                Float22{}, insert_inv_references_rotation,
-                Float22{}, extract_fwd_target_rotation,
-                parameters.projection_slice_z_radius, false,
-                parameters.projection_cutoff);
+//        noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
+//                input_target_references_padded_fft.subregion(noa::indexing::Slice{1, references_count + 1}),
+//                references_padded_shape,
+//                reference_padded_fft, slice_padded_shape,
+//                Float22{}, insert_inv_references_rotation,
+//                Float22{}, extract_fwd_target_rotation,
+//                parameters.projection_slice_z_radius, false,
+//                parameters.projection_cutoff);
+//        noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
+//                noa::indexing::broadcast(reference_weights, references_padded_shape.rfft()),
+//                references_padded_shape,
+//                multiplicity_padded_fft, slice_padded_shape,
+//                Float22{}, insert_inv_references_rotation,
+//                Float22{}, extract_fwd_target_rotation,
+//                parameters.projection_slice_z_radius, false,
+//                parameters.projection_cutoff);
 
         // Center projection back and shift onto the target.
         noa::signal::fft::phase_shift_2d<noa::fft::H2H>(

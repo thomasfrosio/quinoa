@@ -118,7 +118,7 @@ namespace {
         }
 
         static auto function_to_maximise(
-                u32 n_parameters, const f64* parameters, f64* gradients, void* instance
+                [[maybe_unused]] u32 n_parameters, const f64* parameters, f64* gradients, void* instance
         ) -> f64 {
             NOA_ASSERT(n_parameters == 1 && parameters != nullptr);
             auto& self = *static_cast<RotationOffsetFitter*>(instance);
@@ -147,7 +147,7 @@ namespace {
 
         static void log(f64 cost, f64 rotation_offset, const f64* gradient, bool memoized = false) {
             qn::Logger::trace(
-                    "v={:.8f}, f={:.8f}{}{}",
+                    "v={:+.8f}, f={:.8f}{}{}",
                     rotation_offset, cost,
                     gradient ? noa::string::format(", g={:.8f}", *gradient) : "",
                     memoized ? ", memoized=true" : "");
@@ -232,13 +232,13 @@ namespace qn {
         if (m_reference_rfft.is_empty())
             return;
 
+        noa::Timer timer;
+        timer.start();
         qn::Logger::info("Rotation offset alignment using cosine-stretching...");
         qn::Logger::trace("Compute device: {}\n"
                           "Max absolute angle difference: {:.2f}",
                           m_reference_rfft.device(),
                           parameters.absolute_max_tilt_difference);
-        noa::Timer timer;
-        timer.start();
 
         // Set the rotations to 0 since the search is relative to the rotations saved in the metadata.
         for (auto& slice : metadata.slices())
@@ -272,9 +272,9 @@ namespace qn {
         metadata.add_global_angles({rotation_offset, 0, 0});
 
         qn::Logger::info("rotation_offset={:.3f} degrees "
-                         "(note: we cannot distinguish with the {:.3f}+180={:.3f} offset at this point)",
-                         rotation_offset, rotation_offset, rotation_offset + 180);
-        qn::Logger::info("Rotation offset alignment using cosine-stretching... done. Took {}\n", timer.elapsed());
+                         "(note: we cannot distinguish with the {:.3f} degrees offset at this point)",
+                         rotation_offset, MetadataSlice::to_angle_range(rotation_offset + 180));
+        qn::Logger::info("Rotation offset alignment using cosine-stretching... done. Took {:.2f}ms\n", timer.elapsed());
     }
 
     void GlobalRotation::update(
@@ -285,15 +285,15 @@ namespace qn {
         if (m_reference_rfft.is_empty())
             return;
 
-        qn::Logger::info("Global rotation offset alignment...");
+        noa::Timer timer;
+        timer.start();
+        qn::Logger::info("Rotation offset update using cosine-stretching...");
         qn::Logger::trace("Compute device: {}\n"
                           "Max absolute angle difference: {:.2f}\n"
                           "Max rotation offset: {:.2f}",
                           m_reference_rfft.device(),
                           parameters.absolute_max_tilt_difference,
                           range_degrees);
-        noa::Timer timer;
-        timer.start();
 
         auto fitter = RotationOffsetFitter(
                 metadata,
@@ -328,6 +328,6 @@ namespace qn {
         average_rotation_offset /= static_cast<f64>(metadata.ssize());
 
         qn::Logger::info("rotation_offset={:.3f} ({:+.3f}) degrees", average_rotation_offset, rotation_offset);
-        qn::Logger::info("Global rotation offset alignment... done. Took {}\n", timer.elapsed());
+        qn::Logger::info("Rotation offset update using cosine-stretching... done. Took {:.2f}ms\n", timer.elapsed());
     }
 }

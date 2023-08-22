@@ -13,14 +13,15 @@ namespace qn {
         auto direction = static_cast<f64>(starting_direction);
         f64 angle0 = starting_angle;
         f64 angle1 = angle0;
-        f64 exposure = per_view_exposure;
 
-        slices.push_back({{0, angle0, 0}}); // TODO C++20 use emplace_back()
+        slices.push_back({{0, angle0, 0}, {}, {0, per_view_exposure}}); // TODO C++20 use emplace_back()
         i64 group_count = !exclude_start;
+        f64 pre_exposure = per_view_exposure;
+        f64 post_exposure = pre_exposure + per_view_exposure;
 
         for (i64 i = 1; i < n_slices; ++i) {
             angle0 += direction * angle_increment;
-            slices.push_back({{0, angle0, 0}, {}, exposure});
+            slices.push_back({{0, angle0, 0}, {}, {pre_exposure, post_exposure}});
 
             if (group_count == group - 1) {
                 direction *= -1;
@@ -29,7 +30,8 @@ namespace qn {
             } else {
                 ++group_count;
             }
-            exposure += per_view_exposure;
+            pre_exposure += per_view_exposure;
+            post_exposure += per_view_exposure;
         }
 
         // Assume slices are saved in the ascending tilt order.
@@ -95,52 +97,48 @@ namespace qn {
         return iter - m_slices.begin();
     }
 
-    void MetadataStack::log_update(const MetadataStack& origin, const MetadataStack& current) {
-        const size_t size = current.size();
-        QN_CHECK(origin.size() == size,
-                 "The two metadata should have the same number of slices, but got {} and {}",
-                 origin.size(), size);
-        if (size == 0)
-            return;
+    void MetadataStack::save(
+            const Path& filename,
+            Shape2<i64> shape,
+            Vec2<f64> spacing,
+            f64 defocus_astigmatism_value,
+            f64 defocus_astigmatism_angle,
+            f64 phase_shift
+    ) const {
+        // Save in the same order as in the input file.
+        MetadataStack sorted = *this;
+        sorted.sort("index_file");
 
-        // TODO Improve formatting.
-        qn::Logger::info("index, yaw, tilt, pitch, y-shift, x-shift");
+        const auto center = MetadataSlice::center<f64>(shape);
 
-        for (size_t i = 0; i < size; ++i) {
-            const MetadataSlice& current_slice = current[i];
-            const MetadataSlice* origin_slice = &origin[i];
+        constexpr std::string_view HEADER =
+                "index, spacing_x, spacing_y, size_x, size_y, center_x, center_y, "
+                "rotation,    tilt, elevation,   shift_x,   shift_y, "
+                "d_value, d_astig, d_angle, phase_shift, pre_exposure, post_exposure\n";
+        constexpr std::string_view FORMAT =
+                "{:>5}, {:>9.3f}, {:>9.3f}, {:>6}, {:>6}, {:>8.2f}, {:>8.2f}, "
+                "{:>8.3f}, {:>7.3f}, {:>9.3f}, {:>9.3f}, {:>9.3f}, "
+                "{:>7.3f}, {:>7.3f}, {:>7.3f}, {:>11.3f}, {:>12.2f}, {:>13.2f}\n";
 
-            if (current_slice.index != origin_slice->index) {
-                // They are not sorted in the same order, so retrieve the corresponding slice.
-                size_t count{0};
-                for (const auto& slice: origin.slices()) {
-                    if (slice.index == current_slice.index) {
-                        origin_slice = &slice;
-                        break;
-                    }
-                    ++count;
-                }
-                if (count == size - 1)
-                    QN_THROW("Missing slice in the original metadata");
-            }
+        std::string str;
+        str.reserve(HEADER.size() * (sorted.size() + 1));
 
-            // Log:
-            const auto angle_difference = current_slice.angles - origin_slice->angles;
-            const auto shift_difference = current_slice.shifts - origin_slice->shifts;
-            qn::Logger::info("{}, {}, ({:+f}), {}, ({:+f}), {}, ({:+f}), {}, ({:+f}), {}, ({:+f})",
-                             current_slice.index,
-                             current_slice.angles[0], angle_difference[0],
-                             current_slice.angles[1], angle_difference[1],
-                             current_slice.angles[2], angle_difference[2],
-                             current_slice.shifts[0], shift_difference[0],
-                             current_slice.shifts[1], shift_difference[1]);
+        str += HEADER;
+        for (const auto& slice: slices()) {
+            str += fmt::format(
+                    FORMAT,
+                    slice.index_file, spacing[1], spacing[0], shape[1], shape[0], center[1], center[0],
+                    slice.angles[0], slice.angles[1], slice.angles[2], slice.shifts[1], slice.shifts[0],
+                    slice.defocus, defocus_astigmatism_value, defocus_astigmatism_angle, phase_shift,
+                    slice.exposure[0], slice.exposure[1]);
         }
+        noa::io::save_text(str, filename);
     }
 }
 
 namespace qn {
     void MetadataStack::generate_(const Path& tlt_filename, const Path& exposure_filename) {
-        auto is_empty = [](const auto& str) { return str.empty(); };
+        const auto is_empty = [](const auto& str) { return str.empty(); };
         std::string file;
         std::vector<std::string> lines;
 
@@ -152,7 +150,11 @@ namespace qn {
         file = noa::io::read_text(exposure_filename);
         lines = noa::string::split<std::string>(file, '\n');
         lines.erase(std::remove_if(lines.begin(), lines.end(), is_empty), lines.end());
-        const std::vector<f64> exposure_file = noa::string::parse<f64>(lines);
+        std::vector<Vec2<f64>> exposure_file;
+        for (const auto& line: lines) {
+            std::array exposure = noa::string::split<f64, 2>(line, ',');
+            exposure_file.emplace_back(exposure[0], exposure[1]);
+        }
 
         QN_CHECK(tlt_file.size() == exposure_file.size(),
                  "The tilt ({}) and exposure ({}) files do not have the same number of lines",
@@ -162,7 +164,7 @@ namespace qn {
         for (size_t i = 0; i < tlt_file.size(); ++i) {
             m_slices.push_back({{0, tlt_file[i], 0},
                                 {},
-                                exposure_file[i],
+                                {exposure_file[i][0], exposure_file[i][1]},
                                 0,
                                 static_cast<i32>(i),
                                 static_cast<i32>(i)});
@@ -213,8 +215,8 @@ namespace qn {
         std::stable_sort(m_slices.begin(), m_slices.end(),
                          [ascending](const auto& lhs, const auto& rhs) {
                              return ascending ?
-                                    lhs.exposure < rhs.exposure :
-                                    lhs.exposure > rhs.exposure;
+                                    lhs.exposure[0] < rhs.exposure[0] :
+                                    lhs.exposure[0] > rhs.exposure[0];
                          });
     }
 }

@@ -16,12 +16,16 @@ set(QUINOA_SOURCES
     src/quinoa/core/Metadata.cpp
     src/quinoa/core/Metadata.h
     src/quinoa/core/Stack.hpp
+    src/quinoa/core/Stack.cpp
     src/quinoa/core/Optimizer.hpp
     src/quinoa/core/Utilities.h
     src/quinoa/core/CommonArea.hpp
 
     src/quinoa/core/Ewise.hpp
     src/quinoa/core/Ewise.cu
+
+    src/quinoa/core/Thickness.hpp
+    src/quinoa/core/Thickness.cpp
 
     src/quinoa/core/CTF.hpp
     src/quinoa/core/CTFAverage.cpp
@@ -34,7 +38,9 @@ set(QUINOA_SOURCES
     src/quinoa/core/PairwiseShift.cpp
     src/quinoa/core/GlobalRotation.hpp
     src/quinoa/core/GlobalRotation.cpp
-    src/quinoa/core/ProjectionMatching.h
-    src/quinoa/core/ProjectionMatching.cpp
+#    src/quinoa/core/ProjectionMatching.h
+    src/quinoa/core/ProjectionMatching.hpp
+#    src/quinoa/core/ProjectionMatching.cpp
+    src/quinoa/core/ProjectionMatching2.cpp
 
     )

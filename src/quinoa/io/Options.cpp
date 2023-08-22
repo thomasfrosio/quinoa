@@ -324,6 +324,7 @@ namespace {
         constexpr std::array QN_OPTIONS_COMPUTE{
                 "device",
                 "n_cpu_threads",
+                "register_input_stack",
                 "log_level",
         };
         sanitize_node_(compute_node, QN_OPTIONS_COMPUTE);
@@ -370,6 +371,16 @@ namespace {
             compute.n_cpu_threads = std::min(static_cast<i64>(noa::cpu::Device::cores().logical), i64{16});
         } else {
             QN_THROW("compute:n_cpu_threads has an invalid type ({}). Should be a scalar or be left emtpy",
+                     device_node.Type());
+        }
+
+        //
+        const auto register_input_stack_node = compute_node["register_input_stack"];
+        if (register_input_stack_node.IsScalar()) {
+            compute.register_input_stack = register_input_stack_node.as<bool>(true);
+        } else {
+            QN_THROW("compute:register_input_stack has an invalid type ({}). "
+                     "Should be a boolean or be left emtpy (defaulting to \"true\")",
                      device_node.Type());
         }
 

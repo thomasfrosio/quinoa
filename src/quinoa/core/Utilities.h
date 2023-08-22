@@ -32,10 +32,13 @@ namespace qn {
             i64 patch_step
     ) {
         // Arange:
-        const auto max = grid_size - patch_size - 1; // FIXME
+        const auto max = grid_size - patch_size - 1;
         std::vector<i64> patch_origin;
         for (i64 i = 0; i < max; i += patch_step)
             patch_origin.push_back(i);
+
+        if (patch_origin.empty())
+            return patch_origin;
 
         // Center:
         const i64 end = patch_origin.back() + patch_size;
@@ -44,20 +47,6 @@ namespace qn {
             origin += offset;
 
         return patch_origin;
-    }
-
-    [[nodiscard]]
-    inline auto patch_grid_1d_count(
-            i64 grid_size,
-            i64 patch_size,
-            i64 patch_step
-    ) {
-        // Arange:
-        const auto max = grid_size - patch_size - 1; // FIXME
-        i64 count{};
-        for (i64 i = 0; i < max; i += patch_step)
-            ++count;
-        return count;
     }
 
     [[nodiscard]]
@@ -76,16 +65,6 @@ namespace qn {
                 origins.emplace_back(y, x);
 
         return origins;
-    }
-
-    template<typename Int>
-    [[nodiscard]] constexpr bool is_consecutive_range(const View<Vec4<Int>>& sequence, Int step = 1) noexcept {
-        NOA_ASSERT(noa::indexing::is_contiguous_vector(sequence));
-        const auto* range = sequence.get();
-        for (i64 i = 1; i < sequence.ssize(); ++i)
-            if (range[i - 1][0] + step != range[i][0])
-                return false;
-        return true;
     }
 
     struct FourierCropDimensions {

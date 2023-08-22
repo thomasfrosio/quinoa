@@ -19,12 +19,12 @@ namespace qn {
     //   one must simply add these angles.
     struct MetadataSlice {
     public:
-        Vec3<f64> angles{}; // Euler angles, in degrees, of the slice. zyx extrinsic (rotation, tilt, elevation)
-        Vec2<f64> shifts{}; // yx shifts, in pixels, of the slice.
-        f64 exposure{};     // Cumulated exposure, in e-/A2.
-        f64 defocus{};      // Slice defocus, in micrometers.
-        i32 index{};        // Index [0, N) of the slice within the array.
-        i32 index_file{};   // Index [0, N) of the slice within the original file.
+        Vec3<f64> angles{};     // Euler angles, in degrees, of the slice. zyx extrinsic (rotation, tilt, elevation)
+        Vec2<f64> shifts{};     // yx shifts, in pixels, of the slice.
+        Vec2<f64> exposure{};   // Pre- and post-exposure, in e-/A2.
+        f64 defocus{};          // Slice defocus, in micrometers.
+        i32 index{};            // Index [0, N) of the slice within the array.
+        i32 index_file{};       // Index [0, N) of the slice within the original file.
 
     public:
         template<typename Real = f32>
@@ -232,7 +232,14 @@ namespace qn {
         [[nodiscard]] auto find_lowest_tilt_index() const -> i64;
 
     public:
-        static void log_update(const MetadataStack& origin, const MetadataStack& current);
+        void save(
+                const Path& filename,
+                Shape2<i64> shape,
+                Vec2<f64> spacing,
+                f64 defocus_astigmatism_value = 0,
+                f64 defocus_astigmatism_angle = 0,
+                f64 phase_shift = 0
+        ) const;
 
     private:
         void generate_(const Path& tlt_filename, const Path& exposure_filename);

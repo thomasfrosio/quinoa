@@ -21,8 +21,8 @@ namespace qn {
         m_xmap = noa::memory::empty<f32>({1, 1, shape[2], shape[3]}, options);
 
         const auto bytes = m_xmap.size() * sizeof(f32) + m_buffer_rfft.size() * sizeof(c32);
-        qn::Logger::trace("PairwiseShift(): allocated for {} MB on {} (allocator={})",
-                          static_cast<f64>(bytes) * 10e-6, options.device(), options.allocator());
+        qn::Logger::trace("PairwiseShift(): allocated for {:.2f} GB on {} ({})",
+                          static_cast<f64>(bytes) * 10e-9, options.device(), options.allocator());
     }
 
     void PairwiseShift::update(
@@ -195,10 +195,10 @@ namespace qn {
 
         if (!parameters.debug_directory.empty()) {
             const auto output_index = reference_slice.index;
-            const auto target_reference_filename = noa::string::format(
+            const auto target_reference_filename = parameters.debug_directory / noa::string::format(
                     "target_stretched_and_reference_{:>02}.mrc", output_index);
-            noa::io::save(target_stretched_and_reference,
-                          parameters.debug_directory / target_reference_filename);
+            noa::io::save(target_stretched_and_reference, target_reference_filename);
+            qn::Logger::debug("{} saved", target_reference_filename);
         }
 
         // (Conventional) cross-correlation. There's no need to normalize here, we just need the shift.
@@ -217,9 +217,11 @@ namespace qn {
 
         if (!parameters.debug_directory.empty()) {
             const auto output_index = reference_slice.index;
-            const auto xmap_filename = noa::string::format("xmap_{:>02}.mrc", output_index);
+            const auto xmap_filename =
+                    parameters.debug_directory / noa::string::format("xmap_{:>02}.mrc", output_index);
             noa::fft::remap(noa::fft::F2FC, xmap, target, xmap.shape());
-            noa::io::save(target, parameters.debug_directory / xmap_filename);
+            noa::io::save(target, xmap_filename);
+            qn::Logger::debug("{} saved", xmap_filename);
         }
 
         // Possibly restrict the shifts by masking the xmap.
