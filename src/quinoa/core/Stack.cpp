@@ -35,6 +35,8 @@ namespace qn {
 
         // Zero-padding in real-space after cropping.
         m_output_slice_shape = m_cropped_slice_shape;
+        if (parameters.zero_pad_to_square_shape)
+            m_output_slice_shape = noa::math::max(m_output_slice_shape);
         if (parameters.zero_pad_to_fast_fft_shape) {
             m_output_slice_shape[0] = noa::fft::next_fast_size(m_output_slice_shape[0]);
             m_output_slice_shape[1] = noa::fft::next_fast_size(m_output_slice_shape[1]);
@@ -76,7 +78,7 @@ namespace qn {
                           m_input_slice_shape, m_input_spacing, has_register,
                           m_padded_slice_shape, parameters.precise_cutoff,
                           m_cropped_slice_shape, m_rescale_shift,
-                          m_output_slice_shape,m_output_spacing,
+                          m_output_slice_shape, m_output_spacing,
                           parameters.zero_pad_to_fast_fft_shape);
     }
 
@@ -109,7 +111,7 @@ namespace qn {
         noa::fft::r2c(padded_slice, padded_slice_rfft);
         noa::fft::resize<noa::fft::H2H>(
                 padded_slice_rfft, padded_shape,
-                cropped_slice_rfft, cropped_shape);
+                cropped_slice_rfft, cropped_shape); // FIXME pad border right
         noa::signal::fft::phase_shift_2d<noa::fft::H2H>(
                 cropped_slice_rfft, cropped_slice_rfft,
                 cropped_shape, m_rescale_shift.as<f32>());

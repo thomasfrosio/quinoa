@@ -272,7 +272,7 @@ namespace {
             preprocessing.exclude_view_indexes = exclude_view_indexes_node.as<std::vector<i64>>();
         else if (exclude_view_indexes_node.IsScalar())
             preprocessing.exclude_view_indexes.emplace_back(exclude_view_indexes_node.as<i64>());
-        else {
+        else if (!exclude_view_indexes_node.IsNull()) {
             QN_THROW("preprocessing:exclude_view_indexes has an invalid type ({}). Should be a scalar or a sequence",
                      exclude_view_indexes_node.Type());
         }
@@ -374,9 +374,11 @@ namespace {
                      device_node.Type());
         }
 
-        //
+        // register_input_stack
         const auto register_input_stack_node = compute_node["register_input_stack"];
-        if (register_input_stack_node.IsScalar()) {
+        if (register_input_stack_node.IsNull()) {
+            compute.register_input_stack = true;
+        } else if (register_input_stack_node.IsScalar()) {
             compute.register_input_stack = register_input_stack_node.as<bool>(true);
         } else {
             QN_THROW("compute:register_input_stack has an invalid type ({}). "

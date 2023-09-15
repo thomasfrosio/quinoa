@@ -28,9 +28,16 @@ namespace qn {
 
     public:
         template<typename Real = f32>
+        [[nodiscard]] static constexpr auto center(i64 size) noexcept -> Real {
+            // Center is defined at n // 2 (integer division).
+            // We rely on this during resizing (as opposed to n / 2).
+            return static_cast<Real>(size / 2);
+        }
+
+        template<typename Real = f32>
         [[nodiscard]] static constexpr auto center(i64 height, i64 width) noexcept -> Vec2<Real> {
             // Center is defined at n // 2 (integer division). We rely on this during resizing (as opposed to n / 2).
-            return {height / 2, width / 2};
+            return {center(height), center(width)};
         }
 
         template<typename Real = f32, size_t N>
@@ -172,6 +179,17 @@ namespace qn {
                         noa::geometry::rotate(-angles[0])
                 };
                 slice.shifts += shrink_matrix * global_shift;
+            }
+            return *this;
+        }
+
+        auto add_global_shift(Vec3<f64> global_shift) -> MetadataStack& {
+            for (auto& slice: slices()) {
+                const Vec3<f64> angles = noa::math::deg2rad(slice.angles);
+                const Double33 rotm = noa::geometry::euler2matrix(
+                        Vec3<f64>{-angles[0], angles[1], angles[2]}, "zyx", false);
+                const auto rotated_shift = rotm * global_shift;
+                slice.shifts += rotated_shift.pop_front(); // project along z
             }
             return *this;
         }

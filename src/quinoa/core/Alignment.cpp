@@ -7,6 +7,8 @@
 #include "quinoa/core/Thickness.hpp"
 #include "quinoa/core/Stack.hpp"
 
+#include "quinoa/core/Ewise.hpp"
+
 namespace {
     using namespace ::qn;
 
@@ -549,6 +551,7 @@ namespace {
         f64 maximum_resolution;
         f64 thickness_estimate_nm;
         bool fit_rotation{true};
+        bool no_weights{true};
     };
 
     void projection_matching_alignment(
@@ -568,13 +571,13 @@ namespace {
                 /*compute_device=*/ parameters.compute_device,
                 /*allocator=*/ Allocator::MANAGED,
                 /*precise_cutoff=*/ true,
-                /*rescale_target_resolution=*/ std::max(8., parameters.maximum_resolution),
-                /*rescale_min_size=*/ 1024,
+                /*rescale_target_resolution=*/ 10, //std::max(8., parameters.maximum_resolution),
+                /*rescale_min_size=*/ 512,
                 /*exposure_filter=*/ false,
-                /*highpass_parameters=*/ {0.02, 0.02},
-                /*lowpass_parameters=*/ {0.5, 0.05},
+                /*highpass_parameters=*/ {0.01, 0.01},
+                /*lowpass_parameters=*/ {0.4, 0.1},
                 /*normalize_and_standardize=*/ true,
-                /*smooth_edge_percent=*/ 0.02f,
+                /*smooth_edge_percent=*/ 0.1f,
                 /*zero_pad_to_fast_fft_shape=*/ false,
         };
         const auto [stack, stack_spacing, file_spacing] =
@@ -584,7 +587,7 @@ namespace {
 
         // Just in case memory is tight, make sure to free everything that is not needed,
         // even if it means recomputing it later.
-        noa::Session::clear_cufft_cache(parameters.compute_device);
+        noa::Session::clear_fft_cache(parameters.compute_device);
 
         // Set the spacing and CTF.
         f64 spacing = noa::math::sum(stack_spacing) / 2;
@@ -594,12 +597,12 @@ namespace {
         // Set the common area. For projection-matching, it should be more important to make sure
         // the views that do not fully contain the common area are excluded. So 1) allow smaller
         // common areas to exclude fewer views, and 2) exclude the views that are still too far off.
-        constexpr f64 maximum_size_loss = 0.2; // FIXME Make this a user parameter?
-        auto common_area = CommonArea(metadata.size(), parameters.compute_device);
-        const std::vector<i64> excluded_indexes = common_area.set_geometry(
-                stack.shape().filter(2, 3), metadata, maximum_size_loss);
-        if (!excluded_indexes.empty())
-            metadata.exclude(excluded_indexes);
+        constexpr f64 maximum_size_loss = 0.1;
+        auto common_area = CommonArea(stack.shape().filter(2, 3), metadata, maximum_size_loss);
+//        const std::vector<i64> excluded_indexes = common_area.set_geometry(
+//                stack.shape().filter(2, 3), metadata, maximum_size_loss);
+//        if (!excluded_indexes.empty())
+//            metadata.exclude(excluded_indexes, /*reset_index_field=*/ false);
 
         // Windowed sinc and projection-matching parameters.
         f64 thickness_estimate_pixels = parameters.thickness_estimate_nm / (spacing * 1e-1);
@@ -607,15 +610,18 @@ namespace {
                 /*smooth_edge_percent=*/ 0.1,
                 /*use_estimated_gradients=*/ true,
                 /*fftfreq_sinc=*/ -1,
-                /*fftfreq_blackman=*/ 0.05, // FIXME?
+                /*fftfreq_blackman=*/ 0.001,
                 /*fftfreq_z_sinc=*/ 1 / thickness_estimate_pixels,
-                /*fftfreq_z_blackman=*/ 0.1, // FIXME?
-                /*highpass_filter=*/ {},
-                /*lowpass_filter=*/ {},
-                /*debug_directory=*/ parameters.debug_directory,
+                /*fftfreq_z_blackman=*/ 0.12, //0.05, // FIXME this could be adapted to the thickness
+                /*highpass_filter=*/ {0.1, 0.08},
+                /*lowpass_filter=*/ {0.4, 0.1},
+                /*debug_directory=*/ "", // parameters.debug_directory,
         };
 
-        auto projection_matching = ProjectionMatching(stack.shape().filter(2, 3), parameters.compute_device);
+        auto projection_matching = ProjectionMatching(
+                metadata.ssize(),
+                stack.shape().filter(2, 3),
+                parameters.compute_device);
         projection_matching.update(stack.view(), common_area, projection_matching_parameters, ctf, metadata);
 
         // Rescale back to original spacing and center.
@@ -701,35 +707,33 @@ namespace qn {
         }
 
         // 3. Sample thickness.
-        estimate_sample_thickness(options.files.input_stack, output_metadata, {
-                /*resolution=*/ 20.,
+        const auto thickness = estimate_sample_thickness(options.files.input_stack, output_metadata, {
+                /*resolution=*/ 16.,
+                /*maximum_thickness_nm=*/ 350.,
+                /*adjust_com=*/ true,
                 /*compute_device=*/ options.compute.device,
-                /*allocator=*/ Allocator::DEFAULT_ASYNC,
+                /*allocator=*/ Allocator::MANAGED,
                 /*debug_directory=*/ options.files.output_directory / "debug_thickness"
         });
 
         // 4. Projection matching.
         if (options.alignment.use_projection_matching) {
-//        const auto projection_matching_alignment_parameters = ProjectionMatchingAlignmentParameters{
-//                /*compute_device=*/ options.compute.device,
-//                /*maximum_resolution=*/ 10.,
-//                /*search_rotation_offset=*/ options.alignment.fit_rotation_offset,
-//                /*output_directory=*/ options.files.output_directory,
-//                /*debug_directory=*/ options.files.output_directory / "debug_projection_matching"
-//        };
+            const auto projection_matching_alignment_parameters = ProjectionMatchingAlignmentParameters{
+                    /*compute_device=*/ options.compute.device,
+                    /*output_directory=*/ options.files.output_directory,
+                    /*debug_directory=*/ options.files.output_directory / "debug_projection_matching",
+                    /*maximum_resolution=*/ 16.,
+                    /*thickness_estimate_nm=*/ thickness,
+                    /*fit_rotation=*/ options.alignment.fit_rotation_offset,
+                    /*no_weights=*/ true,
+            };
 
-//        const auto projection_matching_alignment_parameters = ProjectionMatchingAlignmentParameters{
-//                /*compute_device=*/ compute_device,
-//                /*maximum_resolution=*/ alignment_max_resolution,
-//                //alignment_rotation_offset
-//                /*search_rotation_offset=*/ options["alignment_rotation_offset"].as<bool>(true),
-//                /*output_directory=*/ output_directory,
-//                /*debug_directory=*/ ""//output_directory / "debug_projection_matching"
-//
-//
-//                metadata = projection_matching_alignment(
-//                original_stack_filename, metadata,
-//                projection_matching_alignment_parameters);
+            projection_matching_alignment(
+                    options.files.input_stack,
+                    projection_matching_alignment_parameters,
+                    average_ctf,
+                    output_metadata // updated: .angles[1], .shifts
+            );
         }
 
         const Path csv_filename =

@@ -13,16 +13,20 @@ namespace qn {
     // field-of-view of the views. The common area is the region that is left visible in every single view.
     class CommonArea {
     public:
-        // Valid initialization, but mask_views() cannot be used.
         CommonArea() = default;
 
-        template<typename Integer>
-        CommonArea(Integer max_slices, Device compute_device) { reserve(max_slices, compute_device); }
+        CommonArea(
+                const Shape2<i64>& shape,
+                const MetadataStack& metadata,
+                f64 max_size_loss_percent = 0.15
+        ) {
+            set_geometry(shape, metadata, max_size_loss_percent);
+        };
 
         // Given a stack geometry, set the common area.
         // If the slices are too different from each other, the common area might end up being too small.
-        // This function measure how much each slice restrains the common area and gets rid of the slices
-        // that exceeds the allowed constraint. To find the largest common area and exclude fewer views as
+        // This function measures how much each slice restrains the common area and gets rid of the slices
+        // that exceed the allowed constraint. To find the largest common area and exclude fewer views as
         // possible, it is probably best to use center_shifts first. The excluded views can still be masked
         // with the common area, but the mask will fall out of the bounds of these views.
         auto set_geometry(
@@ -30,6 +34,8 @@ namespace qn {
                 const MetadataStack& metadata,
                 f64 max_size_loss_percent = 0.15
         ) -> std::vector<i64> {
+            // Save the shape, so we can then adjust the center when computing the masks.
+            m_shape = shape;
 
             // Start with the perfect area, at tilt 0, encompassing the entire image.
             const auto hw = shape.vec().as<f64>();
@@ -54,7 +60,7 @@ namespace qn {
                         noa::geometry::linear2affine(noa::geometry::rotate(angles[0])) *
                         noa::geometry::linear2affine(noa::geometry::scale(cos_scale)) *
                         noa::geometry::linear2affine(noa::geometry::rotate(-angles[0])) *
-                        noa::geometry::translate(-slice.shifts)); // FIXME -shift
+                        noa::geometry::translate(-slice.shifts));
 
                 // Compute the area of the current view.
                 // Because the high tilts have a bigger field-of-view (which is encoded by the stretching),
@@ -136,70 +142,22 @@ namespace qn {
             return excluded_indexes;
         }
 
-        // Applies the common area to the input views.
-        // update_geometry() should have been called before calling this function.
-        // This function may be asynchronous depending on the device's current stream,
-        // a stream synchronization should be done between calls.
         void mask_views(
                 const View<const f32>& input,
                 const View<f32>& output,
                 const MetadataStack& metadata,
-                const std::vector<i64>& indexes,
                 f64 smooth_edge_percent
         ) const {
-            QN_CHECK(input.shape()[0] == static_cast<i64>(indexes.size()),
-                     "The number of slices doesn't match the number of indexes");
-            QN_CHECK(m_inv_transforms.ssize() <= m_inv_transforms.ssize(), "The maximum size is reached");
-            QN_CHECK(noa::all(m_common_area_radius >= 0), "Common area geometry is not initialized");
-
-            // Get the matrices.
-            const auto slice_op = noa::indexing::Slice{0, indexes.size()};
-            View inv_transforms = m_inv_transforms.view().subregion(slice_op);
-            View inv_transforms_on_device =
-                    m_inv_transforms_on_device.is_empty() ? View<Float23>{} :
-                    m_inv_transforms_on_device.view().subregion(slice_op);
-
-            for (size_t i = 0; i < indexes.size(); ++i) {
-                const MetadataSlice& current_slice = metadata[indexes[i]];
-
-                // Cosine shrink relative to the 0deg elevation/tilt.
-                const Vec3<f64> angles = noa::math::deg2rad(current_slice.angles);
-                const Vec2<f64> cos_scale = noa::math::cos(angles.filter(2, 1));
-
-                // Compute the transformation matrix to:
-                //  - account for the view's shifts.
-                //  - cosine scale to shrink the common area perpendicular to the tilt axis
-                //    according to the view's tilt and rotation angle. Unfortunately,
-                //    this will shrink the smooth edge of the ellipse, but this is fine
-                //    if the taper is large enough, and it allows us to batch the operation.
-                const Double33 inv_common_area_to_view =
-                        noa::geometry::translate(m_common_area_center) *
-                        noa::geometry::linear2affine(noa::geometry::rotate(angles[0])) *
-                        noa::geometry::linear2affine(noa::geometry::scale(1 / cos_scale)) *
-                        noa::geometry::linear2affine(noa::geometry::rotate(-angles[0])) *
-                        noa::geometry::translate(-m_common_area_center - current_slice.shifts);
-
-                // WARNING: Overwriting this buffer can lead to a data race if this function was already called
-                //          and the caller didn't synchronize inv_transforms_on_device's current stream.
-                inv_transforms(i, 0, 0, 0) = noa::geometry::affine2truncated(inv_common_area_to_view.as<f32>());
-            }
-
-            // Copy to GPU if necessary.
-            if (!inv_transforms_on_device.is_empty())
-                inv_transforms.to(inv_transforms_on_device);
-
-            // A common area is enforced, which will guarantees that the valid views in the stack
-            // show the same area. Views that are excluded simply truncates the common area.
+            QN_CHECK(output.shape()[0] == metadata.ssize(), "The array and metadata don't match");
             const auto smooth_edge_size = static_cast<f32>(smooth_edge(smooth_edge_percent));
             noa::geometry::ellipse(
                     input, output,
                     /*center=*/ m_common_area_center.as<f32>(),
                     /*radius=*/ m_common_area_radius.as<f32>() - smooth_edge_size,
                     /*edge_size=*/ smooth_edge_size,
-                    /*inv_matrix=*/ inv_transforms_on_device);
+                    /*inv_matrix=*/ inv_transforms_(metadata, output.device()));
         }
 
-        // Applies the common area to a single view.
         void mask_view(
                 const View<const f32>& input,
                 const View<f32>& output,
@@ -207,39 +165,47 @@ namespace qn {
                 f64 smooth_edge_percent
         ) const {
             QN_CHECK(input.shape()[0] == 1, "The input must not be batched");
-            QN_CHECK(noa::all(m_common_area_radius >= 0), "Common area geometry is not initialized");
-
-            const Vec3<f64> angles = noa::math::deg2rad(metadata.angles);
-            const Vec2<f64> cos_scale = noa::math::cos(angles.filter(2, 1));
-
-            const Float23 inv_common_area_to_view = noa::geometry::affine2truncated(
-                    noa::geometry::translate(m_common_area_center) *
-                    noa::geometry::linear2affine(noa::geometry::rotate(angles[0])) *
-                    noa::geometry::linear2affine(noa::geometry::scale(1 / cos_scale)) *
-                    noa::geometry::linear2affine(noa::geometry::rotate(-angles[0])) *
-                    noa::geometry::translate(-m_common_area_center - metadata.shifts)).as<f32>();
-
             const auto smooth_edge_size = static_cast<f32>(smooth_edge(smooth_edge_percent));
             noa::geometry::ellipse(
                     input, output,
                     /*center=*/ m_common_area_center.as<f32>(),
                     /*radius=*/ m_common_area_radius.as<f32>() - smooth_edge_size,
                     /*edge_size=*/ smooth_edge_size,
-                    /*inv_matrix=*/ inv_common_area_to_view);
+                    /*inv_matrix=*/ inv_transform_(metadata));
+        }
+
+        void compute(
+                const View<f32>& output,
+                const MetadataStack& metadata,
+                f64 smooth_edge_percent
+        ) const {
+            QN_CHECK(output.shape()[0] == metadata.ssize(), "The array and metadata don't match");
+            const auto smooth_edge_size = static_cast<f32>(smooth_edge(smooth_edge_percent));
+            noa::geometry::ellipse(
+                    {}, output,
+                    /*center=*/ m_common_area_center.as<f32>(),
+                    /*radius=*/ m_common_area_radius.as<f32>() - smooth_edge_size,
+                    /*edge_size=*/ smooth_edge_size,
+                    /*inv_matrix=*/ inv_transforms_(metadata, output.device()));
+        }
+
+        void compute(
+                const View<f32>& output,
+                const MetadataSlice& metadata,
+                f64 smooth_edge_percent
+        ) const {
+            QN_CHECK(output.shape()[0] == 1, "The input must not be batched");
+            const auto smooth_edge_size = static_cast<f32>(smooth_edge(smooth_edge_percent));
+            noa::geometry::ellipse(
+                    {}, output,
+                    /*center=*/ adjust_center_(output.shape().filter(2,3)).as<f32>(),
+                    /*radius=*/ radius().as<f32>() - smooth_edge_size,
+                    /*edge_size=*/ smooth_edge_size,
+                    /*inv_matrix=*/ inv_transform_(metadata));
         }
 
         [[nodiscard]] const Vec2<f64>& center() const noexcept { return m_common_area_center; }
         [[nodiscard]] const Vec2<f64>& radius() const noexcept { return m_common_area_radius; }
-
-        template<typename Integer, typename = std::enable_if_t<std::is_integral_v<Integer>>>
-        void reserve(Integer max_slices, Device compute_device) {
-            const auto shape = Shape4<i64>{static_cast<i64>(max_slices), 1, 1, 1};
-            const auto options = ArrayOption(compute_device, Allocator::DEFAULT_ASYNC);
-            m_inv_transforms = noa::memory::empty<Float23>(shape);
-            m_inv_transforms_on_device =
-                    compute_device.is_cpu() ? Array<Float23>{} :
-                    noa::memory::empty<Float23>(shape, options);
-        }
 
         [[nodiscard]] constexpr f64 smooth_edge(f64 smooth_edge_percent) const noexcept {
             // The smooth edge percent is relative to the common area size, not the original image size.
@@ -248,9 +214,52 @@ namespace qn {
             return smooth_edge_size;
         }
 
+
     private:
-        Array<Float23> m_inv_transforms;
-        Array<Float23> m_inv_transforms_on_device;
+        [[nodiscard]] auto adjust_center_(const Shape2<i64>& new_shape) const noexcept -> Vec2<f64> {
+            const auto [border_left, _] = noa::memory::shape2borders(
+                    m_shape.push_front<2>({1, 1}), new_shape.push_front<2>({1, 1}));
+            return m_common_area_center + border_left.filter(2, 3).as<f64>();
+        }
+
+        [[nodiscard]] auto inv_transform_(const MetadataSlice& metadata) const -> Float23 {
+            QN_CHECK(noa::all(m_common_area_radius >= 0), "Common area geometry is not initialized");
+
+            // Cosine shrink relative to the 0deg elevation/tilt.
+            const Vec3<f64> angles = noa::math::deg2rad(metadata.angles);
+            const Vec2<f64> cos_scale = noa::math::cos(angles.filter(2, 1));
+
+            // Compute the transformation matrix to:
+            //  - account for the view's shifts.
+            //  - cosine scale to shrink the common area perpendicular to the tilt axis
+            //    according to the view's tilt and rotation angle. Unfortunately,
+            //    this will shrink the smooth edge of the ellipse, but this is fine
+            //    if the taper is large enough, and it allows us to batch the operation.
+            Float23 inv_common_area_to_view = noa::geometry::affine2truncated(
+                    noa::geometry::translate(m_common_area_center) *
+                    noa::geometry::linear2affine(noa::geometry::rotate(angles[0])) *
+                    noa::geometry::linear2affine(noa::geometry::scale(1 / cos_scale)) *
+                    noa::geometry::linear2affine(noa::geometry::rotate(-angles[0])) *
+                    noa::geometry::translate(-m_common_area_center - metadata.shifts)).as<f32>();
+            return inv_common_area_to_view;
+        }
+
+        [[nodiscard]] auto inv_transforms_(
+                const MetadataStack& metadata,
+                Device compute_device
+        ) const -> Array<Float23> {
+            auto inv_transforms = noa::memory::empty<Float23>(
+                    metadata.ssize(), ArrayOption(compute_device, Allocator::MANAGED));
+
+            const auto inv_transforms_span = inv_transforms.span();
+            for (i64 i = 0; i < metadata.ssize(); ++i)
+                inv_transforms_span[i] = inv_transform_(metadata[i]);
+
+            return inv_transforms;
+        }
+
+    private:
+        Shape2<i64> m_shape;
         Vec2<f64> m_common_area_center;
         Vec2<f64> m_common_area_radius{-1};
     };

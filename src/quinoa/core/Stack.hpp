@@ -31,6 +31,7 @@ namespace qn {
         bool normalize_and_standardize{true};
         f32 smooth_edge_percent{0.01f};
         bool zero_pad_to_fast_fft_shape{true};
+        bool zero_pad_to_square_shape{false};
     };
 
     class StackLoader {
