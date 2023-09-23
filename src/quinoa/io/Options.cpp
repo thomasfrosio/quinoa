@@ -140,9 +140,9 @@ namespace {
         return files;
     }
 
-    auto parse_tilt_scheme_(YAML::Node tilt_scheme_node) -> Options::TiltScheme {
-        constexpr std::array QN_OPTIONS_TILT_SCHEME{
-                "order",
+    auto parse_experiment_(YAML::Node experiment_node) -> Options::Experiment {
+        constexpr std::array QN_OPTIONS_EXPERIMENT{
+                "collection_order",
                 "rotation_offset",
                 "tilt_offset",
                 "elevation_offset",
@@ -152,40 +152,41 @@ namespace {
                 "phase_shift",
                 "astigmatism_value",
                 "astigmatism_angle",
+                "thickness",
         };
-        constexpr std::array QN_OPTIONS_TILT_SCHEME_ORDER{
+        constexpr std::array QN_OPTIONS_EXPERIMENT_COLLECTION_ORDER{
                 "starting_angle",
                 "starting_direction",
-                "angle_increment",
-                "group",
+                "tilt_increment",
+                "group_of",
                 "exclude_start",
                 "per_view_exposure",
         };
 
-        sanitize_node_(tilt_scheme_node, QN_OPTIONS_TILT_SCHEME);
-        if (tilt_scheme_node["order"].IsMap())
-            sanitize_node_(tilt_scheme_node["order"], QN_OPTIONS_TILT_SCHEME_ORDER);
+        sanitize_node_(experiment_node, QN_OPTIONS_EXPERIMENT);
+        if (experiment_node["collection_order"].IsMap())
+            sanitize_node_(experiment_node["collection_order"], QN_OPTIONS_EXPERIMENT_COLLECTION_ORDER);
 
-        const auto parse_order_to_optional = [&](const YAML::Node& order_node)
-                -> std::optional<Options::TiltScheme::Order> {
+        const auto parse_collection_order_to_optional = [&](const YAML::Node& order_node)
+                -> std::optional<Options::Experiment::CollectionOrder> {
             if (order_node.IsMap()) {
                 // Every parameter should be specified.
-                for (auto parameter: QN_OPTIONS_TILT_SCHEME_ORDER) {
+                for (auto parameter: QN_OPTIONS_EXPERIMENT_COLLECTION_ORDER) {
                     if (!order_node[parameter].IsScalar())
-                        QN_THROW_FUNC("parse_tilt_scheme_", "tilt_scheme:order:{} has an invalid type ({})",
+                        QN_THROW_FUNC("parse_experiment_", "experiment:collection_order:{} has an invalid type ({})",
                                       parameter, order_node[parameter].Type());
                 }
-                return Options::TiltScheme::Order{
+                return Options::Experiment::CollectionOrder{
                         order_node["starting_angle"].as<f64>(),
                         order_node["starting_direction"].as<i64>(),
-                        order_node["angle_increment"].as<f64>(),
-                        order_node["group"].as<i64>(),
+                        order_node["tilt_increment"].as<f64>(),
+                        order_node["group_of"].as<i64>(),
                         order_node["exclude_start"].as<bool>(),
                         order_node["per_view_exposure"].as<f64>(),
                 };
             } else if (!order_node.IsNull()) {
-                QN_THROW_FUNC("parse_tilt_scheme_",
-                              "tilt_scheme:order has an invalid type ({}). Should be a map or be left empty",
+                QN_THROW_FUNC("parse_experiment_",
+                              "experiment:collection_order has an invalid type ({}). Should be a map or be left empty",
                               order_node.Type());
             } else {
                 return std::nullopt;
@@ -193,7 +194,7 @@ namespace {
         };
 
         const auto parse_parameter = [&](const std::string& parameter_name, f64 fallback) -> f64 {
-            const auto parameter_node = tilt_scheme_node[parameter_name];
+            const auto parameter_node = experiment_node[parameter_name];
             if (parameter_node.IsScalar())
                 return parameter_node.as<f64>(fallback);
             else if (parameter_node.IsNull())
@@ -206,40 +207,45 @@ namespace {
         };
 
         // Use max() to say that the angle offsets are not specified.
-        Options::TiltScheme tilt_scheme;
-        tilt_scheme.order = parse_order_to_optional(tilt_scheme_node["order"]);
-        tilt_scheme.rotation_offset = parse_parameter("rotation_offset", std::numeric_limits<f64>::max());
-        tilt_scheme.tilt_offset = parse_parameter("tilt_offset", std::numeric_limits<f64>::max());
-        tilt_scheme.elevation_offset = parse_parameter("elevation_offset", std::numeric_limits<f64>::max());
-        tilt_scheme.voltage = parse_parameter("voltage", 300.);
-        tilt_scheme.amplitude = parse_parameter("amplitude", 0.07);
-        tilt_scheme.cs = parse_parameter("cs", 2.7);
-        tilt_scheme.phase_shift = parse_parameter("phase_shift", 0.);
-        tilt_scheme.astigmatism_value = parse_parameter("astigmatism_value", 0.);
-        tilt_scheme.astigmatism_angle = parse_parameter("astigmatism_angle", 0.);
+        constexpr f64 UNSPECIFIED_VALUE = std::numeric_limits<f64>::max();
+        Options::Experiment experiment;
+        experiment.collection_order = parse_collection_order_to_optional(experiment_node["collection_order"]);
+        experiment.rotation_offset = parse_parameter("rotation_offset", UNSPECIFIED_VALUE);
+        experiment.tilt_offset = parse_parameter("tilt_offset", UNSPECIFIED_VALUE);
+        experiment.elevation_offset = parse_parameter("elevation_offset", UNSPECIFIED_VALUE);
+        experiment.voltage = parse_parameter("voltage", 300.);
+        experiment.amplitude = parse_parameter("amplitude", 0.07);
+        experiment.cs = parse_parameter("cs", 2.7);
+        experiment.phase_shift = parse_parameter("phase_shift", 0.);
+        experiment.astigmatism_value = parse_parameter("astigmatism_value", 0.);
+        experiment.astigmatism_angle = parse_parameter("astigmatism_angle", 0.);
+        experiment.thickness = parse_parameter("thickness", UNSPECIFIED_VALUE);
 
         // Angle range (this is optional).
-        tilt_scheme.phase_shift = MetadataSlice::to_angle_range(tilt_scheme.phase_shift);
-        tilt_scheme.astigmatism_angle = MetadataSlice::to_angle_range(tilt_scheme.astigmatism_angle);
+        experiment.phase_shift = MetadataSlice::to_angle_range(experiment.phase_shift);
+        experiment.astigmatism_angle = MetadataSlice::to_angle_range(experiment.astigmatism_angle);
 
         // Sanitize.
-        QN_CHECK(tilt_scheme.voltage >= 50 && tilt_scheme.voltage <= 450,
-                 "tilt_scheme::voltage={} (kV). Value is not supported",
-                 tilt_scheme.voltage);
-        QN_CHECK(tilt_scheme.amplitude >= 0 && tilt_scheme.amplitude <= 0.2,
-                 "tilt_scheme::amplitude={} (fraction). Value is not supported",
-                 tilt_scheme.amplitude);
-        QN_CHECK(tilt_scheme.cs >= 0 && tilt_scheme.cs <= 4,
-                 "tilt_scheme::cs={} (micrometers). Value is not supported",
-                 tilt_scheme.cs);
-        QN_CHECK(tilt_scheme.phase_shift >= 0 && tilt_scheme.phase_shift <= 45,
-                 "tilt_scheme::phase_shift={} (degrees). Value is not supported",
-                 tilt_scheme.phase_shift);
-        QN_CHECK(tilt_scheme.astigmatism_value >= 0 && tilt_scheme.astigmatism_value <= 0.5,
-                 "tilt_scheme::astigmatism_value={} (micrometers). Value is not supported",
-                 tilt_scheme.astigmatism_value);
+        QN_CHECK(experiment.voltage >= 50 && experiment.voltage <= 450,
+                 "experiment::voltage={} (kV). Value is not supported",
+                 experiment.voltage);
+        QN_CHECK(experiment.amplitude >= 0 && experiment.amplitude <= 0.2,
+                 "experiment::amplitude={} (fraction). Value is not supported",
+                 experiment.amplitude);
+        QN_CHECK(experiment.cs >= 0 && experiment.cs <= 4,
+                 "experiment::cs={} (micrometers). Value is not supported",
+                 experiment.cs);
+        QN_CHECK(experiment.phase_shift >= 0 && experiment.phase_shift <= 45,
+                 "experiment::phase_shift={} (degrees). Value is not supported",
+                 experiment.phase_shift);
+        QN_CHECK(experiment.astigmatism_value >= 0 && experiment.astigmatism_value <= 0.5,
+                 "experiment::astigmatism_value={} (micrometers). Value is not supported",
+                 experiment.astigmatism_value);
+        QN_CHECK(experiment.thickness == UNSPECIFIED_VALUE ||
+                 (experiment.thickness > 20. && experiment.thickness < 400.),
+                 "experiment.thickness={}nm. Value is not supported");
 
-        return tilt_scheme;
+        return experiment;
     }
 
     auto parse_preprocessing_(YAML::Node preprocessing_node) -> Options::Preprocessing {
@@ -290,6 +296,7 @@ namespace {
                 "fit_astigmatism",
                 "use_initial_pairwise_alignment",
                 "use_ctf_estimate",
+                "use_thickness_estimate",
                 "use_projection_matching",
         };
         sanitize_node_(alignment_node, QN_OPTIONS_ALIGNMENT);
@@ -313,9 +320,10 @@ namespace {
         alignment.fit_tilt_offset = parse_parameter("fit_tilt_offset", true);
         alignment.fit_elevation_offset = parse_parameter("fit_elevation_offset", true);
         alignment.fit_phase_shift = parse_parameter("fit_phase_shift", false);
-        alignment.fit_astigmatism = parse_parameter("fit_astigmatism", true);
+        alignment.fit_astigmatism = parse_parameter("fit_astigmatism", false);
         alignment.use_initial_pairwise_alignment = parse_parameter("use_initial_pairwise_alignment", true);
         alignment.use_ctf_estimate = parse_parameter("use_ctf_estimate", true);
+        alignment.use_thickness_estimate = parse_parameter("use_thickness_estimate", true);
         alignment.use_projection_matching = parse_parameter("use_projection_matching", true);
         return alignment;
     }
@@ -416,7 +424,7 @@ namespace qn {
 
             constexpr std::array QN_OPTIONS_{
                     "files",
-                    "tilt_scheme",
+                    "experiment",
                     "preprocessing",
                     "alignment",
                     "reconstruction",
@@ -425,7 +433,7 @@ namespace qn {
             sanitize_node_(node, QN_OPTIONS_);
 
             files = parse_files_(node["files"]);
-            tilt_scheme = parse_tilt_scheme_(node["tilt_scheme"]);
+            experiment = parse_experiment_(node["experiment"]);
             preprocessing = parse_preprocessing_(node["preprocessing"]);
             alignment = parse_alignment_(node["alignment"]);
             // TODO reconstruction

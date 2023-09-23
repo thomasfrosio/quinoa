@@ -150,7 +150,7 @@ namespace qn {
         ) const {
             QN_CHECK(output.shape()[0] == metadata.ssize(), "The array and metadata don't match");
             const auto smooth_edge_size = static_cast<f32>(smooth_edge(smooth_edge_percent));
-            noa::geometry::ellipse(
+            noa::geometry::rectangle(
                     input, output,
                     /*center=*/ m_common_area_center.as<f32>(),
                     /*radius=*/ m_common_area_radius.as<f32>() - smooth_edge_size,
@@ -166,7 +166,7 @@ namespace qn {
         ) const {
             QN_CHECK(input.shape()[0] == 1, "The input must not be batched");
             const auto smooth_edge_size = static_cast<f32>(smooth_edge(smooth_edge_percent));
-            noa::geometry::ellipse(
+            noa::geometry::rectangle(
                     input, output,
                     /*center=*/ m_common_area_center.as<f32>(),
                     /*radius=*/ m_common_area_radius.as<f32>() - smooth_edge_size,
@@ -181,7 +181,7 @@ namespace qn {
         ) const {
             QN_CHECK(output.shape()[0] == metadata.ssize(), "The array and metadata don't match");
             const auto smooth_edge_size = static_cast<f32>(smooth_edge(smooth_edge_percent));
-            noa::geometry::ellipse(
+            noa::geometry::rectangle(
                     {}, output,
                     /*center=*/ m_common_area_center.as<f32>(),
                     /*radius=*/ m_common_area_radius.as<f32>() - smooth_edge_size,
@@ -196,7 +196,7 @@ namespace qn {
         ) const {
             QN_CHECK(output.shape()[0] == 1, "The input must not be batched");
             const auto smooth_edge_size = static_cast<f32>(smooth_edge(smooth_edge_percent));
-            noa::geometry::ellipse(
+            noa::geometry::rectangle(
                     {}, output,
                     /*center=*/ adjust_center_(output.shape().filter(2,3)).as<f32>(),
                     /*radius=*/ radius().as<f32>() - smooth_edge_size,

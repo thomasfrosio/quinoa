@@ -5,15 +5,15 @@ files:
   input_exposure:
   output_directory: "/home/thomas/Projects/quinoa/tests/ribo_ctf"
 
-tilt_scheme:
-  order:
+experiment:
+  collection_order:
     starting_angle: 0
     starting_direction: +1
-    angle_increment: 3
-    group: 3
+    tilt_increment: 3
+    group_of: 3
     exclude_start: false
     per_view_exposure: 3
-  rotation_offset:
+  rotation_offset: 175.1
   tilt_offset:
   elevation_offset:
   voltage:
@@ -22,22 +22,24 @@ tilt_scheme:
   phase_shift:
   astigmatism_value:
   astigmatism_angle:
+  thickness: 80
 
 preprocessing:
   run:
-  exclude_blank_views: false
-  exclude_view_indexes: 0
+  exclude_blank_views: true
+  exclude_view_indexes:
 
 alignment:
   run:
-  fit_rotation_offset:
+  fit_rotation_offset: false
   fit_tilt_offset:
   fit_elevation_offset:
   fit_phase_shift: false
   fit_astigmatism: false
   use_initial_pairwise_alignment: true
   use_ctf_estimate: false
-  use_projection_matching: false
+  use_thickness_estimate: false
+  use_projection_matching: true
 
 reconstruction:
   run: false
@@ -48,4 +50,5 @@ reconstruction:
 compute:
   device: gpu
   n_cpu_threads: 8
+  register_input_stack:
   log_level: trace

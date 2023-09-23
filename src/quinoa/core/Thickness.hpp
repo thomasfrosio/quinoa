@@ -7,6 +7,7 @@
 namespace qn {
     struct EstimateSampleThicknessParameters {
         f64 resolution;
+        f64 initial_thickness_nm;
         f64 maximum_thickness_nm;
         bool adjust_com;
         Device compute_device;

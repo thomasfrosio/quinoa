@@ -1,9 +1,12 @@
+#include <random>
+
 #include <noa/FFT.hpp>
 #include <noa/core/utils/Timer.hpp>
 
 #include "quinoa/core/Ewise.hpp"
 #include "quinoa/core/Optimizer.hpp"
 #include "quinoa/core/ProjectionMatching.hpp"
+#include "quinoa/core/CubicGrid.hpp"
 #include "quinoa/io/Logging.h"
 
 namespace {
@@ -14,7 +17,7 @@ namespace {
     // of references for the next projected-reference.
     class Projector {
     private:
-        // Layout: [reference 0, ..., reference n, target, projected_reference]
+        // Layout: [reference 0, ..., reference n, target, projected_reference_dst, projected_reference_src]
         i64 m_n_references{0};
         View<c32> m_slices_padded_rfft;
         View<f32> m_weights_padded_rfft;
@@ -22,6 +25,7 @@ namespace {
 
         CTFAnisotropic64 m_average_ctf;
         Array<f32> m_two_values;
+        Array<CTFAnisotropic64> m_ctfs;
         Array<Quaternion<f32>> m_insertion_inv_rotations;
         Array<f32> m_peak_window;
 
@@ -40,9 +44,12 @@ namespace {
             // Small utility arrays...
             const auto device = slices_padded_rfft.device();
             const auto options = ArrayOption(device, Allocator::MANAGED);
+            const auto options_cpu = ArrayOption(Device{}, Allocator::MANAGED);
+
             m_two_values = noa::memory::empty<f32>({2, 1, 1, 1}, options);
-            m_insertion_inv_rotations = noa::memory::empty<Quaternion<f32>>({slices_padded_rfft.shape()[0], 1, 1, 1}, options);
-            m_peak_window = noa::memory::empty<f32>({1,1,128,128}, {device, Allocator::DEFAULT_ASYNC});
+            m_ctfs = noa::memory::empty<CTFAnisotropic64>(2, options_cpu);
+            m_insertion_inv_rotations = noa::memory::empty<Quaternion<f32>>({slices_padded_rfft.shape()[0], 1, 1, 1}, options_cpu);
+            m_peak_window = noa::memory::empty<f32>({1, 1, 128, 128}, {device, Allocator::DEFAULT_ASYNC});
         }
 
     public:
@@ -55,11 +62,29 @@ namespace {
                 const CommonArea& common_area,
                 const ProjectionMatchingParameters& parameters
         ) -> std::pair<f64, Vec2<f64>> {
+            // Add the reference to the list of previous reference and project.
             increment_reference_count_();
             preprocess_(stack, reference_metadata, target_metadata, common_area, parameters);
             fourier_insert_and_extract_(reference_metadata, target_metadata, parameters);
-            postprocessing_(target_metadata, parameters);
-            return cross_correlate_(target_metadata, common_area, parameters);
+
+            // Peak the best shift.
+            Vec2<f64> final_shifts{};
+            f64 final_score;
+            auto updated_target_metadata = target_metadata;
+
+            for (auto _: noa::irange(200)) {
+                postprocessing_(stack, updated_target_metadata, common_area, parameters);
+                auto [i_score, i_shift] = cross_correlate_(updated_target_metadata, common_area, parameters);
+
+                updated_target_metadata.shifts += i_shift;
+                final_score = i_score;
+                final_shifts += i_shift;
+
+//                qn::Logger::trace("i={}, i_score={:.6f}, i_shift={::.3f}", i, i_score, i_shift);
+                if (noa::all(noa::math::abs(i_shift) < parameters.shift_tolerance))
+                    break;
+            }
+            return {final_score, final_shifts};
         }
 
     private:
@@ -67,7 +92,8 @@ namespace {
         [[nodiscard]] constexpr auto n_references_() const noexcept -> i64 { return m_n_references; }
         [[nodiscard]] constexpr auto reference_index_() const noexcept -> i64 { return m_n_references - 1; }
         [[nodiscard]] constexpr auto target_index_() const noexcept -> i64 { return m_n_references; }
-        [[nodiscard]] constexpr auto projected_index_() const noexcept -> i64 { return m_n_references + 1; }
+        [[nodiscard]] constexpr auto projected_dst_index_() const noexcept -> i64 { return m_n_references + 1; }
+        [[nodiscard]] constexpr auto projected_src_index_() const noexcept -> i64 { return m_n_references + 2; }
 
         [[nodiscard]] auto size_padded_() const noexcept -> i64 {
             return m_slices_padded_rfft.shape()[2];
@@ -88,18 +114,21 @@ namespace {
             return (shape_padded_() - shape_original_()).vec();
         }
 
-        [[nodiscard]] auto reference_and_target_ctfs_(
+        [[nodiscard]] auto compute_device() const noexcept -> Device {
+            return m_two_slices.device();
+        }
+
+        [[nodiscard]] auto set_reference_and_target_ctfs_(
                 const MetadataSlice& reference_metadata,
                 const MetadataSlice& target_metadata
-        ) const -> std::array<CTFAnisotropic64, 2> {
+        ) const {
             // This is the sampling function, and it contains:
             //  - The CTF set to the defocus of the slice. The defocus gradient should be negligible
             //    thanks to the common-area mask.
             //  - Approximated exposure filter using the CTF B-factor.
             //  - Approximated relative-SNR from electron mean-free-path, using cos(tilt) as scaling factor.
             const auto [_, defocus_astig, defocus_angle] = m_average_ctf.defocus();
-            std::array<CTFAnisotropic64, 2> ctfs;
-
+            Span ctfs = m_ctfs.span();
             ctfs[0] = m_average_ctf;
             ctfs[0].set_defocus({reference_metadata.defocus, defocus_astig, defocus_angle});
             ctfs[0].set_bfactor(-reference_metadata.exposure[1] * 2);
@@ -109,8 +138,6 @@ namespace {
             ctfs[1].set_defocus({target_metadata.defocus, defocus_astig, defocus_angle});
             ctfs[1].set_bfactor(-target_metadata.exposure[1] * 2);
             ctfs[1].set_scale(noa::math::cos(noa::math::deg2rad(target_metadata.angles[1])));
-
-            return ctfs;
         }
 
         void preprocess_(
@@ -120,67 +147,63 @@ namespace {
                 const CommonArea& common_area,
                 const ProjectionMatchingParameters& parameters
         ) {
-            noa::Timer timer;
-            timer.start();
-            const auto reference_and_target_slice = noa::indexing::Slice{reference_index_(), target_index_() + 1};
-
             // Copy from stack and apply the common-area mask.
-            const View<f32> reference_and_target = m_two_slices;
-            common_area.mask_view(
-                    stack.subregion(reference_metadata.index),
-                    reference_and_target.subregion(0),
-                    reference_metadata,
-                    parameters.smooth_edge_percent);
-            common_area.mask_view( // TODO save the mask for the cross-correlation?
-                    stack.subregion(target_metadata.index),
-                    reference_and_target.subregion(1),
-                    target_metadata,
-                    parameters.smooth_edge_percent);
-
-            // Extract necessary views.
-            const View<c32> reference_and_target_padded_rfft = m_slices_padded_rfft
-                    .subregion(reference_and_target_slice);
-            const View<f32> reference_and_target_padded = noa::fft::alias_to_real(
-                    reference_and_target_padded_rfft, shape_padded_().set<0>(2));
+            const View<f32> reference = m_two_slices.subregion(0);
+//            common_area.mask_view(
+//                    stack.subregion(reference_metadata.index),
+//                    reference.subregion(0),
+//                    reference_metadata,
+//                    parameters.smooth_edge_percent);
+            stack.subregion(reference_metadata.index).to(reference.subregion(0));
 
             // Zero-(right-)pad and in-place rfft.
-            noa::memory::resize(reference_and_target, reference_and_target_padded, {}, border_right_());
-            if (!parameters.debug_directory.empty()) {
-                noa::io::save(reference_and_target_padded,
-                              parameters.debug_directory /
-                              fmt::format("reference_and_target_padded_{:>02}.mrc", target_metadata.index));
-            }
-            noa::fft::r2c(reference_and_target_padded, reference_and_target_padded_rfft);
-
-            // Compute and apply the sampling functions of both the reference and target.
-            // The current sampling function simply contains the exposure filter and the average CTF of the slice.
-            // The CTF at the tilt-axis (this is still per-slice) should be a first good approximation for the
-            // sampling function. The field-of-view is restrained to the common-area, so it should be good even
-            // for tilted slices. Also note that the CTF is multiplied once with the slice, but since the microscope
-            // already multiplies the specimen by the CTF once, the sampling function ends up being CTF^2.
-            const auto ctfs = reference_and_target_ctfs_(reference_metadata, target_metadata);
-            noa::memory::fill(m_weights_padded_rfft.subregion(reference_and_target_slice), 1.f);
-//            noa::signal::fft::ctf_anisotropic<noa::fft::H2H>( // weights
-//                    m_weights_padded_rfft.subregion(reference_and_target_slice),
-//                    shape_padded_().set<0>(2), View(ctfs.data(), 2),
-//                    /*ctf_abs=*/ false, /*ctf_square=*/ true
-//            );
-//            noa::signal::fft::ctf_anisotropic<noa::fft::H2H>( // data
-//                    reference_and_target_padded_rfft, reference_and_target_padded_rfft,
-//                    shape_padded_().set<0>(2), View(ctfs.data(), 2)
-//            );
+            const View<c32> reference_padded_rfft = m_slices_padded_rfft.subregion(reference_index_());
+            const View<f32> reference_padded = noa::fft::alias_to_real(reference_padded_rfft, shape_padded_());
+            noa::memory::resize(reference, reference_padded, {}, border_right_());
+            noa::fft::r2c(reference_padded, reference_padded_rfft);
 
             // Pre-processing for Fourier insertion.
             // 1. Remap/fftshift, since the Fourier insertion requires a centered input.
             // 2. Phase-shift the rotation-center to the origin. Note that the right-padding doesn't change the center.
-            const View<c32> reference_padded_rfft = reference_and_target_padded_rfft.subregion(0);
             noa::fft::remap(noa::fft::H2HC, reference_padded_rfft, reference_padded_rfft, shape_padded_());
             noa::signal::fft::phase_shift_2d<noa::fft::HC2HC>(
                     reference_padded_rfft, reference_padded_rfft, shape_padded_(),
                     (-center_original_() - reference_metadata.shifts).as<f32>());
 
-            reference_padded_rfft.eval();
-            fmt::print("preprocessing took {}ms\n", timer.elapsed());
+            // Compute and apply the sampling functions of both the reference and target.
+            // The current sampling function simply contains the exposure filter and the average CTF of the slice.
+            // The CTF at the tilt-axis (this is still per-slice) should be a first good approximation for the
+            // sampling function. The field-of-view is restrained to the common-area, so it should be good even
+            // for tilted slices.
+            if (parameters.use_ctfs) {
+                set_reference_and_target_ctfs_(reference_metadata, target_metadata);
+                const auto ctfs = m_ctfs.view().as(compute_device().type(), /*prefetch=*/ true);
+
+                const auto slice = noa::indexing::Slice{reference_index_(), target_index_() + 1};
+                const auto reference_and_target_padded_rfft = m_slices_padded_rfft.subregion(slice);
+                const auto reference_and_target_weights_padded_rfft = m_weights_padded_rfft.subregion(slice);
+
+                // Note that the CTF is multiplied once onto the data, but since the microscope already multiplies
+                // the specimen with the CTF once, the sampling function should instead be CTF^2.
+                noa::signal::fft::ctf_anisotropic<noa::fft::H2H>( // data
+                        reference_and_target_padded_rfft, reference_and_target_padded_rfft,
+                        shape_padded_().set<0>(2), ctfs
+                );
+                noa::signal::fft::ctf_anisotropic<noa::fft::H2H>( // weights
+                        reference_and_target_weights_padded_rfft,
+                        shape_padded_().set<0>(2), ctfs,
+                        /*ctf_abs=*/ false, /*ctf_square=*/ true
+                );
+
+                // These are also used for the projection, so center them.
+                const View<f32> reference_weights_padded_rfft = reference_and_target_weights_padded_rfft.subregion(0);
+                noa::fft::remap(noa::fft::H2HC, reference_weights_padded_rfft,
+                                reference_weights_padded_rfft, shape_padded_());
+
+                noa::io::save(reference_and_target_weights_padded_rfft, parameters.debug_directory / "weights.mrc");
+            } else {
+                noa::memory::fill(m_weights_padded_rfft.subregion(reference_index_()), 1.f);
+            }
         }
 
         void fourier_insert_and_extract_(
@@ -188,8 +211,6 @@ namespace {
                 const MetadataSlice& target_metadata,
                 const ProjectionMatchingParameters& parameters
         ) {
-            noa::Timer timer;
-            timer.start();
             // The rotation is the CCW angle of the tilt-axis in the slices. For the projection, we want to align
             // the tilt-axis along the Y axis, so subtract this angle and then apply the tilt and elevation.
             // For the Fourier insertion, noa needs the inverse rotation matrix, hence the transposition.
@@ -201,6 +222,7 @@ namespace {
                                     Vec3<f64>{-insertion_angles[0], insertion_angles[1], insertion_angles[2]},
                                     "zyx", /*intrinsic=*/ false).transpose().as<f32>()
                     );
+
             const Float33 extraction_fwd_rotation = noa::geometry::euler2matrix(
                     Vec3<f64>{-extraction_angles[0], extraction_angles[1], extraction_angles[2]},
                     "zyx", /*intrinsic=*/ false).as<f32>();
@@ -216,67 +238,82 @@ namespace {
 
             const auto references_slice = noa::indexing::Slice{0, n_references_()};
             const auto slices_padded_shape = shape_padded_().set<0>(n_references_());
+            auto insertion_inv_rotations = m_insertion_inv_rotations
+                    .view().subregion(references_slice)
+                    .as(compute_device().type(), /*prefetch=*/ true);
+
+            // Note: This is by far the most expensive step!
             noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
                     m_slices_padded_rfft.subregion(references_slice),
                     m_weights_padded_rfft.subregion(references_slice), slices_padded_shape,
-                    m_slices_padded_rfft.subregion(projected_index_()),
-                    m_weights_padded_rfft.subregion(projected_index_()), shape_padded_(),
-                    Float22{}, m_insertion_inv_rotations.subregion(references_slice),
+                    m_slices_padded_rfft.subregion(projected_src_index_()),
+                    m_weights_padded_rfft.subregion(projected_src_index_()), shape_padded_(),
+                    Float22{}, insertion_inv_rotations,
                     Float22{}, extraction_fwd_rotation,
                     i_windowed_sinc, o_windowed_sinc,
                     /*add_to_output=*/ false,
                     /*correct_multiplicity=*/ true);
-
-            m_weights_padded_rfft.eval();
-            fmt::print("projection took {}ms\n", timer.elapsed());
         }
 
         void postprocessing_(
+                const View<const f32>& stack,
                 const MetadataSlice& target_metadata,
+                const CommonArea& common_area,
                 const ProjectionMatchingParameters& parameters
         ) {
-            noa::Timer timer;
-            timer.start();
-
-            // We have first the target and then the projected-reference.
-            const auto target_and_projected_slice = noa::indexing::Slice{target_index_(), projected_index_() + 1};
+            // We have first the target, then the buffer for the post-processed projected-reference (projected_dst),
+            // and then the projected-reference that should be kept intact (projected_src).
+            const auto target_and_projected_slice = noa::indexing::Slice{target_index_(), target_index_() + 2};
             const View<c32> target_and_projected_padded_rfft = m_slices_padded_rfft
-                    .subregion(target_and_projected_slice);
-            const View<f32> target_and_projected_weights_padded_rfft = m_weights_padded_rfft
                     .subregion(target_and_projected_slice);
 
             // Applying the weights of the projected-reference onto the target and vice versa.
             const auto target_padded_rfft = target_and_projected_padded_rfft.subregion(0);
             const auto projected_padded_rfft = target_and_projected_padded_rfft.subregion(1);
 
-            noa::ewise_binary( // target * projected_weights
-                    target_padded_rfft,
-                    target_and_projected_weights_padded_rfft.subregion(1),
-                    target_padded_rfft, noa::multiply_t{});
-            noa::ewise_binary( // projected * target_weights
-                    projected_padded_rfft,
-                    target_and_projected_weights_padded_rfft.subregion(0),
-                    projected_padded_rfft, noa::multiply_t{});
+            // First, prepare the target.
+            // 1. Copy from stack and apply the common-area mask.
+            // 2. Zero-pad and in-place rfft.
+            const View<f32> target = m_two_slices.subregion(0);
+//            common_area.mask_view(
+//                    stack.subregion(target_metadata.index),
+//                    target, target_metadata,
+//                    parameters.smooth_edge_percent);
+            stack.subregion(target_metadata.index).to(target);
+            const View<f32> target_padded = noa::fft::alias_to_real(target_padded_rfft, shape_padded_());
+            noa::memory::resize(target, target_padded, {}, border_right_());
+            noa::fft::r2c(target_padded, target_padded_rfft);
 
-            // Center projection back and shift to the target reference-frame.
+            // Then prepare the projected-reference.
+            // 1. Copy it to a temporary buffer, so we can reuse it later with a difference target shift.
+            // 2. Center projection back and shift to the target reference-frame.
             noa::signal::fft::phase_shift_2d<noa::fft::H2H>(
-                    projected_padded_rfft, projected_padded_rfft, shape_padded_(),
+                    m_slices_padded_rfft.subregion(projected_src_index_()), projected_padded_rfft, shape_padded_(),
                     (center_original_() + target_metadata.shifts).as<f32>());
 
-            noa::signal::fft::bandpass<noa::fft::H2H>(
-                    target_and_projected_padded_rfft, target_and_projected_padded_rfft,
-                    shape_padded_().set<0>(2),
-                    parameters.highpass_filter[0], parameters.lowpass_filter[0],
-                    parameters.highpass_filter[1], parameters.lowpass_filter[1]);
+            // Apply the weights.
+            noa::ewise_binary( // target * projected_weights
+                    target_padded_rfft,
+                    m_weights_padded_rfft.subregion(projected_src_index_()),
+                    target_padded_rfft, noa::multiply_t{});
+            if (parameters.use_ctfs) {
+                noa::ewise_binary( // projected * target_weights
+                        projected_padded_rfft,
+                        m_weights_padded_rfft.subregion(target_index_()),
+                        projected_padded_rfft, noa::multiply_t{});
+            }
+
+//            noa::signal::fft::bandpass<noa::fft::H2H>(
+//                    target_and_projected_padded_rfft, target_and_projected_padded_rfft,
+//                    shape_padded_().set<0>(2),
+//                    parameters.highpass_filter[0], parameters.lowpass_filter[0],
+//                    parameters.highpass_filter[1], parameters.lowpass_filter[1]);
 
             // Go back to real-space and crop.
             const View<f32> target_and_projected_padded = noa::fft::alias_to_real(
                     target_and_projected_padded_rfft, shape_padded_().set<0>(2));
             noa::fft::c2r(target_and_projected_padded_rfft, target_and_projected_padded);
             noa::memory::resize(target_and_projected_padded, m_two_slices, {}, -border_right_());
-
-            m_two_slices.eval();
-            fmt::print("postprocessing took {}ms\n", timer.elapsed());
         }
 
         auto cross_correlate_(
@@ -284,17 +321,16 @@ namespace {
                 const CommonArea& common_area,
                 const ProjectionMatchingParameters& parameters
         ) -> std::pair<f64, Vec2<f64>> {
-            noa::Timer timer;
-            timer.start();
-            const auto target_and_projected_slice = noa::indexing::Slice{target_index_(), projected_index_() + 1};
+            const auto target_and_projected_slice = noa::indexing::Slice{target_index_(), target_index_() + 2};
 
             // 1. Compute the mask.
             // To save memory, reuse the weights to store the mask.
-            const auto mask = m_weights_padded_rfft
-                    .subregion(target_and_projected_slice).flat(/*axis=*/ 0)
+            const auto mask = m_slices_padded_rfft
+                    .subregion(target_and_projected_slice).flat(/*axis=*/ 0).as<f32>()
                     .subregion(noa::indexing::Slice{0, shape_original_().elements()})
                     .reshape(shape_original_());
-            common_area.compute(mask, target_metadata, parameters.smooth_edge_percent);
+//            common_area.compute(mask, target_metadata, parameters.smooth_edge_percent);
+            noa::memory::fill(mask, 1.f);
 
             // 2. Apply the mask to both the target and projected reference.
             const auto target_and_projected = m_two_slices;
@@ -337,8 +373,8 @@ namespace {
             noa::fft::r2c(target_and_projected_padded, target_and_projected_padded_rfft, noa::fft::Norm::NONE);
 
             // To save memory, reuse the weights to store the cross-correlation map.
-            const auto xmap = m_weights_padded_rfft
-                    .subregion(target_and_projected_slice).flat(/*axis=*/ 0)
+            const auto xmap = m_slices_padded_rfft
+                    .subregion(target_and_projected_slice).flat(/*axis=*/ 0).as<f32>()
                     .subregion(noa::indexing::Slice{0, shape_padded_().elements()})
                     .reshape(shape_padded_());
 
@@ -392,9 +428,6 @@ namespace {
                     static_cast<f64>(norms.span()[1]) *             // projected norm
                     static_cast<f64>(shape_padded_().elements());   // fft scale
             const auto score = static_cast<f64>(peak_value) / denominator;
-
-            fmt::print("cross-correlation took {}ms\n", timer.elapsed());
-
             return {score, shift};
         }
     };
@@ -408,14 +441,18 @@ namespace {
         const CommonArea* m_common_area;
         const ProjectionMatchingParameters* m_parameters;
 
-        std::vector<f64> m_scores;
         Memoizer m_memoizer;
+        Vec2<f64> m_tilt_minmax;
+        Array<f64> m_scores;
+        Array<f64> m_spline_weights;
+
+        i64 m_n_evaluations{0}; // just for logging
 
     public:
         Fitter(
                 const View<const f32>& stack,
                 Projector& projector,
-                const MetadataStack& metadata,
+                const MetadataStack& metadata, // already sorted in the desired projection order
                 const CommonArea& common_area,
                 const ProjectionMatchingParameters& parameters
         ) :
@@ -425,27 +462,77 @@ namespace {
                 m_common_area(&common_area),
                 m_parameters(&parameters)
         {
-            m_scores.reserve(metadata.size());
-            m_memoizer = Memoizer(/*n_parameters=*/ 1, /*resolution=*/ 6);
+            m_scores = noa::memory::empty<f64>({parameters.rotation_resolution, 1, 1, metadata.ssize() - 1});
+            m_memoizer = Memoizer(/*n_parameters=*/ 1, /*resolution=*/ 25);
+
+            const auto minmax = metadata.minmax_tilts();
+            m_tilt_minmax = {minmax.first, minmax.second};
+
+            // Precompute the spline weights if necessary.
+            if (parameters.rotation_resolution > 1) {
+                m_spline_weights = noa::memory::like<f64>(m_scores);
+
+                for (auto point: noa::irange(parameters.rotation_resolution)) {
+                    const auto span = m_spline_weights.subregion(point).span();
+
+                    i64 i{0}; // TODO C++20 initializer for-range
+                    for (const auto& slice: metadata) {
+                        const f64 normalized_tilt = to_normalized_tilt_(slice.angles[1]);
+                        const f64 rotation_offset = CubicSplineGrid<f64, 1>::weight(
+                                normalized_tilt, parameters.rotation_resolution, point);
+                        span[i++] = rotation_offset;
+                    }
+                }
+            }
         }
 
-        auto memoizer() -> Memoizer& { return m_memoizer; }
+    private:
+        auto memoizer_() -> Memoizer& { return m_memoizer; }
 
-        auto align(const f64 rotation_offset) -> std::pair<f64, MetadataStack> {
-            m_scores.clear();
+        [[nodiscard]] auto to_normalized_tilt_(f64 tilt) const noexcept -> f64 {
+            const auto& [min, max] = m_tilt_minmax;
+            return (tilt - min) / (max - min);
+        }
+
+        [[nodiscard]] auto spline_weights_(i64 point) const -> Span<f64> {
+            return m_spline_weights.subregion(point).span();
+        }
+
+        [[nodiscard]] auto scores_(i64 batch = 0) const -> Span<f64> { return m_scores.subregion(batch).span(); }
+
+        [[nodiscard]] auto total_score_(i64 batch = 0) const -> f64 {
+            const auto span = scores_(batch);
+            return std::accumulate(span.begin(), span.end(), f64{0}) / static_cast<f64>(span.size());
+        }
+
+        [[nodiscard]] static auto weighted_mean_(const Span<f64>& scores, const Span<f64>& weights) -> f64 {
+            f64 weighted_sum{0}, sum_weights{0};
+            for (i64 i = 0; i < scores.ssize(); ++i) {
+                weighted_sum += scores[i] * weights[i];
+                sum_weights += weights[i];
+            }
+            return weighted_sum / sum_weights;
+        }
+
+    public:
+        [[nodiscard]] auto n_evaluations() const noexcept -> i64 { return m_n_evaluations; }
+
+        auto align(const Span<f64>& rotation_offsets, i64 batch = 0) -> MetadataStack {
             m_projector->reset();
+            auto updated_metadata = *m_metadata; // the original metadata should stay unchanged
 
-            // Take a copy of the metadata, because the projection-matching updates it and
-            // 1) we actually don't care about the shift updates from the projection-matching at this point,
-            // 2) we want to use the same metadata for every evaluation.
-            auto updated_metadata = *m_metadata;
-            updated_metadata.sort("exposure");
-            updated_metadata.add_global_angles({rotation_offset, 0, 0});
+            // Update the metadata with the new rotation angles.
+            const auto spline = CubicSplineGrid<f64, 1>(rotation_offsets.ssize(), 1, rotation_offsets.data());
+            for (auto& slice: updated_metadata) {
+                const f64 normalized_tilt = to_normalized_tilt_(slice.angles[1]);
+                const f64 rotation_offset = spline.interpolate(normalized_tilt);
+                slice.angles[0] = MetadataSlice::to_angle_range(slice.angles[0] + rotation_offset);
+            }
 
-            qn::Logger::trace("Computing cost with rotation_offset={:.8f}", rotation_offset);
-            for (i64 target_index = 1; target_index < static_cast<i64>(updated_metadata.size()); ++target_index) {
-
-                MetadataSlice& new_reference_slice = updated_metadata[target_index - 1];
+            // Projection-matching of the entire stack.
+            auto scores_span = scores_(batch);
+            for (i64 target_index = 1; target_index < updated_metadata.ssize(); ++target_index) {
+                const MetadataSlice& new_reference_slice = updated_metadata[target_index - 1];
                 MetadataSlice& target_slice = updated_metadata[target_index];
 
                 const auto [score, shift_offset] = m_projector->project_and_correlate_next(
@@ -457,55 +544,94 @@ namespace {
                 target_slice.shifts += shift_offset;
 
                 // Collect the score of the slice-alignment.
-                m_scores.push_back(score);
+                scores_span[target_index - 1] = score;
 
-                qn::Logger::trace("{:>02}: score={:.8f}, shift_offset={::.8f}",
-                                  target_index, score, shift_offset);
+//                qn::Logger::trace("{:>02}: tilt={} score={:.8f}, shift_offset={::.8f}",
+//                                  target_index, target_slice.angles[1], score, shift_offset);
             }
 
-            const auto final_score =
-                    std::accumulate(m_scores.begin(), m_scores.end(), f64{0}) /
-                    static_cast<f64>(m_scores.size());
-            qn::Logger::trace("final_score={:.8f}", final_score);
-            return {final_score, updated_metadata};
+            ++m_n_evaluations;
+            return updated_metadata;
         }
 
-        auto cost(const f64 rotation_offset) -> f64 {
-            auto [score, _] = align(rotation_offset);
-            return score;
+        auto cost(const Span<f64>& rotation_offset, i64 batch = 0) -> f64 {
+            align(rotation_offset, batch);
+            return total_score_(batch);
         }
 
         static auto maximization_function(
-                u32 n_parameters, [[maybe_unused]] const f64* parameters,
-                f64* gradients, void* instance
+                u32 n_parameters, const f64* parameters, f64* gradients, void* instance
         ) -> f64 {
             noa::Timer timer;
             timer.start();
 
-            QN_CHECK(n_parameters == 1 && parameters && instance, "Invalid parameters");
+            QN_CHECK(n_parameters <= 3 && parameters && instance, "Invalid parameters");
             auto& self = *static_cast<Fitter*>(instance);
-            const f64 rotation_offset = parameters[0];
+            auto& memoizer = self.memoizer_();
+            const auto original_parameters = Span<const f64>(parameters, n_parameters);
 
             // Memoization.
-            std::optional<f64> memoized_cost = self.memoizer().find(parameters, gradients, 1e-8);
+            std::optional<f64> memoized_cost = memoizer.find(parameters, gradients, 1e-6);
             if (memoized_cost.has_value()) {
                 f64 cost = memoized_cost.value();
-                qn::Logger::trace("cost={:.4f}, elapsed={:.2f}ms, memoized=true", cost, timer.elapsed());
+                qn::Logger::trace("rotation_offsets={:.6f}, cost={:.4f}, elapsed={:.2f}ms, memoized=true",
+                                  fmt::join(original_parameters, ","), cost, timer.elapsed());
                 return cost;
             }
 
-            const f64 cost = self.cost(rotation_offset);
-            f64 gradient{};
+            // Save a copy of the parameters.
+            std::array<f64, 3> buffer{};
+            const auto copied_parameters = Span<f64>(buffer.data(), n_parameters);
+            const auto set_parameters = [&original_parameters] (const Span<f64>& new_parameters, f64 delta = 0) {
+                i64 i{0}; // TODO C++20
+                for (f64& value: new_parameters)
+                    value = original_parameters[i++] + delta;
+            };
+            set_parameters(copied_parameters);
+
+            const f64 cost = self.cost(copied_parameters);
+
             if (gradients != nullptr) {
-                constexpr f64 DELTA = 0.05; // in degrees
-                const f64 cost_minus_delta = self.cost(rotation_offset - DELTA);
-                const f64 cost_plus_delta = self.cost(rotation_offset + DELTA);
-                gradient = CentralFiniteDifference::get(cost_minus_delta, cost_plus_delta, DELTA);
-                *gradients = gradient;
+                constexpr f64 DELTA = 0.2; // in degrees
+                if constexpr (true) {
+                    for (i64 i: noa::irange(n_parameters)) {
+                        f64 original_value = copied_parameters[i];
+
+                        copied_parameters[i] += DELTA;
+                        const f64 cost_minus_delta = self.cost(copied_parameters);
+
+                        copied_parameters[i] = original_value - DELTA;
+                        const f64 cost_plus_delta = self.cost(copied_parameters);
+
+                        copied_parameters[i] = original_value;
+                        const auto gradient = CentralFiniteDifference::get(cost_minus_delta, cost_plus_delta, DELTA);
+                        gradients[i] = gradient;
+                        qn::Logger::trace("gradient[{}]={}", i, gradient);
+                    }
+                } else {
+                    // Compute scores for -delta
+                    set_parameters(copied_parameters, -DELTA);
+                    self.cost(copied_parameters, /*batch=*/ 1);
+                    const auto scores_minus = self.scores_(1);
+
+                    // Compute scores for +delta
+                    set_parameters(copied_parameters, +DELTA);
+                    self.cost(copied_parameters, /*batch=*/ 2);
+                    const auto scores_plus = self.scores_(2);
+
+                    for (auto parameter: noa::irange(n_parameters)) {
+                        const auto weights = self.spline_weights_(parameter);
+                        const auto score_minus = weighted_mean_(scores_minus, weights);
+                        const auto score_plus = weighted_mean_(scores_plus, weights);
+                        const auto gradient = CentralFiniteDifference::get(score_minus, score_plus, DELTA);
+                        gradients[parameter] = gradient;
+                        qn::Logger::trace("gradient[{}]={}", parameter, gradient);
+                    }
+                }
             }
 
-            qn::Logger::trace("cost={:.4f}, gradient={}, elapsed={:.2f}ms", cost, gradient, timer.elapsed());
-            self.memoizer().record(parameters, cost, gradients);
+            qn::Logger::trace("cost={:.4f}, elapsed={:.2f}ms", cost, timer.elapsed());
+            memoizer.record(parameters, cost, gradients);
             return cost;
         }
     };
@@ -521,7 +647,7 @@ namespace qn {
         const auto options = ArrayOption(compute_device, allocator);
         m_two_slices = noa::memory::empty<f32>(shape.push_front<2>({2, 1}), options);
 
-        n_slices += 2; // +target, +projected-reference
+        n_slices += 3; // +target, +projected-reference x2
         const i64 size_padded = noa::fft::next_fast_size(noa::math::max(shape) * 2);
         const auto slice_padded_shape = Shape4<i64>{n_slices, 1, size_padded, size_padded};
         m_slices_padded_rfft = noa::memory::empty<c32>(slice_padded_shape.rfft(), options);
@@ -531,7 +657,7 @@ namespace qn {
                 m_two_slices.size() * sizeof(f32) +
                 m_slices_padded_rfft.size() * sizeof(c32) +
                 m_weights_padded_rfft.size() * sizeof(f32));
-        qn::Logger::info("Projection-matching allocated {:.2f} GB", total_bytes * 1e-9);
+        qn::Logger::info("Projection-matching allocated {:.2f} GB on device={}", total_bytes * 1e-9, compute_device);
     }
 
     void ProjectionMatching::update(
@@ -548,30 +674,43 @@ namespace qn {
         noa::Timer timer;
         timer.start();
 
-        auto projector = Projector(
-                m_slices_padded_rfft.view(),
-                m_weights_padded_rfft.view(),
-                m_two_slices.view(),
-                average_ctf);
-        auto fitter = Fitter(stack, projector, metadata, common_area, parameters);
+        // Order for projection matching.
+        auto projection_metadata = metadata;
+        projection_metadata.sort("exposure");
 
-        // Optimizer.
-        const Optimizer optimizer(parameters.use_estimated_gradients ? NLOPT_LD_LBFGS : NLOPT_LN_SBPLX, 1);
-        optimizer.set_max_objective(Fitter::maximization_function, &fitter);
-        optimizer.set_bounds(-5, 5); // at this point, this should be way more than enough
-        optimizer.set_initial_step(0.5);
+        // Helpers for the alignment.
+        auto projector = Projector(m_slices_padded_rfft.view(), m_weights_padded_rfft.view(), m_two_slices.view(), average_ctf);
+        auto fitter = Fitter(stack, projector, projection_metadata, common_area, parameters);
 
-        // Optimize the rotation model by maximizing the score from the projection-matching of every slice in the stack.
-        f64 rotation_offset{0};
-//        optimizer.optimize(&rotation_offset);
+        QN_CHECK(parameters.rotation_resolution <= 3, "Invalid rotation resolution");
+        std::array<f64, 3> buffer{};
+        const auto rotation_offsets = Span<f64>(buffer.data(), parameters.rotation_resolution);
+
+        if (parameters.rotation_range > 1e-2) {
+            // Optimize the rotation by maximizing the score from the
+            // projection-matching of every slice in the stack.
+            const Optimizer optimizer(parameters.use_estimated_gradients ? NLOPT_LD_LBFGS : NLOPT_LN_SBPLX, 1);
+            optimizer.set_max_objective(Fitter::maximization_function, &fitter);
+            optimizer.set_bounds(-parameters.rotation_range, parameters.rotation_range);
+            optimizer.set_initial_step(parameters.rotation_range * 0.1);
+            optimizer.set_x_tolerance_abs(0.02);
+            optimizer.optimize(rotation_offsets.data());
+        }
 
         // The optimizer can do some post-processing on the parameters, so the last projection matching
         // might not have been run on these final parameters. As such, do a final pass with the actual
-        // best parameters returned by the optimizer.
-        const auto [final_score, new_metadata] = fitter.align(rotation_offset);
-        metadata.update_from(new_metadata, true, true, true); // contains the new rotation and the new shifts
+        // best rotation offset returned by the optimizer.
+        projection_metadata = fitter.align(rotation_offsets); // TODO This is not memoized...
 
-        qn::Logger::trace("Projection-matching alignment... done. Took {:.3f}ms ({} evaluations)",
-                          timer.elapsed(), optimizer.number_of_evaluations() + 1);
+        // Update the original metadata with the aligned one.
+        metadata.update_from(
+                projection_metadata,
+                /*update_angles=*/ true,
+                /*update_shifts=*/ true,
+                /*update_defocus=*/false);
+
+        qn::Logger::trace("rotation_offset={}", metadata[0].angles[0]);
+        qn::Logger::trace("Projection-matching alignment... done. Took {:.3f}s (n_evaluations={})",
+                          timer.elapsed() * 1e-3, fitter.n_evaluations());
     }
 }

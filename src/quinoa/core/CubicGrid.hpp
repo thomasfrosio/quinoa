@@ -7,7 +7,7 @@ namespace qn {
     // Cubic spline interpolation on multidimensional grids (only 1d and 2d are currently supported).
     // Grids consist of uniformly spaced points covering the full extend of each dimension.
     //  - The resolution controls the number of points covering each dimension.
-    //  - The channels controls the number of values stored on each grid point.
+    //  - The channels control the number of values stored on each grid point.
     //
     // We can obtain the value (interpolant) at any continuous point on the grid.
     // The grid coordinate system extends from [0, 1] along each grid dimension.
@@ -17,6 +17,7 @@ namespace qn {
     public:
         static_assert(N == 1 || N == 2);
         static_assert(noa::traits::is_real_or_complex_v<Value>);
+        using value_type = Value;
 
     public:
         CubicSplineGrid() = default;
@@ -106,42 +107,59 @@ namespace qn {
         }
 
     public: // Weights
-        // Computes the B-spline weight, i.e. how much this point affects the coordinate.
-        [[nodiscard]] constexpr Value weight(
+        // Computes the B-spline weight, ie how much this point affects the coordinate.
+        [[nodiscard]] static constexpr Value weight(
                 const Vec<f64, N>& normalized_coordinate,
+                const Vec<i64, N>& resolution,
                 const Vec<i64, N>& point_index
-        ) const noexcept {
-            NOA_ASSERT(!is_empty() && all(point_index >= 0 && point_index < resolution()));
+        ) noexcept {
+            NOA_ASSERT(all(point_index >= 0 && point_index < resolution));
 
             if constexpr (N == 1) {
                 return fetch_weight_1d_(
                         normalized_coordinate[0],
                         point_index[0],
-                        resolution()[0]);
+                        resolution[0]);
             } else if constexpr (N == 2) {
                 fetch_weight_2d_(
                         normalized_coordinate,
                         point_index,
-                        resolution());
+                        resolution);
             } else {
                 static_assert(noa::traits::always_false_v<Value>);
             }
         }
 
+        [[nodiscard]] constexpr auto weight(
+                const Vec<f64, N>& normalized_coordinate,
+                const Vec<i64, N>& point_index
+        ) const noexcept -> value_type {
+            return weight(normalized_coordinate, resolution(), point_index);
+        }
+
         template<typename Void = void, typename = std::enable_if_t<(N == 1) && std::is_void_v<Void>>>
-        [[nodiscard]] constexpr Value weight(
+        [[nodiscard]] static constexpr Value weight(
                 f64 normalized_coordinate,
-                i64 point_index = 0
-        ) const noexcept {
-            return weight(Vec1<f64>{normalized_coordinate}, Vec1<i64>{point_index});
+                i64 resolution,
+                i64 point_index
+        ) noexcept {
+            return weight(Vec1<f64>{normalized_coordinate}, Vec1<i64>{resolution}, Vec1<i64>{point_index});
+        }
+
+        template<typename Void = void, typename = std::enable_if_t<(N == 1) && std::is_void_v<Void>>>
+        [[nodiscard]] constexpr auto weight(
+                f64 normalized_coordinate,
+                i64 point_index
+        ) const noexcept -> value_type {
+            return weight(normalized_coordinate, resolution(), Vec1<i64>{point_index});
         }
 
     private: // Fetch functions
-        [[nodiscard]] constexpr auto fetch_1d_(
+        [[nodiscard]] static constexpr auto fetch_1d_(
                 f64 normalized_coordinate,
                 const Value* data,
                 i64 stride, i64 size
-        ) const noexcept -> f64 {
+        ) noexcept -> f64 {
             // Special case. Interpolation is not necessary because the output value
             // is always the node value, regardless of the coordinate.
             if (size == 1)
@@ -160,11 +178,11 @@ namespace qn {
                     values[0], values[1], values[2], values[3], fraction);
         }
 
-        [[nodiscard]] constexpr auto fetch_weight_1d_(
+        [[nodiscard]] static constexpr auto fetch_weight_1d_(
                 f64 normalized_coordinate,
                 i64 node_index,
                 i64 size
-        ) const noexcept -> f64 {
+        ) noexcept -> f64 {
             // Special case. Interpolation is not necessary because the output weight
             // is always 1, regardless of the coordinate.
             if (size == 1)
@@ -192,12 +210,12 @@ namespace qn {
                     values[0], values[1], values[2], values[3], fraction);
         }
 
-        [[nodiscard]] constexpr f64 fetch_2d_(
+        [[nodiscard]] static constexpr f64 fetch_2d_(
                 Vec2<f64> normalized_coordinate,
                 const Value* data,
                 Vec2<i64> strides,
                 Vec2<i64> shape
-        ) const noexcept {
+        ) noexcept {
             // Check that it cannot be simplified to 1d case.
             if (noa::any(shape == 1)) {
                 if (noa::all(shape == 1))
@@ -228,11 +246,11 @@ namespace qn {
             return noa::geometry::interpolate::cubic_bspline_2d(values, fraction[1], fraction[0]);
         }
 
-        [[nodiscard]] constexpr f64 fetch_weight_2d_(
+        [[nodiscard]] static constexpr f64 fetch_weight_2d_(
                 Vec2<f64> normalized_coordinate,
                 Vec2<i64> node_index,
                 Vec2<i64> shape
-        ) const noexcept {
+        ) noexcept {
             // Check that it cannot be simplified to 1d case.
             if (noa::any(shape == 1)) {
                 if (noa::all(shape == 1))
@@ -305,8 +323,11 @@ namespace qn {
 
         // Given the 4 values [p0, p1, p2, p3], the interpolation fraction is the value
         // in range [0, 1] covering the position interval between p1 and p2.
-        [[nodiscard]] static constexpr f64
-        coordinate_to_interp_fraction_(f64 coordinate, const Vec4<i64>& indexes) noexcept {
+        [[nodiscard]]
+        static constexpr auto coordinate_to_interp_fraction_(
+                f64 coordinate,
+                const Vec4<i64>& indexes
+        ) noexcept -> f64 {
             return coordinate - static_cast<f64>(indexes[1]);
         }
 

@@ -111,7 +111,7 @@ namespace qn {
         noa::fft::r2c(padded_slice, padded_slice_rfft);
         noa::fft::resize<noa::fft::H2H>(
                 padded_slice_rfft, padded_shape,
-                cropped_slice_rfft, cropped_shape); // FIXME pad border right
+                cropped_slice_rfft, cropped_shape);
         noa::signal::fft::phase_shift_2d<noa::fft::H2H>(
                 cropped_slice_rfft, cropped_slice_rfft,
                 cropped_shape, m_rescale_shift.as<f32>());

@@ -16,14 +16,14 @@ namespace {
         constexpr f64 MAX = std::numeric_limits<f64>::max();
 
         auto has_user_angle_offset = Vec3<bool>{
-                !noa::math::are_almost_equal(MAX, options.tilt_scheme.rotation_offset),
-                !noa::math::are_almost_equal(MAX, options.tilt_scheme.tilt_offset),
-                !noa::math::are_almost_equal(MAX, options.tilt_scheme.elevation_offset),
+                !noa::math::are_almost_equal(MAX, options.experiment.rotation_offset),
+                !noa::math::are_almost_equal(MAX, options.experiment.tilt_offset),
+                !noa::math::are_almost_equal(MAX, options.experiment.elevation_offset),
         };
         auto angle_offset = Vec3<f64>{
-                has_user_angle_offset[0] ? options.tilt_scheme.rotation_offset : 0,
-                has_user_angle_offset[1] ? options.tilt_scheme.tilt_offset : 0,
-                has_user_angle_offset[2] ? options.tilt_scheme.elevation_offset : 0,
+                has_user_angle_offset[0] ? options.experiment.rotation_offset : 0,
+                has_user_angle_offset[1] ? options.experiment.tilt_offset : 0,
+                has_user_angle_offset[2] ? options.experiment.elevation_offset : 0,
         };
         const auto fit_angle_offset = Vec3<bool>{
                 options.alignment.fit_rotation_offset,
@@ -540,6 +540,11 @@ namespace {
             qn::Logger::debug("{} saved", csv_filename);
         }
 
+        qn::Logger::status("Sample angles (in degrees): "
+                           "rotation={:.3f} ({:+.3f}), tilt={:.3f} ({:+.3f}), elevation={:.3f} ({:+.3f})",
+                           metadata[0].angles[0], total_angles_offset[0],
+                           metadata[0].angles[1], total_angles_offset[1],
+                           metadata[0].angles[2], total_angles_offset[2]);
         qn::Logger::status("CTF alignment... done. Took {:.3f}s", timer.elapsed() * 1e-3);
     }
 
@@ -564,69 +569,100 @@ namespace {
         timer.start();
         qn::Logger::status("Projection-matching alignment...");
 
-        const bool debug = !parameters.debug_directory.empty();
+        // 1. Initial run:
+        //    Run projection-matching at a lower resolution and search for the best rotation.
+        //    This should also pretty much solve the potential big shifts at high tilts.
+        // 2. Final run:
+        //    Run projection-matching at the maximum resolution, without searching for the rotation.
+        std::array resolution{24., 14.};
+        std::array rotation_range{5., 0.};
 
-        // Load the stack. Make sure spacing is isotropic.
-        const auto loading_parameters = LoadStackParameters{
-                /*compute_device=*/ parameters.compute_device,
-                /*allocator=*/ Allocator::MANAGED,
-                /*precise_cutoff=*/ true,
-                /*rescale_target_resolution=*/ 10, //std::max(8., parameters.maximum_resolution),
-                /*rescale_min_size=*/ 512,
-                /*exposure_filter=*/ false,
-                /*highpass_parameters=*/ {0.01, 0.01},
-                /*lowpass_parameters=*/ {0.4, 0.1},
-                /*normalize_and_standardize=*/ true,
-                /*smooth_edge_percent=*/ 0.1f,
-                /*zero_pad_to_fast_fft_shape=*/ false,
-        };
-        const auto [stack, stack_spacing, file_spacing] =
-                load_stack(stack_filename, metadata, loading_parameters);
-        metadata.center_shifts();
-        metadata.rescale_shifts(file_spacing, stack_spacing);
+        for (auto i: noa::irange(resolution.size())) {
+            qn::Logger::info("Running projection matching at resolution={:.2f}A, with rotation_range={:.2f}deg",
+                             resolution[i], rotation_range[i]);
 
-        // Just in case memory is tight, make sure to free everything that is not needed,
-        // even if it means recomputing it later.
-        noa::Session::clear_fft_cache(parameters.compute_device);
+            // Load the stack. Make sure spacing is isotropic.
+            const auto loading_parameters = LoadStackParameters{
+                    /*compute_device=*/ parameters.compute_device,
+                    /*allocator=*/ Allocator::MANAGED,
+                    /*precise_cutoff=*/ true,
+                    /*rescale_target_resolution=*/ resolution[i],
+                    /*rescale_min_size=*/ 1024,
+                    /*exposure_filter=*/ false,
+                    /*highpass_parameters=*/ {0.01, 0.01},
+                    /*lowpass_parameters=*/ {0.5, 0.05},
+                    /*normalize_and_standardize=*/ true,
+                    /*smooth_edge_percent=*/ 0.1f,
+                    /*zero_pad_to_fast_fft_shape=*/ false,
+            };
+            const auto [stack, stack_spacing, file_spacing] =
+                    load_stack(stack_filename, metadata, loading_parameters);
+            metadata.center_shifts();
+            metadata.rescale_shifts(file_spacing, stack_spacing);
 
-        // Set the spacing and CTF.
-        f64 spacing = noa::math::sum(stack_spacing) / 2;
-        CTFAnisotropic64 ctf = average_ctf;
-        ctf.set_pixel_size(stack_spacing);
+            // Just in case memory is tight, make sure to free everything that is not needed,
+            // even if it means recomputing it later.
+            noa::Session::clear_fft_cache(parameters.compute_device);
 
-        // Set the common area. For projection-matching, it should be more important to make sure
-        // the views that do not fully contain the common area are excluded. So 1) allow smaller
-        // common areas to exclude fewer views, and 2) exclude the views that are still too far off.
-        constexpr f64 maximum_size_loss = 0.1;
-        auto common_area = CommonArea(stack.shape().filter(2, 3), metadata, maximum_size_loss);
+            // Set the spacing and CTF.
+            f64 spacing = noa::math::sum(stack_spacing) / 2;
+            CTFAnisotropic64 ctf = average_ctf;
+            ctf.set_pixel_size(stack_spacing);
+
+            // Set the common area. For projection-matching, it should be more important to make sure
+            // the views that do not fully contain the common area are excluded. So 1) allow smaller
+            // common areas to exclude fewer views, and 2) exclude the views that are still too far off.
+            constexpr f64 maximum_size_loss = 0.1;
+            auto common_area = CommonArea(stack.shape().filter(2, 3), metadata, maximum_size_loss); // FIXME
 //        const std::vector<i64> excluded_indexes = common_area.set_geometry(
 //                stack.shape().filter(2, 3), metadata, maximum_size_loss);
 //        if (!excluded_indexes.empty())
 //            metadata.exclude(excluded_indexes, /*reset_index_field=*/ false);
 
-        // Windowed sinc and projection-matching parameters.
-        f64 thickness_estimate_pixels = parameters.thickness_estimate_nm / (spacing * 1e-1);
-        auto projection_matching_parameters = ProjectionMatchingParameters{
-                /*smooth_edge_percent=*/ 0.1,
-                /*use_estimated_gradients=*/ true,
-                /*fftfreq_sinc=*/ -1,
-                /*fftfreq_blackman=*/ 0.001,
-                /*fftfreq_z_sinc=*/ 1 / thickness_estimate_pixels,
-                /*fftfreq_z_blackman=*/ 0.12, //0.05, // FIXME this could be adapted to the thickness
-                /*highpass_filter=*/ {0.1, 0.08},
-                /*lowpass_filter=*/ {0.4, 0.1},
-                /*debug_directory=*/ "", // parameters.debug_directory,
-        };
+            auto projection_matching = ProjectionMatching(
+                    metadata.ssize(),
+                    stack.shape().filter(2, 3),
+                    parameters.compute_device);
 
-        auto projection_matching = ProjectionMatching(
-                metadata.ssize(),
-                stack.shape().filter(2, 3),
-                parameters.compute_device);
-        projection_matching.update(stack.view(), common_area, projection_matching_parameters, ctf, metadata);
+            // Set up and run the projection-matching.
+            const f64 virtual_volume_size = static_cast<f64>(projection_matching.projection_size());
+            const f64 fftfreq_sinc = 1 / virtual_volume_size;
+            const f64 fftfreq_blackman = 4 * fftfreq_sinc;
+            const f64 thickness_estimate_pixels = parameters.thickness_estimate_nm / (spacing * 1e-1);
+            const f64 fftfreq_z_sinc = 1 / thickness_estimate_pixels;
+            const f64 fftfreq_z_blackman = 4 * fftfreq_z_sinc;
+            qn::Logger::trace("Fourier insertion and extraction bounds:\n"
+                              "fftfreq_sinc={:.4f}\n"
+                              "fftfreq_blackman={:.4f}\n"
+                              "fftfreq_z_sinc={:.4f} (sample_thickness={}pixels)\n"
+                              "fftfreq_z_blackman={:.4f} (window_size=~{}pixels)\n",
+                              fftfreq_sinc, fftfreq_blackman,
+                              fftfreq_z_sinc, std::round(thickness_estimate_pixels), fftfreq_z_blackman,
+                              std::round(fftfreq_z_blackman * virtual_volume_size * 2 + 1));
 
-        // Rescale back to original spacing and center.
-        metadata.rescale_shifts(stack_spacing, file_spacing);
-        metadata.center_shifts();
+            auto projection_matching_parameters = ProjectionMatchingParameters{
+                    /*use_estimated_gradients=*/ false,
+                    /*use_ctfs=*/ false,
+                    /*rotation_range=*/ rotation_range[i],
+                    /*rotation_resolution=*/ 1,
+                    /*shift_tolerance=*/ 0.001,
+                    /*smooth_edge_percent=*/ 0.10,
+                    /*fftfreq_sinc=*/ fftfreq_sinc,
+                    /*fftfreq_blackman=*/ fftfreq_blackman,
+                    /*fftfreq_z_sinc=*/ fftfreq_z_sinc,
+                    /*fftfreq_z_blackman=*/ fftfreq_z_blackman,
+                    /*highpass_filter=*/ {0.1, 0.03},
+                    /*lowpass_filter=*/ {0.35, 0.15},
+                    /*debug_directory=*/ parameters.debug_directory,
+            };
+            projection_matching.update(
+                    stack.view(), common_area, projection_matching_parameters, ctf, metadata);
+
+            // Rescale back to original spacing and center.
+            metadata.rescale_shifts(stack_spacing, file_spacing);
+            metadata.center_shifts();
+            break;
+        }
 
         qn::Logger::status("Projection-matching alignment... done. Took {:.3f}s", timer.elapsed() * 1e-3);
     }
@@ -642,9 +678,15 @@ namespace qn {
         // First, extract the angle offsets.
         const auto [has_user_angle_offset, angle_offset, fit_angle_offset] = parse_angle_offset(options);
         QN_CHECK(has_user_angle_offset[0] || fit_angle_offset[0],
-                 "An initial estimate of rotation-angle offset was not provided and "
+                 "An initial estimate of the rotation-angle offset was not provided and "
                  "the rotation-angle offset alignment was turned off");
         output_metadata.add_global_angles(angle_offset);
+
+        // Then check the sample thickness can be computed.
+        QN_CHECK(options.alignment.use_thickness_estimate or
+                 options.experiment.thickness != std::numeric_limits<f64>::max(),
+                 "An initial estimate of the sample thickness was not provided and "
+                 "the sampled-thickness estimation was turned off");
 
         // 1. Initial pairwise alignment:
         //  - Find the shifts, using the pairwise cosine-stretching alignment.
@@ -654,7 +696,7 @@ namespace qn {
                     /*compute_device=*/ options.compute.device,
                     /*debug_directory=*/ qn::Logger::is_debug() ? options.files.output_directory / "debug_initial_alignment" : "",
                     /*maximum_resolution=*/ 10.,
-                    /*fit_angle_offset=*/ fit_angle_offset,
+                    /*fit_angle_offset=*/ fit_angle_offset, //{false, false, false}, // FIXME fit_angle_offset,
                     /*has_user_angle_offset=*/ has_user_angle_offset,
             };
             initial_pairwise_alignment(
@@ -670,11 +712,11 @@ namespace qn {
         //  - The shifts are refined using the new angle offsets, using the pairwise cosine-stretching alignment.
         auto average_ctf = CTFAnisotropic64(
                 /*pixel_size=*/ {0, 0},
-                {0, options.tilt_scheme.astigmatism_value, noa::math::deg2rad(options.tilt_scheme.astigmatism_angle)},
-                options.tilt_scheme.voltage,
-                options.tilt_scheme.amplitude,
-                options.tilt_scheme.cs,
-                noa::math::deg2rad(options.tilt_scheme.phase_shift),
+                {0, options.experiment.astigmatism_value, noa::math::deg2rad(options.experiment.astigmatism_angle)},
+                options.experiment.voltage,
+                options.experiment.amplitude,
+                options.experiment.cs,
+                noa::math::deg2rad(options.experiment.phase_shift),
                 /*bfactor=*/ 0,
                 /*scale=*/ 1
         );
@@ -685,7 +727,7 @@ namespace qn {
                     /*debug_directory=*/ qn::Logger::is_debug() ? options.files.output_directory / "debug_ctf" : "",
 
                     /*patch_size=*/ 1024,
-                    /*patch_step=*/ 512,
+                    /*patch_step=*/ 512, // FIXME
                     /*fit_phase_shift=*/ options.alignment.fit_phase_shift,
                     /*fit_astigmatism=*/ options.alignment.fit_astigmatism,
                     /*resolution_range=*/ Vec2<f64>{40, 8},
@@ -707,23 +749,27 @@ namespace qn {
         }
 
         // 3. Sample thickness.
-        const auto thickness = estimate_sample_thickness(options.files.input_stack, output_metadata, {
-                /*resolution=*/ 16.,
-                /*maximum_thickness_nm=*/ 350.,
-                /*adjust_com=*/ true,
-                /*compute_device=*/ options.compute.device,
-                /*allocator=*/ Allocator::MANAGED,
-                /*debug_directory=*/ options.files.output_directory / "debug_thickness"
-        });
+        f64 thickness_nm = options.experiment.thickness;
+        if (options.alignment.use_thickness_estimate) {
+            thickness_nm = estimate_sample_thickness(options.files.input_stack, output_metadata, {
+                    /*resolution=*/ 16.,
+                    /*initial_thickness_nm=*/ thickness_nm,
+                    /*maximum_thickness_nm=*/ 400.,
+                    /*adjust_com=*/ true,
+                    /*compute_device=*/ options.compute.device,
+                    /*allocator=*/ Allocator::MANAGED,
+                    /*debug_directory=*/ "", // qn::Logger::is_debug() ? options.files.output_directory / "debug_thickness" : "",
+            });
+        }
 
         // 4. Projection matching.
         if (options.alignment.use_projection_matching) {
             const auto projection_matching_alignment_parameters = ProjectionMatchingAlignmentParameters{
                     /*compute_device=*/ options.compute.device,
                     /*output_directory=*/ options.files.output_directory,
-                    /*debug_directory=*/ options.files.output_directory / "debug_projection_matching",
+                    /*debug_directory=*/ "", // qn::Logger::is_debug() ? options.files.output_directory / "debug_projection_matching" : "",
                     /*maximum_resolution=*/ 16.,
-                    /*thickness_estimate_nm=*/ thickness,
+                    /*thickness_estimate_nm=*/ thickness_nm,
                     /*fit_rotation=*/ options.alignment.fit_rotation_offset,
                     /*no_weights=*/ true,
             };

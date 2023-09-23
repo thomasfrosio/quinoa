@@ -23,8 +23,13 @@
 
 namespace qn {
     struct ProjectionMatchingParameters {
-        f64 smooth_edge_percent{0.1};
         bool use_estimated_gradients{true};
+        bool use_ctfs{false};
+        f64 rotation_range{0};
+        i64 rotation_resolution{1};
+        f64 shift_tolerance{0.001};
+
+        f64 smooth_edge_percent{0.1};
 
         f64 fftfreq_sinc = -1;
         f64 fftfreq_blackman = -1;
@@ -55,6 +60,10 @@ namespace qn {
                 const CTFAnisotropic64& average_ctf,
                 MetadataStack& metadata // is updated
         );
+
+        [[nodiscard]] auto projection_size() const noexcept -> i64 {
+            return m_slices_padded_rfft.shape()[2];
+        }
 
     private:
         Array<c32> m_slices_padded_rfft;

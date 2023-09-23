@@ -16,17 +16,17 @@ namespace qn {
             Path output_directory{};
         } files;
 
-        struct TiltScheme {
-            struct Order {
+        struct Experiment {
+            struct CollectionOrder {
                 f64 starting_angle{};
                 i64 starting_direction{};
-                f64 angle_increment{};
-                i64 group{};
+                f64 tilt_increment{};
+                i64 group_of{};
                 bool exclude_start{};
                 f64 per_view_exposure{};
             };
 
-            std::optional<Order> order{};
+            std::optional<CollectionOrder> collection_order{};
             f64 rotation_offset{};
             f64 tilt_offset{};
             f64 elevation_offset{};
@@ -36,7 +36,8 @@ namespace qn {
             f64 phase_shift{};
             f64 astigmatism_value{};
             f64 astigmatism_angle{};
-        } tilt_scheme;
+            f64 thickness{};
+        } experiment;
 
         struct Preprocessing {
             bool run{};
@@ -53,6 +54,7 @@ namespace qn {
             bool fit_astigmatism{};
             bool use_initial_pairwise_alignment{};
             bool use_ctf_estimate{};
+            bool use_thickness_estimate{};
             bool use_projection_matching{};
         } alignment;
 

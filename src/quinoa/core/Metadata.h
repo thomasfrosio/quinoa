@@ -61,19 +61,13 @@ namespace qn {
         }
     };
 
-    struct TiltScheme {
-        f64 starting_angle{};       // Angle, in degrees, of the first image that was collected.
-        i64 starting_direction{};   // Direction (>0 or <0) after collecting the first image.
-        f64 angle_increment{};      // Angle increment, in degrees, between images.
-        i64 group{};                // Number of images that are collected before switching to the opposite side.
-        bool exclude_start{};       // Exclude the first image from the first group.
-        f64 per_view_exposure{};    // Per view exposure, in e-/A^2.
-
-        [[nodiscard]] auto generate(i64 n_slices) const -> std::vector<MetadataSlice>;
-    };
-
     // Metadata of a stack of 2D slices.
     class MetadataStack {
+    public:
+        using container = std::vector<MetadataSlice>;
+        using const_iterator = container::const_iterator;
+        using iterator = container::iterator;
+
     public:
         MetadataStack() = default;
 
@@ -169,29 +163,23 @@ namespace qn {
         }
 
         // Shift the sample by a given amount.
-        auto add_global_shift(Vec2<f64> global_shift) -> MetadataStack& {
-            for (auto& slice: slices()) {
-                const Vec3<f64> angles = noa::math::deg2rad(slice.angles);
-                const Vec2<f64> elevation_tilt = angles.filter(2, 1);
-                const Double22 shrink_matrix{
-                        noa::geometry::rotate(angles[0]) *
-                        noa::geometry::scale(noa::math::cos(elevation_tilt)) *
-                        noa::geometry::rotate(-angles[0])
-                };
-                slice.shifts += shrink_matrix * global_shift;
-            }
-            return *this;
-        }
-
         auto add_global_shift(Vec3<f64> global_shift) -> MetadataStack& {
             for (auto& slice: slices()) {
                 const Vec3<f64> angles = noa::math::deg2rad(slice.angles);
-                const Double33 rotm = noa::geometry::euler2matrix(
-                        Vec3<f64>{-angles[0], angles[1], angles[2]}, "zyx", false);
+                const Double33 rotm{
+                        noa::geometry::rotate_z(angles[0]) *
+                        noa::geometry::rotate_x(angles[2]) *
+                        noa::geometry::rotate_y(angles[1]) *
+                        noa::geometry::rotate_z(-angles[0])
+                };
                 const auto rotated_shift = rotm * global_shift;
                 slice.shifts += rotated_shift.pop_front(); // project along z
             }
             return *this;
+        }
+
+        auto add_global_shift(Vec2<f64> global_shift) -> MetadataStack& {
+            return add_global_shift(global_shift.push_front(0));
         }
 
         auto add_global_angles(Vec3<f64> global_angles) -> MetadataStack& {
@@ -231,6 +219,11 @@ namespace qn {
         [[nodiscard]] auto size() const noexcept -> size_t { return m_slices.size(); }
         [[nodiscard]] auto ssize() const noexcept -> i64 { return static_cast<i64>(size()); }
 
+        [[nodiscard]] constexpr auto begin() const noexcept -> const_iterator { return m_slices.begin(); }
+        [[nodiscard]] constexpr auto begin() noexcept -> iterator { return m_slices.begin(); }
+        [[nodiscard]] constexpr auto end() const noexcept -> const_iterator { return m_slices.end(); }
+        [[nodiscard]] constexpr auto end() noexcept -> iterator { return m_slices.end(); }
+
         // Returns a view of the slice at "idx", as currently sorted in this instance (see sort()).
         template<typename T, typename = std::enable_if_t<noa::traits::is_int_v<T>>>
         [[nodiscard]] constexpr auto operator[](T idx) noexcept -> MetadataSlice& {
@@ -249,6 +242,10 @@ namespace qn {
         // of the slice with the lowest absolute tilt angle.
         [[nodiscard]] auto find_lowest_tilt_index() const -> i64;
 
+        // Find the index (as currently sorted in this instance)
+        // of the slice with the highest absolute tilt angle.
+        [[nodiscard]] auto minmax_tilts() const -> std::pair<f64, f64>;
+
     public:
         void save(
                 const Path& filename,
@@ -261,7 +258,8 @@ namespace qn {
 
     private:
         void generate_(const Path& tlt_filename, const Path& exposure_filename);
-        void generate_(TiltScheme tilt_scheme, i32 order_count);
+        void generate_(f64 starting_angle, i64 starting_direction, f64 tilt_increment,
+                       i64 group_of, bool exclude_start, f64 per_view_exposure, i32 n_slices);
 
         void sort_on_indexes_(bool ascending = true);
         void sort_on_file_indexes_(bool ascending = true);

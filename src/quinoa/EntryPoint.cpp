@@ -5,9 +5,13 @@
 #include "quinoa/core/Metadata.h"
 #include "quinoa/core/Stack.hpp"
 #include "quinoa/core/CommonArea.hpp"
+#include "quinoa/core/ExcludeViews.hpp"
+#include "quinoa/core/Reconstruction.hpp"
+
 #include "quinoa/Exception.h"
 #include "quinoa/io/Logging.h"
 #include "quinoa/io/Options.h"
+
 
 #include <noa/Geometry.hpp>
 #include <quinoa/core/Ewise.hpp>
@@ -576,8 +580,8 @@ namespace {
         const auto options = ArrayOption(Device("gpu"), Allocator::DEFAULT_ASYNC);
         const auto options_managed = ArrayOption(Device("gpu"), Allocator::MANAGED);
 
-        const i64 n_slices = 40;
-        const auto size = noa::fft::next_fast_size(5000);
+        const i64 n_slices = 60;
+        const auto size = noa::fft::next_fast_size(2048);
         const auto insertion_shape = Shape4<i64>{n_slices, 1, size, size};
         auto slices_to_insert = noa::memory::zeros<c32>(insertion_shape.rfft(), options_managed);
         auto slice_to_extract = noa::memory::zeros<c32>(insertion_shape.set<0>(1).rfft(), options);
@@ -590,7 +594,7 @@ namespace {
 
         slice_to_extract.eval();
 
-        auto insertion_inv_rotations = noa::memory::empty<Float33>(n_slices, options_managed);
+        auto insertion_inv_rotations = noa::memory::empty<Float33>(n_slices);
         for (i64 i: irange(n_slices)) {
             insertion_inv_rotations.span()[i] = noa::geometry::euler2matrix(
                     Vec3<f64>{-2.3, 0.1 * static_cast<f64>(i), 0},
@@ -603,31 +607,35 @@ namespace {
                 "zyx", /*intrinsic=*/ false).as<f32>();
 
         using WindowedSinc = noa::geometry::fft::WindowedSinc;
-        const auto i_windowed_sinc = WindowedSinc{0.0002f, 0.0008f};
-        const auto o_windowed_sinc = WindowedSinc{0.004f, 0.02f};
+        const auto i_windowed_sinc = WindowedSinc{0.000488281f, 0.000488281f * 4};
+        const auto o_windowed_sinc = WindowedSinc{0.01f, 0.04f};
 
         noa::Timer timer;
         timer.start();
 
         constexpr i64 N = 10;
         for (i64 i = 0; i < N; ++i) {
+//            Float33 matrix = noa::geometry::euler2matrix(
+//                        Vec3<f64>{-2.3, 0.1 * static_cast<f64>(i), 0},
+//                        "zyx", /*intrinsic=*/ false).transpose().as<f32>();
+
             noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
-                    slices_to_insert, {}, insertion_shape,
-                    slice_to_extract, {}, insertion_shape.set<0>(1),
+                    slices_to_insert, slices_to_insert_weight, insertion_shape,
+                    slice_to_extract, slice_to_extract_weight, insertion_shape.set<0>(1),
                     Float22{}, insertion_inv_rotations, //insertion_inv_rotations, //Float33{0.94},
                     Float22{}, extraction_fwd_rotation,
                     i_windowed_sinc, o_windowed_sinc,
                     /*add_to_output=*/ false,
                     /*correct_multiplicity=*/ true);
 
-            noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
-                    slices_to_insert_weight, {}, insertion_shape,
-                    slice_to_extract_weight, {}, insertion_shape.set<0>(1),
-                    Float22{}, insertion_inv_rotations, //insertion_inv_rotations, //Float33{0.94},
-                    Float22{}, extraction_fwd_rotation,
-                    i_windowed_sinc, o_windowed_sinc,
-                    /*add_to_output=*/ false,
-                    /*correct_multiplicity=*/ true);
+//            noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
+//                    slices_to_insert_weight, {}, insertion_shape,
+//                    slice_to_extract_weight, {}, insertion_shape.set<0>(1),
+//                    Float22{}, insertion_inv_rotations, //insertion_inv_rotations, //Float33{0.94},
+//                    Float22{}, extraction_fwd_rotation,
+//                    i_windowed_sinc, o_windowed_sinc,
+//                    /*add_to_output=*/ false,
+//                    /*correct_multiplicity=*/ true);
         }
 
         slice_to_extract.eval();
@@ -675,12 +683,19 @@ auto main(int argc, char* argv[]) -> int {
 
         // Preprocessing.
         if (options.preprocessing.run) {
-            if (options.preprocessing.exclude_blank_views) {
-                // TODO Exclude views using mass normalization?
-            }
-
             if (!options.preprocessing.exclude_view_indexes.empty())
                 metadata.exclude(options.preprocessing.exclude_view_indexes);
+
+            // TODO Remove hot pixels?
+
+            if (options.preprocessing.exclude_blank_views) {
+                qn::detect_and_exclude_blank_views(
+                        options.files.input_stack, metadata, {
+                                /*compute_device=*/ options.compute.device,
+                                /*allocator=*/ Allocator::DEFAULT_ASYNC,
+                                /*resolution=*/ 20.,
+                        });
+            }
         }
 
         // Alignment.
@@ -688,12 +703,11 @@ auto main(int argc, char* argv[]) -> int {
         if (options.alignment.run) {
             std::tie(metadata, average_ctf) = tilt_series_alignment(options, metadata);
 
-            // FIXME
             const auto loading_parameters = qn::LoadStackParameters{
                     /*compute_device=*/ options.compute.device,
                     /*allocator=*/ noa::Allocator::DEFAULT_ASYNC,
-                    /*precise_cutoff=*/ false,
-                    /*rescale_target_resolution=*/ -1,
+                    /*precise_cutoff=*/ true,
+                    /*rescale_target_resolution=*/ 20,
                     /*rescale_min_size=*/ 1024,
                     /*exposure_filter=*/ false,
                     /*highpass_parameters=*/ {0.01, 0.01},
@@ -706,6 +720,9 @@ auto main(int argc, char* argv[]) -> int {
                     options.files.input_stack,
                     options.files.output_directory / "aligned.mrc",
                     metadata, loading_parameters);
+
+//            qn::full_reconstruction(
+//                    options.files.input_stack, metadata, options.files.output_directory / "reconstruction.mrc");
         }
 
         // Reconstruction.

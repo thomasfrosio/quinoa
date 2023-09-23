@@ -20,6 +20,7 @@ set(QUINOA_SOURCES
     src/quinoa/core/Optimizer.hpp
     src/quinoa/core/Utilities.h
     src/quinoa/core/CommonArea.hpp
+    src/quinoa/core/ExcludeViews.hpp
 
     src/quinoa/core/Ewise.hpp
     src/quinoa/core/Ewise.cu
@@ -42,5 +43,8 @@ set(QUINOA_SOURCES
     src/quinoa/core/ProjectionMatching.hpp
 #    src/quinoa/core/ProjectionMatching.cpp
     src/quinoa/core/ProjectionMatching2.cpp
+
+    src/quinoa/core/Reconstruction.hpp
+    src/quinoa/core/Reconstruction.cpp
 
     )

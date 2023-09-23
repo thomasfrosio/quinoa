@@ -162,7 +162,7 @@ namespace qn {
         const auto current_center = MetadataSlice::center<f64>(current_shape);
         const auto new_center = MetadataSlice::center<f64>(new_shape);
         const auto current_center_rescaled = current_center * (current_spacing / new_spacing);
-        const auto shift_to_add = current_center_rescaled - new_center;
+        const auto shift_to_add = new_center - current_center_rescaled; // FIXME new_center - current_center_rescaled
 
         return {current_shape, new_shape, new_spacing, shift_to_add};
     }

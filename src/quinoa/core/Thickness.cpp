@@ -372,6 +372,17 @@ namespace qn {
 
         // 3. Window finder.
         const auto thickness_nm = find_window(adjusted_gradient, average_spacing_nm, parameters.debug_directory);
+        if (parameters.initial_thickness_nm != std::numeric_limits<f64>::max()) {
+            if (thickness_nm < parameters.initial_thickness_nm * 0.5 or
+                thickness_nm > parameters.initial_thickness_nm * 1.5) {
+                QN_THROW("Thickness estimate ({:.2f}nm) is too far off from the user-provided value ({:.2f}nm)",
+                         thickness_nm, parameters.initial_thickness_nm);
+            } else if (thickness_nm < parameters.initial_thickness_nm * 0.75 or
+                       thickness_nm > parameters.initial_thickness_nm * 1.25) {
+                qn::Logger::warn("Thickness estimate ({:.2f}nm) is far from the user-provided value ({:.2f}nm)",
+                                 thickness_nm, parameters.initial_thickness_nm);
+            }
+        }
 
         qn::Logger::info("estimated_thickness={:.2f}nm", thickness_nm);
         qn::Logger::info("Thickness estimation... done. Took {:.2f}ms", timer.elapsed());

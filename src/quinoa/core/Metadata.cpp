@@ -6,64 +6,22 @@
 #include "quinoa/Exception.h"
 
 namespace qn {
-    auto TiltScheme::generate(i64 n_slices) const -> std::vector<MetadataSlice> {
-        std::vector<MetadataSlice> slices;
-        slices.reserve(static_cast<size_t>(n_slices));
-
-        auto direction = static_cast<f64>(starting_direction);
-        f64 angle0 = starting_angle;
-        f64 angle1 = angle0;
-
-        slices.push_back({{0, angle0, 0}, {}, {0, per_view_exposure}}); // TODO C++20 use emplace_back()
-        i64 group_count = !exclude_start;
-        f64 pre_exposure = per_view_exposure;
-        f64 post_exposure = pre_exposure + per_view_exposure;
-
-        for (i64 i = 1; i < n_slices; ++i) {
-            angle0 += direction * angle_increment;
-            slices.push_back({{0, angle0, 0}, {}, {pre_exposure, post_exposure}});
-
-            if (group_count == group - 1) {
-                direction *= -1;
-                group_count = 0;
-                std::swap(angle0, angle1);
-            } else {
-                ++group_count;
-            }
-            pre_exposure += per_view_exposure;
-            post_exposure += per_view_exposure;
-        }
-
-        // Assume slices are saved in the ascending tilt order.
-        std::sort(slices.begin(), slices.end(),
-                  [](const auto& lhs, const auto& rhs) { return lhs.angles[1] < rhs.angles[1]; });
-        for (size_t i = 0; i < slices.size(); ++i) {
-            slices[i].index = static_cast<i32>(i);
-            slices[i].index_file = static_cast<i32>(i);
-        }
-
-        return slices;
-    }
-
     MetadataStack::MetadataStack(const Options& options) {
         if (!options.files.input_tlt.empty() && !options.files.input_exposure.empty()) {
             generate_(options.files.input_tlt, options.files.input_exposure);
 
-        } else if (options.tilt_scheme.order.has_value()) {
+        } else if (options.experiment.collection_order.has_value()) {
             const auto shape = noa::io::ImageFile(options.files.input_stack, noa::io::READ).shape();
             const auto count = static_cast<i32>(shape[0] == 1 && shape[1] > 1 ? shape[1] : shape[0]);
 
-            const Options::TiltScheme::Order order = options.tilt_scheme.order.value();
-            const TiltScheme scheme{
-                    order.starting_angle,
-                    order.starting_direction,
-                    order.angle_increment,
-                    order.group,
-                    order.exclude_start,
-                    order.per_view_exposure,
-            };
-            generate_(scheme, count);
-
+            const auto order = options.experiment.collection_order.value();
+            generate_(order.starting_angle,
+                      order.starting_direction,
+                      order.tilt_increment,
+                      order.group_of,
+                      order.exclude_start,
+                      order.per_view_exposure,
+                      count);
         } else {
             QN_THROW("Missing option(s). Could not find enough information regarding the tilt geometry");
         }
@@ -95,6 +53,15 @@ namespace qn {
                     return std::abs(lhs.angles[1]) < std::abs(rhs.angles[1]);
                 });
         return iter - m_slices.begin();
+    }
+
+    auto MetadataStack::minmax_tilts() const -> std::pair<f64, f64> {
+        const auto [iter_min, iter_max] = std::minmax_element(
+                begin(), end(),
+                [](const MetadataSlice& lhs, const MetadataSlice& rhs) {
+                    return lhs.angles[1] < rhs.angles[1];
+                });
+        return std::pair{iter_min->angles[1], iter_max->angles[1]};
     }
 
     void MetadataStack::save(
@@ -171,8 +138,49 @@ namespace qn {
         }
     }
 
-    void MetadataStack::generate_(TiltScheme tilt_scheme, i32 n_slices) {
-        m_slices = tilt_scheme.generate(n_slices);
+    void MetadataStack::generate_(
+            f64 starting_angle,
+            i64 starting_direction,
+            f64 tilt_increment,
+            i64 group_of,
+            bool exclude_start,
+            f64 per_view_exposure,
+            i32 n_slices
+    ) {
+        m_slices.clear();
+        m_slices.reserve(static_cast<size_t>(n_slices));
+
+        auto direction = static_cast<f64>(starting_direction);
+        f64 angle0 = starting_angle;
+        f64 angle1 = angle0;
+
+        m_slices.push_back({{0, angle0, 0}, {}, {0, per_view_exposure}}); // TODO C++20 use emplace_back()
+        i64 group_count = !exclude_start;
+        f64 pre_exposure = per_view_exposure;
+        f64 post_exposure = pre_exposure + per_view_exposure;
+
+        for (i64 i = 1; i < n_slices; ++i) {
+            angle0 += direction * tilt_increment;
+            m_slices.push_back({{0, angle0, 0}, {}, {pre_exposure, post_exposure}});
+
+            if (group_count == group_of - 1) {
+                direction *= -1;
+                group_count = 0;
+                std::swap(angle0, angle1);
+            } else {
+                ++group_count;
+            }
+            pre_exposure += per_view_exposure;
+            post_exposure += per_view_exposure;
+        }
+
+        // Assume slices are saved in the ascending tilt order.
+        std::sort(m_slices.begin(), m_slices.end(),
+                  [](const auto& lhs, const auto& rhs) { return lhs.angles[1] < rhs.angles[1]; });
+        for (size_t i = 0; i < m_slices.size(); ++i) {
+            m_slices[i].index = static_cast<i32>(i);
+            m_slices[i].index_file = static_cast<i32>(i);
+        }
     }
 
     void MetadataStack::sort_on_indexes_(bool ascending) {
