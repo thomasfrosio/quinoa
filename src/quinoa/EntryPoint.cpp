@@ -576,71 +576,71 @@ namespace {
 ////        noa::io::save(target, directory / "target_padded.mrc");
 //    }
 
-    void benchmark_projection() {
-        const auto options = ArrayOption(Device("gpu"), Allocator::DEFAULT_ASYNC);
-        const auto options_managed = ArrayOption(Device("gpu"), Allocator::MANAGED);
-
-        const i64 n_slices = 60;
-        const auto size = noa::fft::next_fast_size(2048);
-        const auto insertion_shape = Shape4<i64>{n_slices, 1, size, size};
-        auto slices_to_insert = noa::memory::zeros<c32>(insertion_shape.rfft(), options_managed);
-        auto slice_to_extract = noa::memory::zeros<c32>(insertion_shape.set<0>(1).rfft(), options);
-        auto slices_to_insert_weight = noa::memory::like<f32>(slices_to_insert);
-        auto slice_to_extract_weight = noa::memory::like<f32>(slice_to_extract);
-
-//        noa::Texture<c32> texture(
-//                slices_to_insert.release(), options.device(), InterpMode::LINEAR_FAST, BorderMode::ZERO,
-//                c32{0}, true, false);
-
-        slice_to_extract.eval();
-
-        auto insertion_inv_rotations = noa::memory::empty<Float33>(n_slices);
-        for (i64 i: irange(n_slices)) {
-            insertion_inv_rotations.span()[i] = noa::geometry::euler2matrix(
-                    Vec3<f64>{-2.3, 0.1 * static_cast<f64>(i), 0},
-                    "zyx", /*intrinsic=*/ false).transpose().as<f32>();
-        }
-        insertion_inv_rotations = insertion_inv_rotations.to(options);
-
-        const Float33 extraction_fwd_rotation = noa::geometry::euler2matrix(
-                Vec3<f64>{-2.3, 0.45, 0},
-                "zyx", /*intrinsic=*/ false).as<f32>();
-
-        using WindowedSinc = noa::geometry::fft::WindowedSinc;
-        const auto i_windowed_sinc = WindowedSinc{0.000488281f, 0.000488281f * 4};
-        const auto o_windowed_sinc = WindowedSinc{0.01f, 0.04f};
-
-        noa::Timer timer;
-        timer.start();
-
-        constexpr i64 N = 10;
-        for (i64 i = 0; i < N; ++i) {
-//            Float33 matrix = noa::geometry::euler2matrix(
-//                        Vec3<f64>{-2.3, 0.1 * static_cast<f64>(i), 0},
-//                        "zyx", /*intrinsic=*/ false).transpose().as<f32>();
-
-            noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
-                    slices_to_insert, slices_to_insert_weight, insertion_shape,
-                    slice_to_extract, slice_to_extract_weight, insertion_shape.set<0>(1),
-                    Float22{}, insertion_inv_rotations, //insertion_inv_rotations, //Float33{0.94},
-                    Float22{}, extraction_fwd_rotation,
-                    i_windowed_sinc, o_windowed_sinc,
-                    /*add_to_output=*/ false,
-                    /*correct_multiplicity=*/ true);
-
+//    void benchmark_projection() {
+//        const auto options = ArrayOption(Device("gpu"), Allocator::DEFAULT_ASYNC);
+//        const auto options_managed = ArrayOption(Device("gpu"), Allocator::MANAGED);
+//
+//        const i64 n_slices = 60;
+//        const auto size = noa::fft::next_fast_size(2048);
+//        const auto insertion_shape = Shape4<i64>{n_slices, 1, size, size};
+//        auto slices_to_insert = noa::memory::zeros<c32>(insertion_shape.rfft(), options_managed);
+//        auto slice_to_extract = noa::memory::zeros<c32>(insertion_shape.set<0>(1).rfft(), options);
+//        auto slices_to_insert_weight = noa::memory::like<f32>(slices_to_insert);
+//        auto slice_to_extract_weight = noa::memory::like<f32>(slice_to_extract);
+//
+////        noa::Texture<c32> texture(
+////                slices_to_insert.release(), options.device(), InterpMode::LINEAR_FAST, BorderMode::ZERO,
+////                c32{0}, true, false);
+//
+//        slice_to_extract.eval();
+//
+//        auto insertion_inv_rotations = noa::memory::empty<Float33>(n_slices);
+//        for (i64 i: irange(n_slices)) {
+//            insertion_inv_rotations.span()[i] = noa::geometry::euler2matrix(
+//                    Vec3<f64>{-2.3, 0.1 * static_cast<f64>(i), 0},
+//                    "zyx", /*intrinsic=*/ false).transpose().as<f32>();
+//        }
+//        insertion_inv_rotations = insertion_inv_rotations.to(options);
+//
+//        const Float33 extraction_fwd_rotation = noa::geometry::euler2matrix(
+//                Vec3<f64>{-2.3, 0.45, 0},
+//                "zyx", /*intrinsic=*/ false).as<f32>();
+//
+//        using WindowedSinc = noa::geometry::fft::WindowedSinc;
+//        const auto i_windowed_sinc = WindowedSinc{0.000488281f, 0.000488281f * 4};
+//        const auto o_windowed_sinc = WindowedSinc{0.01f, 0.04f};
+//
+//        noa::Timer timer;
+//        timer.start();
+//
+//        constexpr i64 N = 10;
+//        for (i64 i = 0; i < N; ++i) {
+////            Float33 matrix = noa::geometry::euler2matrix(
+////                        Vec3<f64>{-2.3, 0.1 * static_cast<f64>(i), 0},
+////                        "zyx", /*intrinsic=*/ false).transpose().as<f32>();
+//
 //            noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
-//                    slices_to_insert_weight, {}, insertion_shape,
-//                    slice_to_extract_weight, {}, insertion_shape.set<0>(1),
+//                    slices_to_insert, slices_to_insert_weight, insertion_shape,
+//                    slice_to_extract, slice_to_extract_weight, insertion_shape.set<0>(1),
 //                    Float22{}, insertion_inv_rotations, //insertion_inv_rotations, //Float33{0.94},
 //                    Float22{}, extraction_fwd_rotation,
 //                    i_windowed_sinc, o_windowed_sinc,
 //                    /*add_to_output=*/ false,
 //                    /*correct_multiplicity=*/ true);
-        }
-
-        slice_to_extract.eval();
-        fmt::print("projection took {}ms\n", timer.elapsed() / N);
-    }
+//
+////            noa::geometry::fft::insert_interpolate_and_extract_3d<noa::fft::HC2H>(
+////                    slices_to_insert_weight, {}, insertion_shape,
+////                    slice_to_extract_weight, {}, insertion_shape.set<0>(1),
+////                    Float22{}, insertion_inv_rotations, //insertion_inv_rotations, //Float33{0.94},
+////                    Float22{}, extraction_fwd_rotation,
+////                    i_windowed_sinc, o_windowed_sinc,
+////                    /*add_to_output=*/ false,
+////                    /*correct_multiplicity=*/ true);
+//        }
+//
+//        slice_to_extract.eval();
+//        fmt::print("projection took {}ms\n", timer.elapsed() / N);
+//    }
 }
 
 auto main(int argc, char* argv[]) -> int {

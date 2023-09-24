@@ -550,13 +550,10 @@ namespace {
 
     struct ProjectionMatchingAlignmentParameters {
         Device compute_device;
-        Path output_directory;
         Path debug_directory;
-
-        f64 maximum_resolution;
         f64 thickness_estimate_nm;
-        bool fit_rotation{true};
-        bool no_weights{true};
+        i64 rotation_resolution{0};
+        bool use_ctf{false};
     };
 
     void projection_matching_alignment(
@@ -574,20 +571,18 @@ namespace {
         //    This should also pretty much solve the potential big shifts at high tilts.
         // 2. Final run:
         //    Run projection-matching at the maximum resolution, without searching for the rotation.
-        std::array resolution{24., 14.};
-        std::array rotation_range{5., 0.};
+        std::array resolution{28., 22., 10.};
+        std::array min_size{512, 1024, 1024};
+        std::array rotation_range{5., 1.5, 0.};
 
         for (auto i: noa::irange(resolution.size())) {
-            qn::Logger::info("Running projection matching at resolution={:.2f}A, with rotation_range={:.2f}deg",
-                             resolution[i], rotation_range[i]);
-
             // Load the stack. Make sure spacing is isotropic.
             const auto loading_parameters = LoadStackParameters{
                     /*compute_device=*/ parameters.compute_device,
                     /*allocator=*/ Allocator::MANAGED,
                     /*precise_cutoff=*/ true,
                     /*rescale_target_resolution=*/ resolution[i],
-                    /*rescale_min_size=*/ 1024,
+                    /*rescale_min_size=*/ min_size[i],
                     /*exposure_filter=*/ false,
                     /*highpass_parameters=*/ {0.01, 0.01},
                     /*lowpass_parameters=*/ {0.5, 0.05},
@@ -614,10 +609,9 @@ namespace {
             // common areas to exclude fewer views, and 2) exclude the views that are still too far off.
             constexpr f64 maximum_size_loss = 0.1;
             auto common_area = CommonArea(stack.shape().filter(2, 3), metadata, maximum_size_loss); // FIXME
-//        const std::vector<i64> excluded_indexes = common_area.set_geometry(
-//                stack.shape().filter(2, 3), metadata, maximum_size_loss);
-//        if (!excluded_indexes.empty())
-//            metadata.exclude(excluded_indexes, /*reset_index_field=*/ false);
+
+            qn::Logger::info("Running projection-matching at resolution={:.2f}A, with rotation_range={:.2f}deg",
+                             spacing * 2, rotation_range[i]);
 
             auto projection_matching = ProjectionMatching(
                     metadata.ssize(),
@@ -641,10 +635,10 @@ namespace {
                               std::round(fftfreq_z_blackman * virtual_volume_size * 2 + 1));
 
             auto projection_matching_parameters = ProjectionMatchingParameters{
-                    /*use_estimated_gradients=*/ false,
+                    /*use_estimated_gradients=*/ true,
                     /*use_ctfs=*/ false,
                     /*rotation_range=*/ rotation_range[i],
-                    /*rotation_resolution=*/ 1,
+                    /*rotation_resolution=*/ 3,
                     /*shift_tolerance=*/ 0.001,
                     /*smooth_edge_percent=*/ 0.10,
                     /*fftfreq_sinc=*/ fftfreq_sinc,
@@ -655,13 +649,16 @@ namespace {
                     /*lowpass_filter=*/ {0.35, 0.15},
                     /*debug_directory=*/ parameters.debug_directory,
             };
-            projection_matching.update(
-                    stack.view(), common_area, projection_matching_parameters, ctf, metadata);
+            if (i == 0) {
+                projection_matching_parameters.rotation_resolution = 1;
+                projection_matching.update(stack.view(), common_area, projection_matching_parameters, ctf, metadata);
+                projection_matching_parameters.rotation_resolution = 3;
+            }
+            projection_matching.update(stack.view(), common_area, projection_matching_parameters, ctf, metadata);
 
             // Rescale back to original spacing and center.
             metadata.rescale_shifts(stack_spacing, file_spacing);
             metadata.center_shifts();
-            break;
         }
 
         qn::Logger::status("Projection-matching alignment... done. Took {:.3f}s", timer.elapsed() * 1e-3);
@@ -696,7 +693,7 @@ namespace qn {
                     /*compute_device=*/ options.compute.device,
                     /*debug_directory=*/ qn::Logger::is_debug() ? options.files.output_directory / "debug_initial_alignment" : "",
                     /*maximum_resolution=*/ 10.,
-                    /*fit_angle_offset=*/ fit_angle_offset, //{false, false, false}, // FIXME fit_angle_offset,
+                    /*fit_angle_offset=*/ {false, false, false}, // FIXME fit_angle_offset,
                     /*has_user_angle_offset=*/ has_user_angle_offset,
             };
             initial_pairwise_alignment(
@@ -766,12 +763,10 @@ namespace qn {
         if (options.alignment.use_projection_matching) {
             const auto projection_matching_alignment_parameters = ProjectionMatchingAlignmentParameters{
                     /*compute_device=*/ options.compute.device,
-                    /*output_directory=*/ options.files.output_directory,
                     /*debug_directory=*/ "", // qn::Logger::is_debug() ? options.files.output_directory / "debug_projection_matching" : "",
-                    /*maximum_resolution=*/ 16.,
                     /*thickness_estimate_nm=*/ thickness_nm,
-                    /*fit_rotation=*/ options.alignment.fit_rotation_offset,
-                    /*no_weights=*/ true,
+                    /*rotation_resolution=*/ 3, //options.alignment.fit_rotation_offset,
+                    /*use_ctf=*/ false,
             };
 
             projection_matching_alignment(

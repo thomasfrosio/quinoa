@@ -72,7 +72,7 @@ namespace {
             f64 final_score;
             auto updated_target_metadata = target_metadata;
 
-            for (auto _: noa::irange(200)) {
+            for (auto i: noa::irange(200)) {
                 postprocessing_(stack, updated_target_metadata, common_area, parameters);
                 auto [i_score, i_shift] = cross_correlate_(updated_target_metadata, common_area, parameters);
 
@@ -80,9 +80,10 @@ namespace {
                 final_score = i_score;
                 final_shifts += i_shift;
 
-//                qn::Logger::trace("i={}, i_score={:.6f}, i_shift={::.3f}", i, i_score, i_shift);
-                if (noa::all(noa::math::abs(i_shift) < parameters.shift_tolerance))
+                if (noa::all(noa::math::abs(i_shift) < parameters.shift_tolerance)) {
+//                    qn::Logger::trace("count={}", i);
                     break;
+                }
             }
             return {final_score, final_shifts};
         }
@@ -443,9 +444,8 @@ namespace {
 
         Memoizer m_memoizer;
         Vec2<f64> m_tilt_minmax;
-        Array<f64> m_scores;
-        Array<f64> m_spline_weights;
-
+        std::vector<f64> m_scores;
+        MetadataStack m_updated_metadata;
         i64 m_n_evaluations{0}; // just for logging
 
     public:
@@ -462,28 +462,9 @@ namespace {
                 m_common_area(&common_area),
                 m_parameters(&parameters)
         {
-            m_scores = noa::memory::empty<f64>({parameters.rotation_resolution, 1, 1, metadata.ssize() - 1});
-            m_memoizer = Memoizer(/*n_parameters=*/ 1, /*resolution=*/ 25);
-
+            m_memoizer = Memoizer(/*n_parameters=*/ parameters.rotation_resolution, /*resolution=*/ 25);
             const auto minmax = metadata.minmax_tilts();
             m_tilt_minmax = {minmax.first, minmax.second};
-
-            // Precompute the spline weights if necessary.
-            if (parameters.rotation_resolution > 1) {
-                m_spline_weights = noa::memory::like<f64>(m_scores);
-
-                for (auto point: noa::irange(parameters.rotation_resolution)) {
-                    const auto span = m_spline_weights.subregion(point).span();
-
-                    i64 i{0}; // TODO C++20 initializer for-range
-                    for (const auto& slice: metadata) {
-                        const f64 normalized_tilt = to_normalized_tilt_(slice.angles[1]);
-                        const f64 rotation_offset = CubicSplineGrid<f64, 1>::weight(
-                                normalized_tilt, parameters.rotation_resolution, point);
-                        span[i++] = rotation_offset;
-                    }
-                }
-            }
         }
 
     private:
@@ -494,46 +475,27 @@ namespace {
             return (tilt - min) / (max - min);
         }
 
-        [[nodiscard]] auto spline_weights_(i64 point) const -> Span<f64> {
-            return m_spline_weights.subregion(point).span();
-        }
-
-        [[nodiscard]] auto scores_(i64 batch = 0) const -> Span<f64> { return m_scores.subregion(batch).span(); }
-
-        [[nodiscard]] auto total_score_(i64 batch = 0) const -> f64 {
-            const auto span = scores_(batch);
-            return std::accumulate(span.begin(), span.end(), f64{0}) / static_cast<f64>(span.size());
-        }
-
-        [[nodiscard]] static auto weighted_mean_(const Span<f64>& scores, const Span<f64>& weights) -> f64 {
-            f64 weighted_sum{0}, sum_weights{0};
-            for (i64 i = 0; i < scores.ssize(); ++i) {
-                weighted_sum += scores[i] * weights[i];
-                sum_weights += weights[i];
-            }
-            return weighted_sum / sum_weights;
-        }
-
     public:
+        [[nodiscard]] auto aligned_metadata() noexcept -> MetadataStack& { return m_updated_metadata; }
         [[nodiscard]] auto n_evaluations() const noexcept -> i64 { return m_n_evaluations; }
 
-        auto align(const Span<f64>& rotation_offsets, i64 batch = 0) -> MetadataStack {
+        auto align(const Span<f64>& rotation_offsets) -> f64 {
+            m_scores.clear();
             m_projector->reset();
-            auto updated_metadata = *m_metadata; // the original metadata should stay unchanged
+            m_updated_metadata = *m_metadata; // the original metadata should stay unchanged
 
             // Update the metadata with the new rotation angles.
             const auto spline = CubicSplineGrid<f64, 1>(rotation_offsets.ssize(), 1, rotation_offsets.data());
-            for (auto& slice: updated_metadata) {
+            for (auto& slice: m_updated_metadata) {
                 const f64 normalized_tilt = to_normalized_tilt_(slice.angles[1]);
                 const f64 rotation_offset = spline.interpolate(normalized_tilt);
                 slice.angles[0] = MetadataSlice::to_angle_range(slice.angles[0] + rotation_offset);
             }
 
             // Projection-matching of the entire stack.
-            auto scores_span = scores_(batch);
-            for (i64 target_index = 1; target_index < updated_metadata.ssize(); ++target_index) {
-                const MetadataSlice& new_reference_slice = updated_metadata[target_index - 1];
-                MetadataSlice& target_slice = updated_metadata[target_index];
+            for (i64 target_index = 1; target_index < m_updated_metadata.ssize(); ++target_index) {
+                const MetadataSlice& new_reference_slice = m_updated_metadata[target_index - 1];
+                MetadataSlice& target_slice = m_updated_metadata[target_index];
 
                 const auto [score, shift_offset] = m_projector->project_and_correlate_next(
                         m_stack, new_reference_slice, target_slice,
@@ -544,19 +506,14 @@ namespace {
                 target_slice.shifts += shift_offset;
 
                 // Collect the score of the slice-alignment.
-                scores_span[target_index - 1] = score;
+                m_scores.emplace_back(score);
 
 //                qn::Logger::trace("{:>02}: tilt={} score={:.8f}, shift_offset={::.8f}",
 //                                  target_index, target_slice.angles[1], score, shift_offset);
             }
 
             ++m_n_evaluations;
-            return updated_metadata;
-        }
-
-        auto cost(const Span<f64>& rotation_offset, i64 batch = 0) -> f64 {
-            align(rotation_offset, batch);
-            return total_score_(batch);
+            return std::accumulate(m_scores.begin(), m_scores.end(), f64{0}) / static_cast<f64>(m_scores.size());
         }
 
         static auto maximization_function(
@@ -582,55 +539,32 @@ namespace {
             // Save a copy of the parameters.
             std::array<f64, 3> buffer{};
             const auto copied_parameters = Span<f64>(buffer.data(), n_parameters);
-            const auto set_parameters = [&original_parameters] (const Span<f64>& new_parameters, f64 delta = 0) {
-                i64 i{0}; // TODO C++20
-                for (f64& value: new_parameters)
-                    value = original_parameters[i++] + delta;
-            };
-            set_parameters(copied_parameters);
+            for (u32 i = 0; i < n_parameters; ++i)
+                copied_parameters[i] = original_parameters[i];
 
-            const f64 cost = self.cost(copied_parameters);
+            const f64 cost = self.align(copied_parameters);
 
             if (gradients != nullptr) {
-                constexpr f64 DELTA = 0.2; // in degrees
-                if constexpr (true) {
-                    for (i64 i: noa::irange(n_parameters)) {
-                        f64 original_value = copied_parameters[i];
+                constexpr f64 DELTA = 0.2; // in degrees // FIXME try 0.1 or scale gradient
+                for (i64 i: noa::irange(n_parameters)) {
+                    f64 original_value = copied_parameters[i];
 
-                        copied_parameters[i] += DELTA;
-                        const f64 cost_minus_delta = self.cost(copied_parameters);
+                    copied_parameters[i] += DELTA;
+                    const f64 cost_plus_delta = self.align(copied_parameters);
 
-                        copied_parameters[i] = original_value - DELTA;
-                        const f64 cost_plus_delta = self.cost(copied_parameters);
+                    copied_parameters[i] = original_value - DELTA;
+                    const f64 cost_minus_delta = self.align(copied_parameters);
 
-                        copied_parameters[i] = original_value;
-                        const auto gradient = CentralFiniteDifference::get(cost_minus_delta, cost_plus_delta, DELTA);
-                        gradients[i] = gradient;
-                        qn::Logger::trace("gradient[{}]={}", i, gradient);
-                    }
-                } else {
-                    // Compute scores for -delta
-                    set_parameters(copied_parameters, -DELTA);
-                    self.cost(copied_parameters, /*batch=*/ 1);
-                    const auto scores_minus = self.scores_(1);
-
-                    // Compute scores for +delta
-                    set_parameters(copied_parameters, +DELTA);
-                    self.cost(copied_parameters, /*batch=*/ 2);
-                    const auto scores_plus = self.scores_(2);
-
-                    for (auto parameter: noa::irange(n_parameters)) {
-                        const auto weights = self.spline_weights_(parameter);
-                        const auto score_minus = weighted_mean_(scores_minus, weights);
-                        const auto score_plus = weighted_mean_(scores_plus, weights);
-                        const auto gradient = CentralFiniteDifference::get(score_minus, score_plus, DELTA);
-                        gradients[parameter] = gradient;
-                        qn::Logger::trace("gradient[{}]={}", parameter, gradient);
-                    }
+                    copied_parameters[i] = original_value;
+                    const auto gradient = CentralFiniteDifference::get(cost_minus_delta, cost_plus_delta, DELTA);
+                    gradients[i] = gradient;
+                    qn::Logger::trace("gradient[{}]={} (minus={}, plus={})",
+                                      i, gradient, cost_minus_delta, cost_plus_delta);
                 }
             }
 
-            qn::Logger::trace("cost={:.4f}, elapsed={:.2f}ms", cost, timer.elapsed());
+            qn::Logger::trace("rotation_offsets={:.6f}, cost={:.4f}, elapsed={:.2f}ms",
+                              fmt::join(original_parameters, ","), cost, timer.elapsed());
             memoizer.record(parameters, cost, gradients);
             return cost;
         }
@@ -686,31 +620,34 @@ namespace qn {
         std::array<f64, 3> buffer{};
         const auto rotation_offsets = Span<f64>(buffer.data(), parameters.rotation_resolution);
 
+        // Optimize the rotation by maximizing the score from the
+        // projection-matching of every slice in the stack.
         if (parameters.rotation_range > 1e-2) {
-            // Optimize the rotation by maximizing the score from the
-            // projection-matching of every slice in the stack.
-            const Optimizer optimizer(parameters.use_estimated_gradients ? NLOPT_LD_LBFGS : NLOPT_LN_SBPLX, 1);
+            auto optimizer = Optimizer(
+                    NLOPT_LN_SBPLX, //parameters.rotation_resolution > 1 ? NLOPT_LD_LBFGS : NLOPT_LN_SBPLX,
+                    parameters.rotation_resolution);
             optimizer.set_max_objective(Fitter::maximization_function, &fitter);
             optimizer.set_bounds(-parameters.rotation_range, parameters.rotation_range);
-            optimizer.set_initial_step(parameters.rotation_range * 0.1);
-            optimizer.set_x_tolerance_abs(0.02);
+            optimizer.set_initial_step(parameters.rotation_range * 0.2);
+            optimizer.set_x_tolerance_abs(0.05);
+            optimizer.set_fx_tolerance_abs(5e-5);
             optimizer.optimize(rotation_offsets.data());
         }
 
         // The optimizer can do some post-processing on the parameters, so the last projection matching
         // might not have been run on these final parameters. As such, do a final pass with the actual
         // best rotation offset returned by the optimizer.
-        projection_metadata = fitter.align(rotation_offsets); // TODO This is not memoized...
+        fitter.align(rotation_offsets);
 
         // Update the original metadata with the aligned one.
         metadata.update_from(
-                projection_metadata,
+                fitter.aligned_metadata(),
                 /*update_angles=*/ true,
                 /*update_shifts=*/ true,
                 /*update_defocus=*/false);
 
-        qn::Logger::trace("rotation_offset={}", metadata[0].angles[0]);
-        qn::Logger::trace("Projection-matching alignment... done. Took {:.3f}s (n_evaluations={})",
+        qn::Logger::info("rotation_offset={}", metadata[0].angles[0]);
+        qn::Logger::info("Projection-matching alignment... done. Took {:.3f}s (n_evaluations={})",
                           timer.elapsed() * 1e-3, fitter.n_evaluations());
     }
 }

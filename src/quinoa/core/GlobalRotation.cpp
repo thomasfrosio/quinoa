@@ -111,7 +111,7 @@ namespace {
                     m_targets_stretched_rfft, m_targets_stretched_rfft, targets_stretched.shape(),
                     m_parameters->highpass_filter[0], m_parameters->lowpass_filter[0],
                     m_parameters->highpass_filter[1], m_parameters->lowpass_filter[1]);
-            noa::signal::fft::xcorr<noa::fft::H2H>(
+            noa::signal::fft::xcorr<noa::fft::H2H>( // FIXME Use normalized xpeak?
                     m_reference_rfft, m_targets_stretched_rfft,
                     targets_stretched.shape(), m_xcorr_coefficients);
             return static_cast<f64>(noa::math::mean(m_xcorr_coefficients));

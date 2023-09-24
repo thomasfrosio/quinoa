@@ -219,10 +219,10 @@ namespace qn {
         [[nodiscard]] auto size() const noexcept -> size_t { return m_slices.size(); }
         [[nodiscard]] auto ssize() const noexcept -> i64 { return static_cast<i64>(size()); }
 
-        [[nodiscard]] constexpr auto begin() const noexcept -> const_iterator { return m_slices.begin(); }
-        [[nodiscard]] constexpr auto begin() noexcept -> iterator { return m_slices.begin(); }
-        [[nodiscard]] constexpr auto end() const noexcept -> const_iterator { return m_slices.end(); }
-        [[nodiscard]] constexpr auto end() noexcept -> iterator { return m_slices.end(); }
+        [[nodiscard]] auto begin() const noexcept -> const_iterator { return m_slices.cbegin(); }
+        [[nodiscard]] auto begin() noexcept -> iterator { return m_slices.begin(); }
+        [[nodiscard]] auto end() const noexcept -> const_iterator { return m_slices.cend(); }
+        [[nodiscard]] auto end() noexcept -> iterator { return m_slices.end(); }
 
         // Returns a view of the slice at "idx", as currently sorted in this instance (see sort()).
         template<typename T, typename = std::enable_if_t<noa::traits::is_int_v<T>>>

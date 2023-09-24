@@ -13,7 +13,7 @@ experiment:
     group_of: 3
     exclude_start: false
     per_view_exposure: 3
-  rotation_offset: 175.1
+  rotation_offset: 175
   tilt_offset:
   elevation_offset:
   voltage:
@@ -31,7 +31,7 @@ preprocessing:
 
 alignment:
   run:
-  fit_rotation_offset: false
+  fit_rotation_offset:
   fit_tilt_offset:
   fit_elevation_offset:
   fit_phase_shift: false
@@ -39,7 +39,7 @@ alignment:
   use_initial_pairwise_alignment: true
   use_ctf_estimate: false
   use_thickness_estimate: false
-  use_projection_matching: true
+  use_projection_matching: false
 
 reconstruction:
   run: false
