@@ -13,7 +13,7 @@ experiment:
     group_of: 3
     exclude_start: false
     per_view_exposure: 3
-  rotation_offset: 175
+  rotation_offset:
   tilt_offset:
   elevation_offset:
   voltage:
@@ -22,7 +22,7 @@ experiment:
   phase_shift:
   astigmatism_value:
   astigmatism_angle:
-  thickness: 80
+  thickness: 90
 
 preprocessing:
   run:
@@ -34,18 +34,19 @@ alignment:
   fit_rotation_offset:
   fit_tilt_offset:
   fit_elevation_offset:
-  fit_phase_shift: false
-  fit_astigmatism: false
+  fit_phase_shift:
+  fit_astigmatism:
   use_initial_pairwise_alignment: true
   use_ctf_estimate: false
-  use_thickness_estimate: false
-  use_projection_matching: false
+  use_thickness_estimate: true
+  use_projection_matching: true
 
-reconstruction:
-  run: false
-  resolution: 20
-  thickness:
-  cube_size:
+postprocessing:
+  run:
+  save_aligned_stack:
+  reconstruct_tomogram: true
+  reconstruct_tomogram_resolution:
+  reconstruct_cube_size:
 
 compute:
   device: gpu

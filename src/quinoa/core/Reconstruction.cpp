@@ -420,7 +420,10 @@ namespace qn {
 //                    metadata, loading_parameters);
 //        }
 
+
         auto updated_metadata = metadata;
+//        updated_metadata.add_global_angles({0,1,0});
+
         const auto [stack, stack_spacing, file_spacing] =
                 load_stack(stack_filename, updated_metadata, loading_parameters);
         updated_metadata.rescale_shifts(file_spacing, stack_spacing);

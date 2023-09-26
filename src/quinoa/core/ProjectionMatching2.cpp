@@ -150,12 +150,12 @@ namespace {
         ) {
             // Copy from stack and apply the common-area mask.
             const View<f32> reference = m_two_slices.subregion(0);
-//            common_area.mask_view(
-//                    stack.subregion(reference_metadata.index),
-//                    reference.subregion(0),
-//                    reference_metadata,
-//                    parameters.smooth_edge_percent);
-            stack.subregion(reference_metadata.index).to(reference.subregion(0));
+            common_area.mask_view(
+                    stack.subregion(reference_metadata.index),
+                    reference.subregion(0),
+                    reference_metadata,
+                    parameters.smooth_edge_percent);
+//            stack.subregion(reference_metadata.index).to(reference.subregion(0));
 
             // Zero-(right-)pad and in-place rfft.
             const View<c32> reference_padded_rfft = m_slices_padded_rfft.subregion(reference_index_());
@@ -276,11 +276,11 @@ namespace {
             // 1. Copy from stack and apply the common-area mask.
             // 2. Zero-pad and in-place rfft.
             const View<f32> target = m_two_slices.subregion(0);
-//            common_area.mask_view(
-//                    stack.subregion(target_metadata.index),
-//                    target, target_metadata,
-//                    parameters.smooth_edge_percent);
-            stack.subregion(target_metadata.index).to(target);
+            common_area.mask_view(
+                    stack.subregion(target_metadata.index),
+                    target, target_metadata,
+                    parameters.smooth_edge_percent);
+//            stack.subregion(target_metadata.index).to(target);
             const View<f32> target_padded = noa::fft::alias_to_real(target_padded_rfft, shape_padded_());
             noa::memory::resize(target, target_padded, {}, border_right_());
             noa::fft::r2c(target_padded, target_padded_rfft);
@@ -330,8 +330,8 @@ namespace {
                     .subregion(target_and_projected_slice).flat(/*axis=*/ 0).as<f32>()
                     .subregion(noa::indexing::Slice{0, shape_original_().elements()})
                     .reshape(shape_original_());
-//            common_area.compute(mask, target_metadata, parameters.smooth_edge_percent);
-            noa::memory::fill(mask, 1.f);
+            common_area.compute(mask, target_metadata, parameters.smooth_edge_percent);
+//            noa::memory::fill(mask, 1.f);
 
             // 2. Apply the mask to both the target and projected reference.
             const auto target_and_projected = m_two_slices;

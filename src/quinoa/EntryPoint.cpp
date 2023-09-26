@@ -712,23 +712,23 @@ auto main(int argc, char* argv[]) -> int {
 
         // Postprocessing.
         if (options.postprocessing.run) {
-//            const auto loading_parameters = qn::LoadStackParameters{
-//                    /*compute_device=*/ options.compute.device,
-//                    /*allocator=*/ noa::Allocator::DEFAULT_ASYNC,
-//                    /*precise_cutoff=*/ true,
-//                    /*rescale_target_resolution=*/ 20,
-//                    /*rescale_min_size=*/ 1024,
-//                    /*exposure_filter=*/ false,
-//                    /*highpass_parameters=*/ {0.01, 0.01},
-//                    /*lowpass_parameters=*/ {0.5, 0.01},
-//                    /*normalize_and_standardize=*/ true,
-//                    /*smooth_edge_percent=*/ 0.02f,
-//                    /*zero_pad_to_fast_fft_shape=*/ false,
-//            };
-//            qn::save_stack(
-//                    options.files.input_stack,
-//                    options.files.output_directory / "aligned.mrc",
-//                    metadata, loading_parameters);
+            const auto loading_parameters = qn::LoadStackParameters{
+                    /*compute_device=*/ options.compute.device,
+                    /*allocator=*/ noa::Allocator::DEFAULT_ASYNC,
+                    /*precise_cutoff=*/ true,
+                    /*rescale_target_resolution=*/ 20,
+                    /*rescale_min_size=*/ 1024,
+                    /*exposure_filter=*/ false,
+                    /*highpass_parameters=*/ {0.01, 0.01},
+                    /*lowpass_parameters=*/ {0.5, 0.01},
+                    /*normalize_and_standardize=*/ true,
+                    /*smooth_edge_percent=*/ 0.02f,
+                    /*zero_pad_to_fast_fft_shape=*/ false,
+            };
+            qn::save_stack(
+                    options.files.input_stack,
+                    options.files.output_directory / "aligned.mrc",
+                    metadata, loading_parameters);
 
 
             if (options.postprocessing.reconstruct_tomogram) {
