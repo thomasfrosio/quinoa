@@ -629,8 +629,8 @@ namespace qn {
             optimizer.set_max_objective(Fitter::maximization_function, &fitter);
             optimizer.set_bounds(-parameters.rotation_range, parameters.rotation_range);
             optimizer.set_initial_step(parameters.rotation_range * 0.2);
-            optimizer.set_x_tolerance_abs(0.05);
-            optimizer.set_fx_tolerance_abs(5e-5);
+            optimizer.set_x_tolerance_abs(0.01);
+//            optimizer.set_fx_tolerance_abs(5e-5);
             optimizer.optimize(rotation_offsets.data());
         }
 

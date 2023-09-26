@@ -144,7 +144,7 @@ namespace {
             span[i] = std::abs(array[i - 1] - array[i + 1]) / 2; // central difference
         span[last] = std::abs(array[last] - array[last - 1]); // backward difference
 
-        noa::math::normalize(gradient, gradient);
+        noa::math::normalize(gradient, gradient); // FIXME min to 0?
         if (!debug_directory.empty())
             save_vector_to_text(gradient.view(), debug_directory / "gradient.txt");
 

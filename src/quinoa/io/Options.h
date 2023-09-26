@@ -58,6 +58,13 @@ namespace qn {
             bool use_projection_matching{};
         } alignment;
 
+        struct PostProcessing {
+            bool run{};
+            bool reconstruct_tomogram{};
+            f64 reconstruct_tomogram_resolution{};
+            i64 reconstruct_cube_size{};
+        } postprocessing;
+
         struct Compute {
             Device device{};
             i64 n_cpu_threads{};

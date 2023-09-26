@@ -681,6 +681,8 @@ auto main(int argc, char* argv[]) -> int {
         if (options.compute.register_input_stack)
             StackLoader::register_input_stack(options.files.input_stack);
 
+        // TODO Load existing metadata
+
         // Preprocessing.
         if (options.preprocessing.run) {
             if (!options.preprocessing.exclude_view_indexes.empty())
@@ -699,35 +701,52 @@ auto main(int argc, char* argv[]) -> int {
         }
 
         // Alignment.
-        qn::CTFAnisotropic64 average_ctf;
+        f64 sample_thickness_nm = options.experiment.thickness;
+        f64 final_resolution{};
         if (options.alignment.run) {
-            std::tie(metadata, average_ctf) = tilt_series_alignment(options, metadata);
-
-            const auto loading_parameters = qn::LoadStackParameters{
-                    /*compute_device=*/ options.compute.device,
-                    /*allocator=*/ noa::Allocator::DEFAULT_ASYNC,
-                    /*precise_cutoff=*/ true,
-                    /*rescale_target_resolution=*/ 20,
-                    /*rescale_min_size=*/ 1024,
-                    /*exposure_filter=*/ false,
-                    /*highpass_parameters=*/ {0.01, 0.01},
-                    /*lowpass_parameters=*/ {0.5, 0.01},
-                    /*normalize_and_standardize=*/ true,
-                    /*smooth_edge_percent=*/ 0.02f,
-                    /*zero_pad_to_fast_fft_shape=*/ false,
-            };
-            qn::save_stack(
-                    options.files.input_stack,
-                    options.files.output_directory / "aligned.mrc",
-                    metadata, loading_parameters);
-
-//            qn::full_reconstruction(
-//                    options.files.input_stack, metadata, options.files.output_directory / "reconstruction.mrc");
+            const auto outputs = tilt_series_alignment(options, metadata);
+            metadata = outputs.aligned_metadata;
+            sample_thickness_nm = outputs.sample_thickness_nm;
+            final_resolution = outputs.alignment_resolution;
         }
 
-        // Reconstruction.
+        // Postprocessing.
+        if (options.postprocessing.run) {
+//            const auto loading_parameters = qn::LoadStackParameters{
+//                    /*compute_device=*/ options.compute.device,
+//                    /*allocator=*/ noa::Allocator::DEFAULT_ASYNC,
+//                    /*precise_cutoff=*/ true,
+//                    /*rescale_target_resolution=*/ 20,
+//                    /*rescale_min_size=*/ 1024,
+//                    /*exposure_filter=*/ false,
+//                    /*highpass_parameters=*/ {0.01, 0.01},
+//                    /*lowpass_parameters=*/ {0.5, 0.01},
+//                    /*normalize_and_standardize=*/ true,
+//                    /*smooth_edge_percent=*/ 0.02f,
+//                    /*zero_pad_to_fast_fft_shape=*/ false,
+//            };
+//            qn::save_stack(
+//                    options.files.input_stack,
+//                    options.files.output_directory / "aligned.mrc",
+//                    metadata, loading_parameters);
 
-        qn::Logger::status("Done... took {:.2}s", timer.elapsed() * 1e-3);
+
+            if (options.postprocessing.reconstruct_tomogram) {
+                qn::fourier_tiled_reconstruction(
+                        options.files.input_stack, metadata, options.files.output_directory, {
+                                /*compute_device=*/ options.compute.device,
+                                /*resolution=*/ 12, // FIXME final_resolution
+                                /*sample_thickness_nm=*/ sample_thickness_nm,
+                                /*cube_size=*/ 128, // FIXME options.postprocessing.reconstruct_cube_size,
+                                /*use_rasterization=*/ false,
+                                /*debug_directory=*/
+                                qn::Logger::is_debug() ? options.files.output_directory / "debug_reconstruction" : "",
+                                /*save_aligned_stack*/ false,
+                        });
+            }
+        }
+
+        qn::Logger::status("Done... took {:.2}min", timer.elapsed() * 1e-3 / 60); // FIXME
 
     } catch (...) {
         qn::Logger::error(qn::Exception::backtrace());

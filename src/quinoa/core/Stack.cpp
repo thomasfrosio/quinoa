@@ -4,7 +4,11 @@ namespace qn {
     Array<f32> StackLoader::s_input_stack{};
 
     void StackLoader::register_input_stack(const Path& filename) {
+        noa::Timer timer;
+        timer.start();
+        qn::Logger::info("Loading the input stack in memory...");
         s_input_stack = noa::io::load_data<f32>(filename, /*enforce_2d_stack=*/ true);
+        qn::Logger::info("Loading the input stack in memory... done. Took {:.2f}s", timer.elapsed() * 1e-3);
     }
 
     StackLoader::StackLoader(const Path& filename, const LoadStackParameters& parameters) : m_parameters(parameters) {

@@ -676,7 +676,7 @@ namespace qn {
                 /*defocus=*/ {-0.5, 0.5}
         );
         parameters.set_abs_tolerance(
-                /*angle_tolerance=*/ noa::math::deg2rad(0.05),
+                /*angle_tolerance=*/ noa::math::deg2rad(0.01),
                 /*phase_shift_tolerance=*/ noa::math::deg2rad(0.25),
                 /*astigmatism_value_tolerance=*/ 5e-4,
                 /*astigmatism_angle_tolerance=*/ noa::math::deg2rad(0.1),

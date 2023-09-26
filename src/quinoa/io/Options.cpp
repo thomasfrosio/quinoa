@@ -328,6 +328,59 @@ namespace {
         return alignment;
     }
 
+    auto parse_postprocessing_(YAML::Node postprocessing_node) -> Options::PostProcessing {
+        constexpr std::array QN_OPTIONS_POSTPROCESSING{
+                "run",
+                "reconstruct_tomogram",
+                "reconstruct_tomogram_resolution",
+                "reconstruct_cube_size",
+                "save_aligned_stack"
+        };
+        sanitize_node_(postprocessing_node, QN_OPTIONS_POSTPROCESSING);
+
+        const auto parse_bool_parameter = [&](const std::string& parameter_name, bool fallback) -> bool {
+            const auto parameter_node = postprocessing_node[parameter_name];
+            if (parameter_node.IsScalar())
+                return parameter_node.as<bool>(fallback);
+            else if (parameter_node.IsNull())
+                return fallback;
+            else {
+                QN_THROW_FUNC("parse_postprocessing_",
+                              "postprocessing:{} has an invalid type ({}). Should be a boolean",
+                              parameter_name, parameter_node.Type());
+            }
+        };
+
+        Options::PostProcessing postprocessing;
+        postprocessing.run = parse_bool_parameter("run", true);
+        postprocessing.reconstruct_tomogram = parse_bool_parameter("reconstruct_tomogram", false);
+
+        const auto reconstruct_tomogram_resolution_node = postprocessing_node["reconstruct_tomogram_resolution"];
+        if (reconstruct_tomogram_resolution_node.IsScalar()) {
+            postprocessing.reconstruct_tomogram_resolution = reconstruct_tomogram_resolution_node.as<f64>();
+        } else if (reconstruct_tomogram_resolution_node.IsNull()) {
+            postprocessing.reconstruct_tomogram_resolution = std::numeric_limits<f64>::max();
+        } else {
+            QN_THROW("postprocessing:reconstruct_tomogram_resolution has an invalid type ({}). "
+                     "Should be a scalar or be left emtpy", reconstruct_tomogram_resolution_node.Type());
+        }
+
+        const auto reconstruct_cube_size_node = postprocessing_node["reconstruct_cube_size"];
+        if (reconstruct_cube_size_node.IsScalar()) {
+            postprocessing.reconstruct_cube_size = reconstruct_cube_size_node.as<i64>();
+            QN_CHECK(postprocessing.reconstruct_cube_size >= 64 && postprocessing.reconstruct_cube_size <= 256,
+                     "postprocessing:reconstruct_cube_size should be between 64 and 256, but got {}",
+                     postprocessing.reconstruct_cube_size);
+        } else if (reconstruct_cube_size_node.IsNull()) {
+            postprocessing.reconstruct_cube_size = std::numeric_limits<i64>::max();
+        } else {
+            QN_THROW("postprocessing:reconstruct_cube_size has an invalid type ({}). "
+                     "Should be a scalar or be left emtpy", reconstruct_cube_size_node.Type());
+        }
+
+        return postprocessing;
+    }
+
     auto parse_compute_(const YAML::Node& compute_node) -> Options::Compute {
         constexpr std::array QN_OPTIONS_COMPUTE{
                 "device",
@@ -427,7 +480,7 @@ namespace qn {
                     "experiment",
                     "preprocessing",
                     "alignment",
-                    "reconstruction",
+                    "postprocessing",
                     "compute"
             };
             sanitize_node_(node, QN_OPTIONS_);
@@ -436,7 +489,7 @@ namespace qn {
             experiment = parse_experiment_(node["experiment"]);
             preprocessing = parse_preprocessing_(node["preprocessing"]);
             alignment = parse_alignment_(node["alignment"]);
-            // TODO reconstruction
+            postprocessing = parse_postprocessing_(node["postprocessing"]);
             compute = parse_compute_(node["compute"]);
 
         } catch (...) {
