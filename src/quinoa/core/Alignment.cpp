@@ -501,7 +501,7 @@ namespace {
                                      debug ? parameters.debug_directory / "debug_pairwise_shifts" : "");
 
         Vec3<f64> total_angles_offset;
-        for (i64 i = 0; i < 1 + parameters.refine_pairwise_shift * 2; ++i) {
+        for (i64 i = 0; i < 2 + parameters.refine_pairwise_shift * 2; ++i) {
             // Global fit. Metadata and ctfs are updated.
             const Vec3<f64> angles_offset = CTFFitter::fit_ctf_to_patches(
                     metadata_for_global_fitting, average_ctf,
@@ -553,7 +553,8 @@ namespace {
         Device compute_device;
         Path debug_directory;
         f64 thickness_estimate_nm;
-        i64 rotation_resolution{0};
+        i64 rotation_spline_resolution{0};
+        f64 maximum_resolution{10};
         bool use_ctf{false};
     };
 
@@ -569,12 +570,12 @@ namespace {
 
         // 1. Initial run:
         //    Run projection-matching at a lower resolution and search for the best rotation.
-        //    This should also pretty much solve the potential big shifts at high tilts.
+        //    This should also pretty much solve for the remaining shifts.
         // 2. Final run:
         //    Run projection-matching at the maximum resolution, without searching for the rotation.
-        std::array resolution{28., 22., 10.};
-        std::array min_size{512, 1024, 1024};
-        std::array rotation_range{5., 0., 0.};
+        std::array resolution{28., parameters.maximum_resolution};
+        std::array min_size{512, 1024};
+        std::array rotation_range{parameters.rotation_spline_resolution ? 5. : 0., 0.};
 
         f64 final_resolution{};
         for (auto i: noa::irange(resolution.size())) {
@@ -609,8 +610,7 @@ namespace {
             // Set the common area. For projection-matching, it should be more important to make sure
             // the views that do not fully contain the common area are excluded. So 1) allow smaller
             // common areas to exclude fewer views, and 2) exclude the views that are still too far off.
-            constexpr f64 maximum_size_loss = 0.1;
-            auto common_area = CommonArea(stack.shape().filter(2, 3), metadata, maximum_size_loss); // FIXME
+            auto common_area = CommonArea(stack.shape().filter(2, 3), metadata, 0.05); // FIXME
 
             final_resolution = spacing * 2;
             qn::Logger::info("Running projection-matching at resolution={:.2f}A, with rotation_range={:.2f}deg",
@@ -637,11 +637,14 @@ namespace {
                               fftfreq_z_sinc, std::round(thickness_estimate_pixels), fftfreq_z_blackman,
                               std::round(fftfreq_z_blackman * virtual_volume_size * 2 + 1));
 
+            // FIXME Multiplying by the CTF is removing a lot of low frequencies (everything before the first peak).
+            //       Since these frequencies seem to be _really_ useful for the alignment (they "anchor" the images
+            //       and make sure images aren't aligned to high frequency noise, also orthogonal to the tilt we
+            //       mostly only have low frequencies...), so turn off the CTF weighting for now.
             auto projection_matching_parameters = ProjectionMatchingParameters{
-                    /*use_estimated_gradients=*/ true,
-                    /*use_ctfs=*/ false,
+                    /*use_ctfs=*/ false, // FIXME parameters.use_ctf
                     /*rotation_range=*/ rotation_range[i],
-                    /*rotation_resolution=*/ 1,
+                    /*rotation_spline_resolution=*/ parameters.rotation_spline_resolution,
                     /*shift_tolerance=*/ 0.001,
                     /*smooth_edge_percent=*/ 0.10,
                     /*fftfreq_sinc=*/ fftfreq_sinc,
@@ -652,11 +655,6 @@ namespace {
                     /*lowpass_filter=*/ {0.35, 0.15},
                     /*debug_directory=*/ parameters.debug_directory,
             };
-//            if (i == 0) {
-//                projection_matching_parameters.rotation_resolution = 1;
-//                projection_matching.update(stack.view(), common_area, projection_matching_parameters, ctf, metadata);
-//                projection_matching_parameters.rotation_resolution = 3;
-//            }
             projection_matching.update(stack.view(), common_area, projection_matching_parameters, ctf, metadata);
 
             // Rescale back to original spacing and center.
@@ -676,9 +674,9 @@ namespace qn {
     ) -> AlignmentOutputs {
         // First, extract the angle offsets.
         const auto [has_user_angle_offset, angle_offset, fit_angle_offset] = parse_angle_offset(options);
-        QN_CHECK(has_user_angle_offset[0] or fit_angle_offset[0],
-                 "An initial estimate of the rotation-angle offset was not provided and "
-                 "the rotation-angle offset alignment was turned off");
+//        QN_CHECK(has_user_angle_offset[0] or fit_angle_offset[0],
+//                 "An initial estimate of the rotation-angle offset was not provided and "
+//                 "the rotation-angle offset alignment was turned off"); // FIXME
 
         AlignmentOutputs outputs;
         outputs.aligned_metadata = metadata;
@@ -733,7 +731,7 @@ namespace qn {
                     /*fit_phase_shift=*/ options.alignment.fit_phase_shift,
                     /*fit_astigmatism=*/ options.alignment.fit_astigmatism,
                     /*resolution_range=*/ Vec2<f64>{40, 8},
-                    /*refine_pairwise_shift=*/ true,
+                    /*refine_pairwise_shift=*/ false, // FIXME
 
                     /*delta_z_range_nanometers=*/ Vec2<f64>{-50, 50},
                     /*delta_z_shift_nanometers=*/ 150,
@@ -760,7 +758,7 @@ namespace qn {
                     /*adjust_com=*/ true,
                     /*compute_device=*/ options.compute.device,
                     /*allocator=*/ Allocator::MANAGED,
-                    /*debug_directory=*/ "", // qn::Logger::is_debug() ? options.files.output_directory / "debug_thickness" : "",
+                    /*debug_directory=*/ qn::Logger::is_debug() ? options.files.output_directory / "debug_thickness" : "",
             });
         }
 
@@ -770,8 +768,9 @@ namespace qn {
                     /*compute_device=*/ options.compute.device,
                     /*debug_directory=*/ "", // qn::Logger::is_debug() ? options.files.output_directory / "debug_projection_matching" : "",
                     /*thickness_estimate_nm=*/ outputs.sample_thickness_nm,
-                    /*rotation_resolution=*/ 3, //options.alignment.fit_rotation_offset,
-                    /*use_ctf=*/ false,
+                    /*rotation_spline_resolution=*/ fit_angle_offset[0] ? options.alignment.rotation_spline_resolution : 0,
+                    /*maximum_resolution=*/ 10.,
+                    /*use_ctf=*/ options.alignment.use_ctf_estimate,
             };
 
             outputs.alignment_resolution = projection_matching_alignment(

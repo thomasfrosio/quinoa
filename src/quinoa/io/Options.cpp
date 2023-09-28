@@ -31,12 +31,32 @@ namespace {
 
     using namespace qn;
 
+    template<typename T>
+    auto parse_scalar_(
+            std::string_view prefix,
+            const YAML::Node& node,
+            const std::string& parameter_name,
+            T fallback,
+            bool is_optional
+    ) -> T {
+        const auto parameter_node = node[parameter_name];
+        if (parameter_node.IsScalar()) {
+            return parameter_node.as<T>(fallback);
+        } else if (parameter_node.IsNull()) {
+            QN_CHECK(is_optional, "{}{} is not optional", prefix, parameter_name);
+            return fallback;
+        } else {
+            QN_THROW("{}{} has an invalid type ({})", prefix, parameter_name, parameter_node.Type());
+        }
+    };
+
     auto parse_files_(YAML::Node files_node) -> Options::Files {
         constexpr std::array QN_OPTIONS_FILES{
                 "input_directory",
                 "input_stack",
                 "input_tlt",
                 "input_exposure",
+                "input_csv",
                 "output_directory",
         };
         sanitize_node_(files_node, QN_OPTIONS_FILES);
@@ -99,7 +119,10 @@ namespace {
         }
 
         // Optional input files.
-        const auto get_optional_file = [&](const std::string& parameter_name, std::string_view extension) {
+        const auto get_optional_file = [&](
+                const std::string& parameter_name,
+                std::string_view extension,
+                bool search_in_input_directory = false) {
             Path file;
             const auto parameter_node = files_node[parameter_name];
             if (parameter_node.IsScalar()) {
@@ -111,10 +134,12 @@ namespace {
                                   parameter_name, file);
                 }
             } else if (parameter_node.IsNull()) {
-                // Otherwise, fallback to the input directory.
-                const Path filename = input_directory / noa::string::format("{}.{}", basename, extension);
-                if (fs::is_regular_file(filename))
-                    file = filename;
+                if (search_in_input_directory) {
+                    // Otherwise, fallback to the input directory.
+                    const Path filename = input_directory / noa::string::format("{}.{}", basename, extension);
+                    if (fs::is_regular_file(filename))
+                        file = filename;
+                }
             } else {
                 QN_THROW("files:{} has an invalid type ({}). "
                          "It should be a path to an existing file or be left empty",
@@ -122,8 +147,9 @@ namespace {
             }
             return file;
         };
-        files.input_tlt = get_optional_file("input_tlt", "tlt");
-        files.input_exposure = get_optional_file("input_exposure", "exposure");
+        files.input_tlt = get_optional_file("input_tlt", "tlt", true);
+        files.input_exposure = get_optional_file("input_exposure", "exposure", true);
+        files.input_csv = get_optional_file("input_csv", "csv", false);
 
         // output_directory
         const auto output_directory_node = files_node["output_directory"];
@@ -193,33 +219,20 @@ namespace {
             }
         };
 
-        const auto parse_parameter = [&](const std::string& parameter_name, f64 fallback) -> f64 {
-            const auto parameter_node = experiment_node[parameter_name];
-            if (parameter_node.IsScalar())
-                return parameter_node.as<f64>(fallback);
-            else if (parameter_node.IsNull())
-                return fallback;
-            else {
-                QN_THROW_FUNC("parse_tilt_scheme_",
-                              "tilt_scheme:{} has an invalid type ({}). Should be a scalar",
-                              parameter_name, parameter_node.Type());
-            }
-        };
-
         // Use max() to say that the angle offsets are not specified.
         constexpr f64 UNSPECIFIED_VALUE = std::numeric_limits<f64>::max();
         Options::Experiment experiment;
         experiment.collection_order = parse_collection_order_to_optional(experiment_node["collection_order"]);
-        experiment.rotation_offset = parse_parameter("rotation_offset", UNSPECIFIED_VALUE);
-        experiment.tilt_offset = parse_parameter("tilt_offset", UNSPECIFIED_VALUE);
-        experiment.elevation_offset = parse_parameter("elevation_offset", UNSPECIFIED_VALUE);
-        experiment.voltage = parse_parameter("voltage", 300.);
-        experiment.amplitude = parse_parameter("amplitude", 0.07);
-        experiment.cs = parse_parameter("cs", 2.7);
-        experiment.phase_shift = parse_parameter("phase_shift", 0.);
-        experiment.astigmatism_value = parse_parameter("astigmatism_value", 0.);
-        experiment.astigmatism_angle = parse_parameter("astigmatism_angle", 0.);
-        experiment.thickness = parse_parameter("thickness", UNSPECIFIED_VALUE);
+        experiment.rotation_offset = parse_scalar_<f64>("experiment:", experiment_node, "rotation_offset", UNSPECIFIED_VALUE, true);
+        experiment.tilt_offset = parse_scalar_<f64>("experiment:", experiment_node, "tilt_offset", UNSPECIFIED_VALUE, true);
+        experiment.elevation_offset = parse_scalar_<f64>("experiment:", experiment_node, "elevation_offset", UNSPECIFIED_VALUE, true);
+        experiment.voltage = parse_scalar_<f64>("experiment:", experiment_node, "voltage", 300., true);
+        experiment.amplitude = parse_scalar_<f64>("experiment:", experiment_node, "amplitude", 0.07, true);
+        experiment.cs = parse_scalar_<f64>("experiment:", experiment_node, "cs", 2.7, true);
+        experiment.phase_shift = parse_scalar_<f64>("experiment:", experiment_node, "phase_shift", 0., true);
+        experiment.astigmatism_value = parse_scalar_<f64>("experiment:", experiment_node, "astigmatism_value", 0., true);
+        experiment.astigmatism_angle = parse_scalar_<f64>("experiment:", experiment_node, "astigmatism_angle", 0., true);
+        experiment.thickness = parse_scalar_<f64>("experiment:", experiment_node, "thickness", UNSPECIFIED_VALUE, true);
 
         // Angle range (this is optional).
         experiment.phase_shift = MetadataSlice::to_angle_range(experiment.phase_shift);
@@ -256,22 +269,9 @@ namespace {
         };
         sanitize_node_(preprocessing_node, QN_OPTIONS_PREPROCESSING);
 
-        const auto parse_parameter = [&](const std::string& parameter_name, bool fallback) -> bool {
-            const auto parameter_node = preprocessing_node[parameter_name];
-            if (parameter_node.IsScalar())
-                return parameter_node.as<bool>(fallback);
-            else if (parameter_node.IsNull())
-                return fallback;
-            else {
-                QN_THROW_FUNC("parse_preprocessing_",
-                              "preprocessing:{} has an invalid type ({}). Should be a boolean",
-                              parameter_name, parameter_node.Type());
-            }
-        };
-
         Options::Preprocessing preprocessing;
-        preprocessing.run = parse_parameter("run", true);
-        preprocessing.exclude_blank_views = parse_parameter("exclude_blank_views", true);
+        preprocessing.run = parse_scalar_<bool>("preprocessing:", preprocessing_node, "run", true, true);
+        preprocessing.exclude_blank_views = parse_scalar_<bool>("preprocessing:", preprocessing_node, "exclude_blank_views", true, true);
 
         const YAML::Node exclude_view_indexes_node = preprocessing_node["exclude_view_indexes"];
         if (exclude_view_indexes_node.IsSequence())
@@ -298,33 +298,22 @@ namespace {
                 "use_ctf_estimate",
                 "use_thickness_estimate",
                 "use_projection_matching",
+                "rotation_spline_resolution",
         };
         sanitize_node_(alignment_node, QN_OPTIONS_ALIGNMENT);
 
-        const auto parse_parameter = [&](const std::string& parameter_name, bool fallback) -> bool {
-            const auto parameter_node = alignment_node[parameter_name];
-            if (parameter_node.IsScalar())
-                return parameter_node.as<bool>(fallback);
-            else if (parameter_node.IsNull())
-                return fallback;
-            else {
-                QN_THROW_FUNC("parse_alignment_",
-                              "alignment:{} has an invalid type ({}). Should be a boolean",
-                              parameter_name, parameter_node.Type());
-            }
-        };
-
         Options::Alignment alignment;
-        alignment.run = parse_parameter("run", true);
-        alignment.fit_rotation_offset = parse_parameter("fit_rotation_offset", true);
-        alignment.fit_tilt_offset = parse_parameter("fit_tilt_offset", true);
-        alignment.fit_elevation_offset = parse_parameter("fit_elevation_offset", true);
-        alignment.fit_phase_shift = parse_parameter("fit_phase_shift", false);
-        alignment.fit_astigmatism = parse_parameter("fit_astigmatism", false);
-        alignment.use_initial_pairwise_alignment = parse_parameter("use_initial_pairwise_alignment", true);
-        alignment.use_ctf_estimate = parse_parameter("use_ctf_estimate", true);
-        alignment.use_thickness_estimate = parse_parameter("use_thickness_estimate", true);
-        alignment.use_projection_matching = parse_parameter("use_projection_matching", true);
+        alignment.run = parse_scalar_<bool>("alignment:", alignment_node, "run", true, true);
+        alignment.fit_rotation_offset = parse_scalar_<bool>("alignment:", alignment_node, "fit_rotation_offset", true, true);
+        alignment.fit_tilt_offset = parse_scalar_<bool>("alignment:", alignment_node, "fit_tilt_offset", true, true);
+        alignment.fit_elevation_offset = parse_scalar_<bool>("alignment:", alignment_node, "fit_elevation_offset", true, true);
+        alignment.fit_phase_shift = parse_scalar_<bool>("alignment:", alignment_node, "fit_phase_shift", false, true);
+        alignment.fit_astigmatism = parse_scalar_<bool>("alignment:", alignment_node, "fit_astigmatism", false, true);
+        alignment.use_initial_pairwise_alignment = parse_scalar_<bool>("alignment:", alignment_node, "use_initial_pairwise_alignment", true, true);
+        alignment.use_ctf_estimate = parse_scalar_<bool>("alignment:", alignment_node, "use_ctf_estimate", true, true);
+        alignment.use_thickness_estimate = parse_scalar_<bool>("alignment:", alignment_node, "use_thickness_estimate", true, true);
+        alignment.use_projection_matching = parse_scalar_<bool>("alignment:", alignment_node, "use_projection_matching", true, true);
+        alignment.rotation_spline_resolution = parse_scalar_<i64>("alignment:", alignment_node, "rotation_spline_resolution", 1, true);
         return alignment;
     }
 

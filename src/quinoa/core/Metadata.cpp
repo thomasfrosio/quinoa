@@ -7,7 +7,10 @@
 
 namespace qn {
     MetadataStack::MetadataStack(const Options& options) {
-        if (!options.files.input_tlt.empty() && !options.files.input_exposure.empty()) {
+        if (!options.files.input_csv.empty()) {
+            load_csv_(options.files.input_csv);
+
+        } else if (!options.files.input_tlt.empty() && !options.files.input_exposure.empty()) {
             generate_(options.files.input_tlt, options.files.input_exposure);
 
         } else if (options.experiment.collection_order.has_value()) {
@@ -62,6 +65,34 @@ namespace qn {
                     return lhs.angles[1] < rhs.angles[1];
                 });
         return std::pair{iter_min->angles[1], iter_max->angles[1]};
+    }
+
+    void MetadataStack::load_csv_(const Path& filename) {
+        noa::io::TextFile<std::ifstream> csv_file(filename, noa::io::READ);
+        std::string line;
+
+        // Check the header.
+        constexpr std::array<std::string_view, 18> HEADER = {
+                "index", "spacing_x", "spacing_y", "size_x", "size_y", "center_x", "center_y",
+                "rotation", "tilt", "elevation", "shift_x", "shift_y",
+                "d_value", "d_astig", "d_angle", "phase_shift", "pre_exposure", "post_exposure"
+        };
+        csv_file.get_line(line);
+        [[maybe_unused]] auto columns = noa::string::split<std::string, 18>(line, ','); // FIXME
+
+        // FIXME correct for spacing and center!
+        m_slices.clear();
+        while (csv_file.get_line_or_throw(line)) {
+            const auto tokens = noa::string::split<f64, 18>(line, ',');
+            MetadataSlice slice{};
+            slice.angles = {tokens[7], tokens[8], tokens[9]};
+            slice.shifts = {tokens[11], tokens[10]};
+            slice.exposure = {tokens[16], tokens[17]};
+            slice.defocus = {tokens[12]};
+            slice.index = 0;
+            slice.index_file = {static_cast<i32>(std::round(tokens[0]))};
+            m_slices.push_back(slice);
+        }
     }
 
     void MetadataStack::save(

@@ -67,9 +67,12 @@ namespace qn {
         using container = std::vector<MetadataSlice>;
         using const_iterator = container::const_iterator;
         using iterator = container::iterator;
+        using const_reference = container::const_reference;
+        using reference = container::reference;
 
     public:
         MetadataStack() = default;
+        explicit MetadataStack(container&& slices) : m_slices(std::move(slices)) {}
 
         // Initializes the slices:
         //  - The tilt angles and exposure are set using the tilt_scheme:order or the tilt/exposure file.
@@ -78,6 +81,15 @@ namespace qn {
         //  - The slice index and index_file are set, either from the tilt_scheme:order (in which case
         //    slices are assumed to be saved in tilt-ascending order), or from the tilt file.
         explicit MetadataStack(const Options& options);
+
+        void save(
+                const Path& filename,
+                Shape2<i64> shape,
+                Vec2<f64> spacing,
+                f64 defocus_astigmatism_value = 0,
+                f64 defocus_astigmatism_angle = 0,
+                f64 phase_shift = 0
+        ) const;
 
     public: // Stack manipulations
         // Excludes slice(s) according to a predicate.
@@ -224,6 +236,11 @@ namespace qn {
         [[nodiscard]] auto end() const noexcept -> const_iterator { return m_slices.cend(); }
         [[nodiscard]] auto end() noexcept -> iterator { return m_slices.end(); }
 
+        [[nodiscard]] auto front() const noexcept -> const_reference { return m_slices.front(); }
+        [[nodiscard]] auto front() noexcept -> reference { return m_slices.front(); }
+        [[nodiscard]] auto back() const noexcept -> const_reference { return m_slices.back(); }
+        [[nodiscard]] auto back() noexcept -> reference { return m_slices.back(); }
+
         // Returns a view of the slice at "idx", as currently sorted in this instance (see sort()).
         template<typename T, typename = std::enable_if_t<noa::traits::is_int_v<T>>>
         [[nodiscard]] constexpr auto operator[](T idx) noexcept -> MetadataSlice& {
@@ -246,17 +263,8 @@ namespace qn {
         // of the slice with the highest absolute tilt angle.
         [[nodiscard]] auto minmax_tilts() const -> std::pair<f64, f64>;
 
-    public:
-        void save(
-                const Path& filename,
-                Shape2<i64> shape,
-                Vec2<f64> spacing,
-                f64 defocus_astigmatism_value = 0,
-                f64 defocus_astigmatism_angle = 0,
-                f64 phase_shift = 0
-        ) const;
-
     private:
+        void load_csv_(const Path& filename);
         void generate_(const Path& tlt_filename, const Path& exposure_filename);
         void generate_(f64 starting_angle, i64 starting_direction, f64 tilt_increment,
                        i64 group_of, bool exclude_start, f64 per_view_exposure, i32 n_slices);

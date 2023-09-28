@@ -67,12 +67,15 @@ namespace {
             preprocess_(stack, reference_metadata, target_metadata, common_area, parameters);
             fourier_insert_and_extract_(reference_metadata, target_metadata, parameters);
 
-            // Peak the best shift.
+            // Peak the best shift. Maybe surprisingly, it is important to iterate here to make sure we have indeed
+            // selected the best shifts. Iterating here is not an issue performance-wise (most of the cost is the
+            // projection itself, which is done by now) and usually it needs 5 (at low tilts) to 75-125 (at high tilts)
+            // iterations to converge.
             Vec2<f64> final_shifts{};
             f64 final_score;
             auto updated_target_metadata = target_metadata;
 
-            for (auto i: noa::irange(200)) {
+            for (auto i: noa::irange(250)) {
                 postprocessing_(stack, updated_target_metadata, common_area, parameters);
                 auto [i_score, i_shift] = cross_correlate_(updated_target_metadata, common_area, parameters);
 
@@ -81,8 +84,10 @@ namespace {
                 final_shifts += i_shift;
 
                 if (noa::all(noa::math::abs(i_shift) < parameters.shift_tolerance)) {
-//                    qn::Logger::trace("count={}", i);
                     break;
+                } else if (i == 199) {
+                    qn::Logger::trace("picking didn't converge (i_shift={}, shift_tolerance={}",
+                                      i_shift, parameters.shift_tolerance);
                 }
             }
             return {final_score, final_shifts};
@@ -442,7 +447,7 @@ namespace {
         const CommonArea* m_common_area;
         const ProjectionMatchingParameters* m_parameters;
 
-        Memoizer m_memoizer;
+        Memoizer m_memoizer{};
         Vec2<f64> m_tilt_minmax;
         std::vector<f64> m_scores;
         MetadataStack m_updated_metadata;
@@ -462,13 +467,11 @@ namespace {
                 m_common_area(&common_area),
                 m_parameters(&parameters)
         {
-            m_memoizer = Memoizer(/*n_parameters=*/ parameters.rotation_resolution, /*resolution=*/ 25);
             const auto minmax = metadata.minmax_tilts();
             m_tilt_minmax = {minmax.first, minmax.second};
         }
 
     private:
-        auto memoizer_() -> Memoizer& { return m_memoizer; }
 
         [[nodiscard]] auto to_normalized_tilt_(f64 tilt) const noexcept -> f64 {
             const auto& [min, max] = m_tilt_minmax;
@@ -476,6 +479,11 @@ namespace {
         }
 
     public:
+        auto memoizer() noexcept -> Memoizer& { return m_memoizer; }
+        void set_memoizer(i64 n_parameters, i64 resolution = 25) {
+            m_memoizer = Memoizer(n_parameters, resolution);
+        }
+
         [[nodiscard]] auto aligned_metadata() noexcept -> MetadataStack& { return m_updated_metadata; }
         [[nodiscard]] auto n_evaluations() const noexcept -> i64 { return m_n_evaluations; }
 
@@ -507,9 +515,6 @@ namespace {
 
                 // Collect the score of the slice-alignment.
                 m_scores.emplace_back(score);
-
-//                qn::Logger::trace("{:>02}: tilt={} score={:.8f}, shift_offset={::.8f}",
-//                                  target_index, target_slice.angles[1], score, shift_offset);
             }
 
             ++m_n_evaluations;
@@ -524,7 +529,7 @@ namespace {
 
             QN_CHECK(n_parameters <= 3 && parameters && instance, "Invalid parameters");
             auto& self = *static_cast<Fitter*>(instance);
-            auto& memoizer = self.memoizer_();
+            auto& memoizer = self.memoizer();
             const auto original_parameters = Span<const f64>(parameters, n_parameters);
 
             // Memoization.
@@ -545,7 +550,7 @@ namespace {
             const f64 cost = self.align(copied_parameters);
 
             if (gradients != nullptr) {
-                constexpr f64 DELTA = 0.2; // in degrees // FIXME try 0.1 or scale gradient
+                constexpr f64 DELTA = 0.02; // in degrees // FIXME
                 for (i64 i: noa::irange(n_parameters)) {
                     f64 original_value = copied_parameters[i];
 
@@ -563,7 +568,7 @@ namespace {
                 }
             }
 
-            qn::Logger::trace("rotation_offsets={:.6f}, cost={:.4f}, elapsed={:.2f}ms",
+            qn::Logger::trace("rotation_offsets={:+.6f}, cost={:.6f}, elapsed={:.2f}ms",
                               fmt::join(original_parameters, ","), cost, timer.elapsed());
             memoizer.record(parameters, cost, gradients);
             return cost;
@@ -610,43 +615,66 @@ namespace qn {
 
         // Order for projection matching.
         auto projection_metadata = metadata;
-        projection_metadata.sort("exposure");
+        projection_metadata.sort("absolute_tilt");
 
         // Helpers for the alignment.
         auto projector = Projector(m_slices_padded_rfft.view(), m_weights_padded_rfft.view(), m_two_slices.view(), average_ctf);
         auto fitter = Fitter(stack, projector, projection_metadata, common_area, parameters);
 
-        QN_CHECK(parameters.rotation_resolution <= 3, "Invalid rotation resolution");
+        QN_CHECK(parameters.rotation_spline_resolution <= 3, "Invalid rotation resolution");
         std::array<f64, 3> buffer{};
-        const auto rotation_offsets = Span<f64>(buffer.data(), parameters.rotation_resolution);
+        const auto rotation_offsets = Span<f64>(buffer.data(), parameters.rotation_spline_resolution);
 
-        // Optimize the rotation by maximizing the score from the
-        // projection-matching of every slice in the stack.
+        // Optimize the rotation by maximizing the score from the projection-matching of every slice in the stack.
         if (parameters.rotation_range > 1e-2) {
-            auto optimizer = Optimizer(
-                    NLOPT_LN_SBPLX, //parameters.rotation_resolution > 1 ? NLOPT_LD_LBFGS : NLOPT_LN_SBPLX,
-                    parameters.rotation_resolution);
+            auto optimizer = Optimizer(NLOPT_LN_SBPLX, 1);
             optimizer.set_max_objective(Fitter::maximization_function, &fitter);
             optimizer.set_bounds(-parameters.rotation_range, parameters.rotation_range);
             optimizer.set_initial_step(parameters.rotation_range * 0.2);
             optimizer.set_x_tolerance_abs(0.01);
-//            optimizer.set_fx_tolerance_abs(5e-5);
+
+            fitter.set_memoizer(optimizer.n_parameters());
             optimizer.optimize(rotation_offsets.data());
+            std::fill(rotation_offsets.begin(), rotation_offsets.end(), 0.);
+            projection_metadata.update_from(
+                    fitter.aligned_metadata(),
+                    /*update_angles=*/ true,
+                    /*update_shifts=*/ true,
+                    /*update_defocus=*/false);
+
+            if (parameters.rotation_spline_resolution > 1) {
+                // FIXME Estimating the derivatives is quite expensive, so for now go derivative-less.
+                optimizer = Optimizer(NLOPT_LN_SBPLX, parameters.rotation_spline_resolution); // 2 or 3
+                optimizer.set_max_objective(Fitter::maximization_function, &fitter);
+                optimizer.set_bounds(-0.7, 0.7);
+                optimizer.set_initial_step(0.16);
+                optimizer.set_x_tolerance_abs(0.008);
+
+                fitter.set_memoizer(optimizer.n_parameters());
+                optimizer.optimize(rotation_offsets.data());
+                std::fill(rotation_offsets.begin(), rotation_offsets.end(), 0.);
+                projection_metadata.update_from(
+                        fitter.aligned_metadata(),
+                        /*update_angles=*/ true,
+                        /*update_shifts=*/ true,
+                        /*update_defocus=*/false);
+            }
+
+            qn::Logger::info("rotation_offsets=[start={:.4f}, end={:.4f}] ({:.4f})",
+                             projection_metadata.front().angles[0], projection_metadata.back().angles[0],
+                             fmt::join(rotation_offsets, ","));
         }
 
-        // The optimizer can do some post-processing on the parameters, so the last projection matching
+        // The optimizer can do some post-processing on the parameters, so the last projection-matching
         // might not have been run on these final parameters. As such, do a final pass with the actual
         // best rotation offset returned by the optimizer.
         fitter.align(rotation_offsets);
-
-        // Update the original metadata with the aligned one.
         metadata.update_from(
                 fitter.aligned_metadata(),
                 /*update_angles=*/ true,
                 /*update_shifts=*/ true,
                 /*update_defocus=*/false);
 
-        qn::Logger::info("rotation_offset={}", metadata[0].angles[0]);
         qn::Logger::info("Projection-matching alignment... done. Took {:.3f}s (n_evaluations={})",
                           timer.elapsed() * 1e-3, fitter.n_evaluations());
     }

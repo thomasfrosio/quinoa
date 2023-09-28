@@ -13,6 +13,7 @@ namespace qn {
             Path input_stack{};
             Path input_tlt{};
             Path input_exposure{};
+            Path input_csv{};
             Path output_directory{};
         } files;
 
@@ -43,6 +44,7 @@ namespace qn {
             bool run{};
             bool exclude_blank_views{};
             std::vector<i64> exclude_view_indexes{};
+            bool use_existing_alignment{};
         } preprocessing;
 
         struct Alignment {
@@ -56,6 +58,7 @@ namespace qn {
             bool use_ctf_estimate{};
             bool use_thickness_estimate{};
             bool use_projection_matching{};
+            i64 rotation_spline_resolution{};
         } alignment;
 
         struct PostProcessing {

@@ -55,14 +55,14 @@ namespace qn {
         const auto original_size = metadata.size();
         metadata.exclude([&span, threshold](const MetadataSlice& slice) {
             if (span[slice.index] < threshold) {
-                qn::Logger::status("Excluding blank view: index={:> 2} (tilt={:+.2f})", slice.index, slice.angles[1]);
+                qn::Logger::status("Excluded blank view: index={:> 2} (tilt={:+.2f})", slice.index, slice.angles[1]);
                 return true;
             }
             return false;
         });
         if (metadata.size() == original_size)
-            qn::Logger::status("Zero blank views detected");
+            qn::Logger::status("Excluded blank view: None");
 
-        qn::Logger::status("Blank view detection... done. Took {:.2f}s", timer.elapsed());
+        qn::Logger::status("Blank view detection... done. Took {:.2f}s", timer.elapsed() * 1e-3);
     }
 }

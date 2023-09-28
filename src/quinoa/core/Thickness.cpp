@@ -361,7 +361,7 @@ namespace qn {
         const Array variances = compute_profile_(stack_loader, rescaled_metadata, parameters.debug_directory);
         const Array gradient = compute_abs_gradient(variances.span(), max_thickness_pixels, parameters.debug_directory);
 
-        // 2. Adjust the z-center of the tomogram to the center-of-mass.
+        // 2. Adjust the z-center of the tomogram to the estimated center-of-mass.
         //    This should be fairly robust, and in most cases, it's only a small shift.
         auto adjusted_gradient = gradient.span();
         if (parameters.adjust_com) {

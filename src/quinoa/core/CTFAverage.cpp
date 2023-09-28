@@ -861,7 +861,7 @@ namespace qn {
                 fitter.reset_memoizer();
 
                 ncc = optimizer.optimize(parameters.data());
-                evaluations += optimizer.number_of_evaluations();
+                evaluations += optimizer.n_evaluations();
 
                 // Update outputs (note that the fitting range has its background already updated).
                 ctf_isotropic.set_defocus(parameters.defocus());

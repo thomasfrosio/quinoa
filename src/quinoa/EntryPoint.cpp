@@ -681,8 +681,6 @@ auto main(int argc, char* argv[]) -> int {
         if (options.compute.register_input_stack)
             StackLoader::register_input_stack(options.files.input_stack);
 
-        // TODO Load existing metadata
-
         // Preprocessing.
         if (options.preprocessing.run) {
             if (!options.preprocessing.exclude_view_indexes.empty())
@@ -729,7 +727,6 @@ auto main(int argc, char* argv[]) -> int {
                     options.files.input_stack,
                     options.files.output_directory / "aligned.mrc",
                     metadata, loading_parameters);
-
 
             if (options.postprocessing.reconstruct_tomogram) {
                 qn::fourier_tiled_reconstruction(

@@ -37,7 +37,7 @@ namespace {
 
             // Dimensions.
             m_cube_size = noa::fft::next_fast_size(cube_size);
-            m_cube_padded_size = m_cube_size * 2;
+            m_cube_padded_size = noa::fft::next_fast_size(m_cube_size * 4); // FIXME test smaller
             m_slice_shape = slice_shape;
             m_volume_shape = Shape3<i64>{volume_thickness, m_slice_shape[0], m_slice_shape[1]};
 
@@ -85,7 +85,7 @@ namespace {
 
             using WindowedSinc = noa::geometry::fft::WindowedSinc;
             const auto fftfreq_sinc = 1 / static_cast<f32>(cube_padded_size_());
-            const auto fftfreq_window = WindowedSinc{fftfreq_sinc, fftfreq_sinc * 8};
+            const auto fftfreq_window = WindowedSinc{fftfreq_sinc, fftfreq_sinc * 4};
 
             // For every cube:
             for (i64 z = 0; z < m_cubes_count[0]; ++z) {
@@ -114,12 +114,12 @@ namespace {
                         noa::memory::fill(cube_padded_rfft, c32{0});
                         noa::memory::fill(cube_padded_weight_rfft, f32{0});
 
-//                        if (m_use_rasterization) {
-//                            noa::geometry::fft::insert_rasterize_3d<noa::fft::H2H>(
-//                                    tiles_rfft, f32{1}, tiles.shape(),
-//                                    cube_padded_rfft, cube_padded_weight_rfft, cube_padded.shape(),
-//                                    Float22{}, m_insertion_rotation);
-//                        } else {
+                        if (m_use_rasterization) {
+                            noa::geometry::fft::insert_rasterize_3d<noa::fft::H2H>(
+                                    tiles_rfft, f32{1}, tiles.shape(),
+                                    cube_padded_rfft, cube_padded_weight_rfft, cube_padded.shape(),
+                                    Float22{}, m_insertion_rotation); // forward rotation
+                        } else {
                             // In-place fftshift, since the Fourier insertion only supported centered inputs.
                             noa::fft::remap(noa::fft::H2HC, tiles_rfft, tiles_rfft, tiles.shape());
 
@@ -127,8 +127,8 @@ namespace {
                             noa::geometry::fft::insert_interpolate_3d<noa::fft::HC2H>(
                                     tiles_rfft, f32{1}, tiles.shape(),
                                     cube_padded_rfft, cube_padded_weight_rfft, cube_padded.shape(),
-                                    Float22{}, m_insertion_rotation, fftfreq_window);
-//                        }
+                                    Float22{}, m_insertion_rotation, fftfreq_window); // inverse rotation
+                        }
 
                         // Shift back to the center of the padded cube.
                         noa::signal::fft::phase_shift_3d<noa::fft::H2H>(
@@ -136,16 +136,22 @@ namespace {
                                 cube_padded.shape(), cube_padded_center_().as<f32>());
 
                         // Correct for the multiplicity.
-                        noa::ewise_binary(
-                                cube_padded_rfft, cube_padded_weight_rfft,
-                                cube_padded_rfft, qn::correct_multiplicity_t{});
+                        if (m_use_rasterization) {
+                            noa::ewise_binary(
+                                    cube_padded_rfft, cube_padded_weight_rfft,
+                                    cube_padded_rfft, qn::correct_multiplicity_rasterize_t{});
+                        } else {
+                            noa::ewise_binary(
+                                    cube_padded_rfft, cube_padded_weight_rfft,
+                                    cube_padded_rfft, qn::correct_multiplicity_t{});
+                        }
 
                         // Reconstruction.
                         noa::fft::c2r(cube_padded_rfft, cube_padded);
-//                        if (m_use_rasterization) {
-//                            noa::geometry::fft::gridding_correction(
-//                                    cube_padded, cube_padded, /*post_correction=*/ true);
-//                        }
+                        if (m_use_rasterization) {
+                            noa::geometry::fft::gridding_correction(
+                                    cube_padded, cube_padded, /*post_correction=*/ true);
+                        }
 
                         // The cube is reconstructed, so save it.
                         if (use_row_of_cubes_buffer)
@@ -159,7 +165,7 @@ namespace {
                         copy_row_into_reconstruction_(row_of_cubes, reconstruction, z, y, cube_size_());
                 }
             }
-            return output;
+            return output.eval();
         }
 
     private:
@@ -250,9 +256,9 @@ namespace {
                 // Insertion matrix.
                 auto insertion_rotation_matrix = noa::geometry::euler2matrix(
                         Vec3<f64>{-euler_angles[0], euler_angles[1], euler_angles[2]},
-                        "zyx", /*intrinsic=*/ false).transpose();
-//                if (!use_rasterization)
-//                    insertion_rotation_matrix = insertion_rotation_matrix.transpose();
+                        "zyx", /*intrinsic=*/ false);
+                if (!use_rasterization)
+                    insertion_rotation_matrix = insertion_rotation_matrix.transpose();
                 insertion_rotation_span[slice_index] = noa::geometry::matrix2quaternion(
                         insertion_rotation_matrix).as<f32>();
 
@@ -316,12 +322,14 @@ namespace {
             const i64 size_cube_x = std::min(cube_size, row_of_cubes.shape()[3] - cube_offset);
 
             // Take the central cube at the center of the padded cube (the center is preserved).
-            const auto center = cube_size / 2;
+            const i64 center_padded = cube_padded.shape()[3] / 2;
+            const i64 center = cube_size / 2;
+            const i64 start = center_padded - center;
             const auto input_central_cube = cube_padded.subregion(
                     0,
-                    noa::indexing::Slice{center, center + cube_size},
-                    noa::indexing::Slice{center, center + cube_size},
-                    noa::indexing::Slice{center, center + size_cube_x});
+                    noa::indexing::Slice{start, start + cube_size},
+                    noa::indexing::Slice{start, start + cube_size},
+                    noa::indexing::Slice{start, start + size_cube_x});
 
             // Take a view of the corresponding cube in the row of cubes.
             const auto output_central_cube = row_of_cubes.subregion(
@@ -341,12 +349,14 @@ namespace {
             const i64 size_cube_y = std::min(cube_size, reconstruction.shape()[2] - cube_size * y);
             const i64 size_cube_x = std::min(cube_size, reconstruction.shape()[3] - cube_size * x);
 
-            const auto center = cube_size / 2;
+            const i64 center_padded = cube_padded.shape()[3] / 2;
+            const i64 center = cube_size / 2;
+            const i64 start = center_padded - center;
             const auto input_central_cube = cube_padded.subregion(
                     noa::indexing::FullExtent{},
-                    noa::indexing::Slice{center, center + size_cube_z},
-                    noa::indexing::Slice{center, center + size_cube_y},
-                    noa::indexing::Slice{center, center + size_cube_x});
+                    noa::indexing::Slice{start, start + size_cube_z},
+                    noa::indexing::Slice{start, start + size_cube_y},
+                    noa::indexing::Slice{start, start + size_cube_x});
 
             // Here we could let the subregion method to clamp the last cube,
             // but since we already have computed the truncated sizes, use them instead.
@@ -422,8 +432,6 @@ namespace qn {
 
 
         auto updated_metadata = metadata;
-//        updated_metadata.add_global_angles({0,1,0});
-
         const auto [stack, stack_spacing, file_spacing] =
                 load_stack(stack_filename, updated_metadata, loading_parameters);
         updated_metadata.rescale_shifts(file_spacing, stack_spacing);
@@ -431,23 +439,15 @@ namespace qn {
         const f64 average_spacing = noa::math::sum(stack_spacing) / 2;
         const f64 sample_thickness_pix = parameters.sample_thickness_nm / (average_spacing * 1e-1);
 
-        auto virtual_volume = VirtualVolume(
+        auto reconstruction = VirtualVolume(
                 stack.shape().pop_front<2>(), updated_metadata, stack.device(),
-                sample_thickness_pix, parameters.cube_size, parameters.use_rasterization);
+                sample_thickness_pix, parameters.cube_size, parameters.use_rasterization)
+                .reconstruct(stack.view(), parameters.debug_directory);
 
-        auto reconstruction = virtual_volume.reconstruct(stack.view(), parameters.debug_directory);
-
-
-        auto reconstruction_filename = output_directory / noa::string::format(
+        auto reconstruction_filename = output_directory / fmt::format(
                 "{}_tomogram.mrc", stack_filename.stem().string());
         noa::io::save(reconstruction, reconstruction_filename);
         qn::Logger::info("{} saved", reconstruction_filename);
-
-//        auto rfft = noa::fft::r2c(reconstruction);
-//        const auto ps = noa::ewise_unary(rfft.release(), [](c32 v) {
-//            return noa::math::log(noa::math::pow(noa::math::abs(v), 2) + 1);
-//        });
-//        noa::io::save(ps, "/home/thomas/Projects/quinoa/tests/ribo_ctf/tilt1_tomogram.ps.mrc");
 
         // FIXME save aligned stack?
 

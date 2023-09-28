@@ -20,13 +20,11 @@
 // rotation for the stack. When the optimizer finds the best score (i.e., the best iteration), we can then simply
 // retrieve the corresponding shifts (from the slice-alignments) that were used during this iteration.
 
-
 namespace qn {
     struct ProjectionMatchingParameters {
-        bool use_estimated_gradients{true};
         bool use_ctfs{false};
         f64 rotation_range{0};
-        i64 rotation_resolution{1};
+        i64 rotation_spline_resolution{1};
         f64 shift_tolerance{0.001};
 
         f64 smooth_edge_percent{0.1};

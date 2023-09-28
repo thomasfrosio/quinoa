@@ -184,7 +184,7 @@ namespace qn {
         }
 
         qn::Logger::trace("Projection matching alignment... took {}ms ({} evaluations)",
-                          timer.elapsed(), optimizer.number_of_evaluations());
+                          timer.elapsed(), optimizer.n_evaluations());
     }
 }
 

@@ -1,6 +1,7 @@
 files:
   input_directory:
   input_stack: "/home/thomas/Projects/data/ribo/tilt1/tilt1.mrc"
+  input_csv:
   input_tlt:
   input_exposure:
   output_directory: "/home/thomas/Projects/quinoa/tests/ribo_ctf"
@@ -37,9 +38,10 @@ alignment:
   fit_phase_shift:
   fit_astigmatism:
   use_initial_pairwise_alignment: true
-  use_ctf_estimate: false
+  use_ctf_estimate: true
   use_thickness_estimate: true
   use_projection_matching: true
+  rotation_spline_resolution: 3
 
 postprocessing:
   run:

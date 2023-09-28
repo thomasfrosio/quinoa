@@ -16,16 +16,22 @@ namespace qn {
         }
     };
 
+    struct correct_multiplicity_rasterize_t {
+        template<typename T0>
+        NOA_FHD constexpr auto operator()(T0 value, f32 multiplicity) const noexcept {
+            return value / (multiplicity + 1e-3f);
+        }
+    };
+
     struct subtract_within_mask_t {
         NOA_FHD constexpr auto operator()(f32 lhs, f32 rhs, f32 mask) const noexcept {
-            if (mask > 0)
-                lhs -= rhs;
-            return lhs;
+            return (lhs - rhs) * mask;
         }
     };
 }
 
 namespace noa::cuda {
     template<> struct proclaim_is_user_ewise_binary<c32, f32, c32, ::qn::correct_multiplicity_t> : std::true_type {};
+    template<> struct proclaim_is_user_ewise_binary<c32, f32, c32, ::qn::correct_multiplicity_rasterize_t> : std::true_type {};
     template<> struct proclaim_is_user_ewise_trinary<f32, f32, f32, f32, ::qn::subtract_within_mask_t> : std::true_type {};
 }

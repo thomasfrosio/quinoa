@@ -34,8 +34,20 @@ namespace qn {
             QN_CHECK(pointer != nullptr, "Failed to create the optimizer");
         }
 
+        // Move-only
+        Optimizer(const Optimizer& src) noexcept = delete;
+        Optimizer& operator=(const Optimizer& src) noexcept = delete;
+
+        Optimizer(Optimizer&& src) noexcept : pointer(std::exchange(src.pointer, nullptr)) {}
+
+        Optimizer& operator=(Optimizer&& src) noexcept {
+            if (&src != this)
+                pointer = std::exchange(src.pointer, nullptr);
+            return *this;
+        }
+
         ~Optimizer() {
-            nlopt_destroy(pointer);
+            nlopt_destroy(pointer); // if nullptr, it does nothing
         }
 
         void set_max_objective(nlopt_func function, void* data = nullptr) const {
@@ -99,8 +111,12 @@ namespace qn {
                 qn::Logger::trace("Optimizer failed to stop, status={}", nlopt_result_to_string(result));
         }
 
-        [[nodiscard]] i32 number_of_evaluations() const noexcept {
+        [[nodiscard]] i32 n_evaluations() const noexcept {
             return nlopt_get_numevals(pointer);
+        }
+
+        [[nodiscard]] i64 n_parameters() const noexcept {
+            return static_cast<i64>(nlopt_get_dimension(pointer));
         }
 
     private:
@@ -159,7 +175,7 @@ namespace qn {
                 }
 
                 // We have a match, but make sure this match has the gradients too.
-                if (success && cache_line.has_gradient == requires_gradients) {
+                if (success and (cache_line.has_gradient or !requires_gradients)) {
                     successful_line = line;
                     break;
                 }
