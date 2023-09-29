@@ -470,7 +470,7 @@ namespace {
                 i64 i = 0;
                 for (auto& value: self.parameters().globals()) {
                     const f64 initial_value = value;
-                    const f64 delta = noa::math::deg2rad(0.001);//abs_tolerance[i] / 4; // FIXME
+                    const f64 delta = noa::math::deg2rad(0.01);//abs_tolerance[i] / 4; // FIXME
 
                     value = initial_value - delta;
                     const f64 fx_minus_delta = cost_mean();
@@ -676,7 +676,7 @@ namespace qn {
                 /*defocus=*/ {-0.5, 0.5}
         );
         parameters.set_abs_tolerance(
-                /*angle_tolerance=*/ noa::math::deg2rad(0.005),
+                /*angle_tolerance=*/ noa::math::deg2rad(0.001),
                 /*phase_shift_tolerance=*/ noa::math::deg2rad(0.25),
                 /*astigmatism_value_tolerance=*/ 5e-4,
                 /*astigmatism_angle_tolerance=*/ noa::math::deg2rad(0.1),

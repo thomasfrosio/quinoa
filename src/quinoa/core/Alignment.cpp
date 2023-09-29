@@ -769,7 +769,7 @@ namespace qn {
                     /*debug_directory=*/ "", // qn::Logger::is_debug() ? options.files.output_directory / "debug_projection_matching" : "",
                     /*thickness_estimate_nm=*/ outputs.sample_thickness_nm,
                     /*rotation_spline_resolution=*/ fit_angle_offset[0] ? options.alignment.rotation_spline_resolution : 0,
-                    /*maximum_resolution=*/ 10.,
+                    /*maximum_resolution=*/ 16.,
                     /*use_ctf=*/ options.alignment.use_ctf_estimate,
             };
 

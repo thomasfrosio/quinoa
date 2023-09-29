@@ -1,20 +1,20 @@
 files:
   input_directory:
-  input_stack: "/home/thomas/Projects/data/ribo/tilt1/tilt1.mrc"
-  input_csv:
+  input_stack: "/home/thomas/Projects/thickness-tomogram/tilt6/tilt6.mrc"
+  input_csv: "/home/thomas/Projects/quinoa/tests/craig_tilt6/tilt6.csv"
   input_tlt:
   input_exposure:
-  output_directory: "/home/thomas/Projects/quinoa/tests/ribo_ctf"
+  output_directory: "/home/thomas/Projects/quinoa/tests/craig_tilt6"
 
 experiment:
   collection_order:
     starting_angle: 0
     starting_direction: +1
-    tilt_increment: 3
+    tilt_increment: 2
     group_of: 3
     exclude_start: false
     per_view_exposure: 3
-  rotation_offset:
+  rotation_offset: 85
   tilt_offset:
   elevation_offset:
   voltage:
@@ -23,7 +23,7 @@ experiment:
   phase_shift:
   astigmatism_value:
   astigmatism_angle:
-  thickness: 90
+  thickness: 190
 
 preprocessing:
   run:
@@ -31,7 +31,7 @@ preprocessing:
   exclude_view_indexes:
 
 alignment:
-  run:
+  run: false
   fit_rotation_offset:
   fit_tilt_offset:
   fit_elevation_offset:

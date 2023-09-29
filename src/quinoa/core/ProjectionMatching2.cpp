@@ -536,7 +536,7 @@ namespace {
             std::optional<f64> memoized_cost = memoizer.find(parameters, gradients, 1e-6);
             if (memoized_cost.has_value()) {
                 f64 cost = memoized_cost.value();
-                qn::Logger::trace("rotation_offsets={:.6f}, cost={:.4f}, elapsed={:.2f}ms, memoized=true",
+                qn::Logger::trace("rotation_offsets={:+.6f}, cost={:.6f}, elapsed={:.2f}ms, memoized=true",
                                   fmt::join(original_parameters, ","), cost, timer.elapsed());
                 return cost;
             }
@@ -646,7 +646,7 @@ namespace qn {
                 // FIXME Estimating the derivatives is quite expensive, so for now go derivative-less.
                 optimizer = Optimizer(NLOPT_LN_SBPLX, parameters.rotation_spline_resolution); // 2 or 3
                 optimizer.set_max_objective(Fitter::maximization_function, &fitter);
-                optimizer.set_bounds(-0.7, 0.7);
+                optimizer.set_bounds(-1., 1.);
                 optimizer.set_initial_step(0.16);
                 optimizer.set_x_tolerance_abs(0.008);
 

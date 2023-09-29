@@ -32,7 +32,7 @@ namespace {
         ) :
                 m_use_rasterization(use_rasterization)
         {
-            const auto options = ArrayOption(compute_device, noa::Allocator::DEFAULT_ASYNC);
+            const auto options = ArrayOption(compute_device, noa::Allocator::MANAGED);
             const auto volume_thickness = static_cast<i64>(noa::math::round(sample_thickness_pix * 1.75));
 
             // Dimensions.
@@ -411,7 +411,7 @@ namespace qn {
 
         const auto loading_parameters = qn::LoadStackParameters{
                 /*compute_device=*/ parameters.compute_device,
-                /*allocator=*/ noa::Allocator::DEFAULT_ASYNC,
+                /*allocator=*/ noa::Allocator::MANAGED,
                 /*precise_cutoff=*/ true,
                 /*rescale_target_resolution=*/ parameters.resolution,
                 /*rescale_min_size=*/ 256,
