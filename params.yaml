@@ -1,20 +1,20 @@
 files:
   input_directory:
-  input_stack: "/home/thomas/Projects/thickness-tomogram/tilt6/tilt6.mrc"
-  input_csv: "/home/thomas/Projects/quinoa/tests/craig_tilt6/tilt6.csv"
+  input_stack: "/home/thomas/Projects/datasets/EMPIAR-10304/tilt1.mrc"
+  input_csv:
   input_tlt:
   input_exposure:
-  output_directory: "/home/thomas/Projects/quinoa/tests/craig_tilt6"
+  output_directory: "/home/thomas/Projects/quinoa/tests/tilt1"
 
 experiment:
   collection_order:
     starting_angle: 0
     starting_direction: +1
-    tilt_increment: 2
+    tilt_increment: 3
     group_of: 3
     exclude_start: false
     per_view_exposure: 3
-  rotation_offset: 85
+  rotation_offset: 175.1
   tilt_offset:
   elevation_offset:
   voltage:
@@ -23,25 +23,25 @@ experiment:
   phase_shift:
   astigmatism_value:
   astigmatism_angle:
-  thickness: 190
+  thickness: 90
 
 preprocessing:
   run:
-  exclude_blank_views: true
-  exclude_view_indexes:
+  exclude_blank_views:
+  exclude_view_indexes: 0
 
 alignment:
-  run: false
-  fit_rotation_offset:
-  fit_tilt_offset:
-  fit_elevation_offset:
+  run: true
+  fit_rotation_offset: true
+  fit_tilt_offset: true
+  fit_elevation_offset: true
   fit_phase_shift:
   fit_astigmatism:
   use_initial_pairwise_alignment: true
   use_ctf_estimate: true
   use_thickness_estimate: true
   use_projection_matching: true
-  rotation_spline_resolution: 3
+  rotation_spline_resolution: 1
 
 postprocessing:
   run:

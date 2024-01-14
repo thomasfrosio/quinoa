@@ -461,82 +461,63 @@ namespace {
 //        noa::io::save(target_padded, directory / "target_padded.mrc");
 //    }
 //
-//    void test_fast3(const Path& stack_filename, MetadataStack& metadata) {
-//        auto meta = metadata;
-//        const auto directory = Path("/home/thomas/Projects/quinoa/tests/ribo_ctf/test2");
-//        const auto options = ArrayOption(Device("gpu"), Allocator::MANAGED);
-//
-//        const auto loading_parameters = LoadStackParameters{
-//                /*compute_device=*/ options.device(),
-//                /*allocator=*/ options.allocator(),
-//                /*precise_cutoff=*/ true,
-//                /*rescale_target_resolution=*/ 20,
-//                /*rescale_min_size=*/ 512,
-//                /*exposure_filter=*/ false,
-//                /*highpass_parameters=*/ {0.01, 0.01},
-//                /*lowpass_parameters=*/ {0.4, 0.1},
-//                /*normalize_and_standardize=*/ true,
-//                /*smooth_edge_percent=*/ 0.1f,
-//                /*zero_pad_to_fast_fft_shape=*/ false,
-//                /*zero_pad_to_square_shape=*/ false
-//        };
-//        auto [stack, stack_spacing, file_spacing] =
-//                load_stack(stack_filename, meta, loading_parameters);
-//        meta.rescale_shifts(file_spacing, stack_spacing);
-//
-//        auto common_area = CommonArea(stack.shape().filter(2, 3), meta);
-//        common_area.mask_views(stack.view(), stack.view(), meta, 0.05);
-//
-//        // Parameters.
-//        auto metadata_insert = meta;
-//        metadata_insert.exclude([](const MetadataSlice& slice) {
-//            return std::abs(slice.angles[1]) > 30;
-//        }, /*reset_index_field=*/ false);
-//        auto metadata_extract = meta;
-//        metadata_extract.exclude([](const MetadataSlice& slice) {
-//            return std::abs(slice.angles[1] - 42) > 1e-2;
-//        }, /*reset_index_field=*/ false);
-//        const noa::geometry::fft::WindowedSinc insert_windowed_sinc{
-//                -1, 0.001f}; // 0.000976563
-//        const noa::geometry::fft::WindowedSinc z_windowed_sinc{
-//                0.0167f, 0.2f};//0.0167f, 0.3f 0.02f, 0.5f
-//
-//        //
-////        const auto size_padded = noa::math::max(stack.shape().filter(2, 3)) * 2;
-//        const i64 size_padded = 1484;
-//        stack = noa::memory::resize(stack, {stack.shape()[0], 1, size_padded, size_padded});
-//        const auto stack_rfft = noa::fft::r2c(stack);
-//        noa::fft::remap(fft::H2HC, stack_rfft, stack_rfft, stack.shape());
-//
-//        const auto slice_shape = stack.shape().set<0>(1);
-//        const auto extracted_rfft = noa::memory::zeros<c32>(slice_shape.rfft(), options);
-//
-//        const auto& extracted_slice_metadata = metadata_extract[0];
-//        Float33 fwd_rotation_matrix;
-//        {
-//            fmt::print("extract {} degrees\n", extracted_slice_metadata.angles[1]);
-//            const Vec3<f64> extraction_angles = noa::math::deg2rad(extracted_slice_metadata.angles);
-//            fwd_rotation_matrix = noa::geometry::euler2matrix(
-//                    Vec3<f64>{-extraction_angles[0], extraction_angles[1], extraction_angles[2]},
-//                    "zyx", /*intrinsic=*/ false).as<f32>();
-//        }
-//
-//        for (i64 i = 0; i < metadata_insert.ssize(); ++i) {
-//            // Get the slice to insert.
-//            const MetadataSlice& slice_metadata = metadata_insert[i];
-//            const View<c32> slice_rfft = stack_rfft.view().subregion(slice_metadata.index);
-//            fmt::print("insert {} degrees\n", slice_metadata.angles[1]);
-//
-//            const Vec3<f64> insertion_angles = noa::math::deg2rad(slice_metadata.angles);
-//            const auto inv_rotation_matrix = noa::geometry::euler2matrix(
-//                    Vec3<f64>{-insertion_angles[0], insertion_angles[1], insertion_angles[2]},
-//                    "zyx", /*intrinsic=*/ false).transpose().as<f32>();
-//
-//            // Center the central slice.
-//            noa::signal::fft::phase_shift_2d<fft::HC2HC>(
-//                    slice_rfft, slice_rfft, slice_shape,
-//                    -Vec2<f32>(slice_shape.filter(2, 3).vec() / 2) - slice_metadata.shifts.as<f32>());
-//
+    void test_fast3(const Path& stack_filename, MetadataStack& metadata) {
+        auto meta = metadata;
+        const auto directory = Path("/home/thomas/Projects/quinoa/tests/tilt1");
+        const auto options = ArrayOption(Device("gpu"), Allocator::MANAGED);
+
+        MetadataStack::load_csv(directory / "tilt1.csv");
+
+        // Include everything below 30deg and extract at 33deg.
+        auto metadata_insert = meta;
+        metadata_insert.exclude([](const MetadataSlice& slice) {
+            return std::abs(slice.angles[1]) > 30;
+        }, /*reset_index_field=*/ false);
+        auto metadata_extract = meta;
+        metadata_extract.exclude([](const MetadataSlice& slice) {
+            return std::abs(slice.angles[1] - 33) > 1e-2;
+        }, /*reset_index_field=*/ false);
+
+        const noa::geometry::fft::WindowedSinc insert_windowed_sinc{
+                -1, 0.03f};
+        const noa::geometry::fft::WindowedSinc z_windowed_sinc{
+                0.0167f, 0.2f};//0.0167f, 0.3f 0.02f, 0.5f
+
+        auto stack = noa::io::load_data<f32>(directory / "aligned.mrc");
+        const auto size_padded = noa::math::max(stack.shape().filter(2, 3)) * 2;
+        stack = noa::memory::resize(stack, {stack.shape()[0], 1, size_padded, size_padded});
+        const auto stack_rfft = noa::fft::r2c(stack);
+        noa::fft::remap(fft::H2HC, stack_rfft, stack_rfft, stack.shape());
+
+        const auto slice_shape = stack.shape().set<0>(1);
+        const auto extracted_rfft = noa::memory::zeros<c32>(slice_shape.rfft(), options);
+
+        const auto& extracted_slice_metadata = metadata_extract[0];
+        Float33 fwd_rotation_matrix;
+        {
+            fmt::print("extract {} degrees\n", extracted_slice_metadata.angles[1]);
+            const Vec3<f64> extraction_angles = noa::math::deg2rad(extracted_slice_metadata.angles);
+            fwd_rotation_matrix = noa::geometry::euler2matrix(
+                    Vec3<f64>{-extraction_angles[0], extraction_angles[1], extraction_angles[2]},
+                    "zyx", /*intrinsic=*/ false).as<f32>();
+        }
+
+        for (i64 i = 0; i < metadata_insert.ssize(); ++i) {
+            // Get the slice to insert.
+            const MetadataSlice& slice_metadata = metadata_insert[i];
+            const View<c32> slice_rfft = stack_rfft.view().subregion(slice_metadata.index);
+            fmt::print("insert {} degrees\n", slice_metadata.angles[1]);
+
+            const Vec3<f64> insertion_angles = noa::math::deg2rad(slice_metadata.angles);
+            const auto inv_rotation_matrix = noa::geometry::euler2matrix(
+                    Vec3<f64>{-insertion_angles[0], insertion_angles[1], insertion_angles[2]},
+                    "zyx", /*intrinsic=*/ false).transpose().as<f32>();
+
+            // Center the central slice.
+            noa::signal::fft::phase_shift_2d<fft::HC2HC>(
+                    slice_rfft, slice_rfft, slice_shape,
+                    -Vec2<f32>(slice_shape.filter(2, 3).vec() / 2) - slice_metadata.shifts.as<f32>());
+
 //            noa::geometry::fft::insert_interpolate_and_extract_3d<fft::HC2H>(
 //                    slice_rfft, slice_shape,
 //                    extracted_rfft, slice_shape,
@@ -547,34 +528,34 @@ namespace {
 //                    /*add_to_output=*/ true,
 //                    /*correct_multiplicity=*/ true
 //            );
-//        }
-//
-//        //
+        }
+
+        //
+        noa::signal::fft::phase_shift_2d<fft::H2H>(
+                extracted_rfft, extracted_rfft, slice_shape,
+                Vec2<f32>(slice_shape.filter(2, 3).vec() / 2));
+
+        noa::io::save(noa::ewise_unary(extracted_rfft, noa::abs_one_log_t{}), directory / "extracted_rfft.mrc");
+        const auto extracted = noa::fft::c2r(extracted_rfft, slice_shape);
+        noa::io::save(extracted, directory / "extracted.mrc");
+        fmt::print("done");
+
+//        auto target = stack.subregion(extracted_slice_metadata.index).to_cpu();
+//        auto target_rfft = noa::fft::r2c(target);
+//        noa::ewise_binary(target_rfft, extracted_weight_rfft.to_cpu(), target_rfft,
+//                          [](c32 value, f32 weight) {
+//                              if (weight < 1.f)
+//                                  value *= weight;
+//                              return value;
+//                          });
 //        noa::signal::fft::phase_shift_2d<fft::H2H>(
-//                extracted_rfft, extracted_rfft, slice_shape,
-//                Vec2<f32>(slice_shape.filter(2, 3).vec() / 2));
-//
-//        noa::io::save(noa::ewise_unary(extracted_rfft, noa::abs_one_log_t{}), directory / "extracted_rfft.mrc");
-//        const auto extracted = noa::fft::c2r(extracted_rfft, slice_shape);
-//        noa::io::save(extracted, directory / "extracted.mrc");
-//        fmt::print("done");
-//
-////        auto target = stack.subregion(extracted_slice_metadata.index).to_cpu();
-////        auto target_rfft = noa::fft::r2c(target);
-////        noa::ewise_binary(target_rfft, extracted_weight_rfft.to_cpu(), target_rfft,
-////                          [](c32 value, f32 weight) {
-////                              if (weight < 1.f)
-////                                  value *= weight;
-////                              return value;
-////                          });
-////        noa::signal::fft::phase_shift_2d<fft::H2H>(
-////                target_rfft, target_rfft, slice_shape,
-////                -extracted_slice_metadata.shifts.as<f32>()
-////        );
-////        noa::io::save(noa::ewise_unary(target_rfft, noa::abs_one_log_t{}), directory / "target_rfft.mrc");
-////        noa::fft::c2r(target_rfft, target);
-////        noa::io::save(target, directory / "target_padded.mrc");
-//    }
+//                target_rfft, target_rfft, slice_shape,
+//                -extracted_slice_metadata.shifts.as<f32>()
+//        );
+//        noa::io::save(noa::ewise_unary(target_rfft, noa::abs_one_log_t{}), directory / "target_rfft.mrc");
+//        noa::fft::c2r(target_rfft, target);
+//        noa::io::save(target, directory / "target_padded.mrc");
+    }
 
 //    void benchmark_projection() {
 //        const auto options = ArrayOption(Device("gpu"), Allocator::DEFAULT_ASYNC);

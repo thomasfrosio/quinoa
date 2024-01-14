@@ -8,7 +8,7 @@
 namespace qn {
     MetadataStack::MetadataStack(const Options& options) {
         if (!options.files.input_csv.empty()) {
-            load_csv_(options.files.input_csv);
+            *this = load_csv(options.files.input_csv);
 
         } else if (!options.files.input_tlt.empty() && !options.files.input_exposure.empty()) {
             generate_(options.files.input_tlt, options.files.input_exposure);
@@ -67,7 +67,7 @@ namespace qn {
         return std::pair{iter_min->angles[1], iter_max->angles[1]};
     }
 
-    void MetadataStack::load_csv_(const Path& filename) {
+    MetadataStack MetadataStack::load_csv(const Path& filename) {
         noa::io::TextFile<std::ifstream> csv_file(filename, noa::io::READ);
         std::string line;
 
@@ -81,7 +81,7 @@ namespace qn {
         [[maybe_unused]] auto columns = noa::string::split<std::string, 18>(line, ','); // FIXME
 
         // FIXME correct for spacing and center!
-        m_slices.clear();
+        MetadataStack stack;
         while (csv_file.get_line_or_throw(line)) {
             const auto tokens = noa::string::split<f64, 18>(line, ',');
             MetadataSlice slice{};
@@ -91,8 +91,9 @@ namespace qn {
             slice.defocus = {tokens[12]};
             slice.index = 0;
             slice.index_file = {static_cast<i32>(std::round(tokens[0]))};
-            m_slices.push_back(slice);
+            stack.slices().push_back(slice);
         }
+        return stack;
     }
 
     void MetadataStack::save(

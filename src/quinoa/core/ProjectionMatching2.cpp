@@ -309,11 +309,11 @@ namespace {
                         projected_padded_rfft, noa::multiply_t{});
             }
 
-//            noa::signal::fft::bandpass<noa::fft::H2H>(
-//                    target_and_projected_padded_rfft, target_and_projected_padded_rfft,
-//                    shape_padded_().set<0>(2),
-//                    parameters.highpass_filter[0], parameters.lowpass_filter[0],
-//                    parameters.highpass_filter[1], parameters.lowpass_filter[1]);
+            noa::signal::fft::bandpass<noa::fft::H2H>(
+                    target_and_projected_padded_rfft, target_and_projected_padded_rfft,
+                    shape_padded_().set<0>(2),
+                    parameters.highpass_filter[0], parameters.lowpass_filter[0],
+                    parameters.highpass_filter[1], parameters.lowpass_filter[1]);
 
             // Go back to real-space and crop.
             const View<f32> target_and_projected_padded = noa::fft::alias_to_real(
@@ -631,7 +631,7 @@ namespace qn {
             optimizer.set_max_objective(Fitter::maximization_function, &fitter);
             optimizer.set_bounds(-parameters.rotation_range, parameters.rotation_range);
             optimizer.set_initial_step(parameters.rotation_range * 0.2);
-            optimizer.set_x_tolerance_abs(0.01);
+            optimizer.set_x_tolerance_abs(0.03);
 
             fitter.set_memoizer(optimizer.n_parameters());
             optimizer.optimize(rotation_offsets.data());

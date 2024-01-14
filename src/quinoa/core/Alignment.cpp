@@ -651,7 +651,7 @@ namespace {
                     /*fftfreq_blackman=*/ fftfreq_blackman,
                     /*fftfreq_z_sinc=*/ fftfreq_z_sinc,
                     /*fftfreq_z_blackman=*/ fftfreq_z_blackman,
-                    /*highpass_filter=*/ {0.1, 0.03},
+                    /*highpass_filter=*/ {0.08, 0.03},
                     /*lowpass_filter=*/ {0.35, 0.15},
                     /*debug_directory=*/ parameters.debug_directory,
             };
@@ -705,6 +705,8 @@ namespace qn {
                     pairwise_alignment_parameters);
         }
 
+//        auto coarse_alignment = outputs.aligned_metadata;
+
         // 2. CTF alignment:
         //  - Fit the CTF to the average power spectrum. This outputs the (astigmatic) defocus and the phase shift.
         //  - Fit the CTF globally. This outputs a per-slice defocus, can refine the astigmatism and phase shift,
@@ -738,7 +740,7 @@ namespace qn {
                     /*max_tilt_for_average=*/ 90,
                     /*flip_rotation_to_match_defocus_ramp=*/ !has_user_angle_offset[0],
 
-                    /*fit_angle_offset=*/ fit_angle_offset,
+                    /*fit_angle_offset=*/ {false, true, true}, //fit_angle_offset,
                     };
             ctf_alignment(
                     options.files.input_stack,
@@ -758,7 +760,7 @@ namespace qn {
                     /*adjust_com=*/ true,
                     /*compute_device=*/ options.compute.device,
                     /*allocator=*/ Allocator::MANAGED,
-                    /*debug_directory=*/ qn::Logger::is_debug() ? options.files.output_directory / "debug_thickness" : "",
+                    /*debug_directory=*/ options.files.output_directory / "debug_thickness", //qn::Logger::is_debug() ? options.files.output_directory / "debug_thickness" : "",
             });
         }
 
@@ -780,6 +782,20 @@ namespace qn {
                     outputs.aligned_metadata // updated: .angles[1], .shifts
             );
         }
+
+//        auto fine_alignment = outputs.aligned_metadata;
+//        // Align the tilt axis with Y and save to csv.
+//        noa::io::TextFile file(options.files.output_directory / "coarse_vs_fine_shifts.csv", noa::io::WRITE);
+//        i64 i{0};
+//        for (const auto& slice: fine_alignment.slices()) {
+//            const auto stage_rotation = noa::geometry::rotate(noa::math::deg2rad(-slice.angles[0]));
+//            const auto shift = coarse_alignment[i].shifts - slice.shifts;
+//            const auto rotated_shift = stage_rotation * shift;
+//            file.write(fmt::format("{:.2f}, {:.4f}, {:.4f}, {:.4f}, {:.4f}\n",
+//                                   slice.angles[1], shift[0], shift[1], rotated_shift[0], rotated_shift[1]));
+//            ++i;
+//        }
+//        file.close();
 
         const Path csv_filename =
                 options.files.output_directory /

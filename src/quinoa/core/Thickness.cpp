@@ -145,6 +145,9 @@ namespace {
         span[last] = std::abs(array[last] - array[last - 1]); // backward difference
 
         noa::math::normalize(gradient, gradient); // FIXME min to 0?
+        const auto min = noa::math::min(gradient);
+        for (auto& e: span)
+            e -= min;
         if (!debug_directory.empty())
             save_vector_to_text(gradient.view(), debug_directory / "gradient.txt");
 
@@ -156,7 +159,7 @@ namespace {
         for (i64 i = 0; i < span.ssize(); ++i)
             span[i] *= line(static_cast<f64>(i));
 
-        noa::math::normalize(gradient, gradient);
+//        noa::math::normalize(gradient, gradient);
         if (!debug_directory.empty())
             save_vector_to_text(gradient.view(), debug_directory / "gradient_masked.txt");
 
@@ -202,7 +205,7 @@ namespace {
         return {new_span, shift};
     }
 
-    auto find_window(const Span<f32>& array, f64 spacing_nm, const Path& debug_directory) -> f64 {
+    auto find_window(const Span<f32>& array, f64 spacing_nm, const Path& debug_directory) -> std::pair<f64, f64> {
         std::vector<i32> peaks_x;
         std::vector<f32> peaks_y;
         peaks_x.reserve(array.size() / 4);
@@ -251,7 +254,7 @@ namespace {
         //    Try to expand the window to neighboring peaks.
         const auto [first, last] = [&]() {
             constexpr f32 MEDIUM_SIGMA = 0.5;
-            constexpr i64 EXTEND_UP_TO = 5;
+            constexpr i64 EXTEND_UP_TO = 10;
             // FIXME Make sure these are not too far away (check consecutive peaks below threshold?).
             //       Here this is intended to stay very close to the big peaks but simply extend at the edges
             //       for significant (but weaker) signal in direct contact with the peaks.
@@ -271,8 +274,6 @@ namespace {
                     right_extended += 1;
                 }
             }
-            output.first += left_extended;
-            output.second += right_extended;
             qn::Logger::trace("extended_left={}, extended_right={}, threshold={}, thickness={:.2f}nm",
                               left_extended, right_extended, MEDIUM_SIGMA,
                               (span_x[output.second] - span_x[output.first]) * spacing_nm);
@@ -299,25 +300,28 @@ namespace {
         };
         const i64 start = find_zero(span_x[first], span_x[std::max(i64{0}, first - 1)], -1);
         const i64 end = find_zero(span_x[last], span_x[std::min(last + 1, n_peaks - 1)], +1);
-        qn::Logger::trace("thickness={:.2f}nm at the edges", static_cast<f64>(end - start) * spacing_nm);
+        qn::Logger::trace("thickness={:.2f}nm", static_cast<f64>(end - start) * spacing_nm);
 
         // Make sure it's not too far off the center.
         auto f_start = static_cast<f64>(start);
         auto f_end = static_cast<f64>(end);
-        auto window_center = f_start + (f_end - f_start) / 2;
+        auto window_radius = (f_end - f_start) / 2;
+        auto window_center = f_start + window_radius;
         auto expected_center = static_cast<f64>(array.size()) / 2;
         if (window_center < expected_center * 0.75 or expected_center * 1.25 < window_center) {
             qn::Logger::warn("The sample z-window search may have failed. "
                              "The window center is off by more than 25% of the expected center...");
         }
 
-        // We assume the expected center is the true center. So enforce it by possibly enlarging the window.
-        auto radius = std::max(expected_center - f_start, f_end - expected_center); // the window is now symmetric
-        auto thickness = radius * 2;
+//        // We assume the expected center is the true center. So enforce it by possibly enlarging the window.
+//        auto radius = std::max(expected_center - f_start, f_end - expected_center); // the window is now symmetric
+        auto thickness = window_radius * 2;
         auto thickness_nm = thickness * spacing_nm;
-        qn::Logger::trace("window_center={:.3f}, expected_center={:.3f}, thickness={:.2f}nm after symmetry",
-                          window_center, expected_center, thickness_nm);
-        return thickness_nm;
+
+
+//        qn::Logger::trace("window_center={:.3f}, expected_center={:.3f}, thickness={:.2f}nm after symmetry",
+//                          window_center, expected_center, thickness_nm);
+        return {thickness_nm, window_center};
     }
 }
 
@@ -371,7 +375,14 @@ namespace qn {
         }
 
         // 3. Window finder.
-        const auto thickness_nm = find_window(adjusted_gradient, average_spacing_nm, parameters.debug_directory);
+        const auto [thickness_nm, new_center] = find_window(
+                adjusted_gradient, average_spacing_nm, parameters.debug_directory);
+        if (parameters.adjust_com) {
+            const auto current_center = MetadataSlice::center<f64>(adjusted_gradient.ssize());
+            auto z_shift = new_center - current_center;
+            metadata.add_global_shift({z_shift, 0, 0});
+            qn::Logger::trace("current_center={}, new_center={}, z_shift={}", current_center, new_center, z_shift);
+        }
         if (parameters.initial_thickness_nm != std::numeric_limits<f64>::max()) {
             if (thickness_nm < parameters.initial_thickness_nm * 0.5 or
                 thickness_nm > parameters.initial_thickness_nm * 1.5) {

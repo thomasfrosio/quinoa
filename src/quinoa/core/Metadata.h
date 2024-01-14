@@ -70,6 +70,9 @@ namespace qn {
         using const_reference = container::const_reference;
         using reference = container::reference;
 
+    public: // Static functions
+        static MetadataStack load_csv(const Path& filename);
+
     public:
         MetadataStack() = default;
         explicit MetadataStack(container&& slices) : m_slices(std::move(slices)) {}
@@ -264,7 +267,6 @@ namespace qn {
         [[nodiscard]] auto minmax_tilts() const -> std::pair<f64, f64>;
 
     private:
-        void load_csv_(const Path& filename);
         void generate_(const Path& tlt_filename, const Path& exposure_filename);
         void generate_(f64 starting_angle, i64 starting_direction, f64 tilt_increment,
                        i64 group_of, bool exclude_start, f64 per_view_exposure, i32 n_slices);
