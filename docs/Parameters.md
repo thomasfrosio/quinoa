@@ -3,10 +3,28 @@
 - [Files](#files)
   - `files:input_directory`: string
   - `files:input_stack`: string
-  - `files:input_tlt`: string
+  - `files:input_tilt`: string
   - `files:input_exposure`: string
   - `files:output_directory`: string
 
+- [Experiment](#experiment)
+  - `collection_order`:
+    - `starting_angle`: real
+    - `starting_direction`: integer
+    - `tilt_increment`: real
+    - `group_of`: integer
+    - `exclude_start`: boolean
+    - `per_view_exposure`: real
+  - `rotation_offset`: real
+  - `tilt_offset`: real
+  - `elevation_offset`: real
+  - `voltage`: real
+  - `amplitude`: real
+  - `cs`: real
+  - `phase_shift`: real
+  - `astigmatism_value`: real
+  - `astigmatism_angle`: real
+  - `thickness`: real
 
 - [Tilt Scheme](#tilt-scheme)
   - `tilt_scheme:order:starting_angle`: real
@@ -36,7 +54,7 @@
   - `alignment:run`: bool
   - `alignment:fit_rotation_offset`: bool
   - `alignment:fit_tilt_offset`: bool
-  - `alignment:fit_elevation_offset`: bool
+  - `alignment:fit_pitch_offset`: bool
   - `alignment:fit_phase_shift`: bool
   - `alignment:fit_astigmatism`: bool
   - `alignment:use_initial_pairwise_alignment`: bool
@@ -53,17 +71,21 @@
 
 ### Automatic search using `files:input_directory`
 
-If `files:input_directory` is entered, the program tries to look for the other input files with the basename set as the name of the directory. Otherwise, input files should be entered.
+If `files:input_directory` is entered, the program tries to look for the other input files with the basename set as the name of the directory. Otherwise, input files should be entered. For instance, if `files:input_directory=data/tilt1`, the files `data/tilt1/tilt1.{extension}` are automatically considered.
 
-### Input files
+### Input stack
 
-- `files:input_stack`: Input stack. Currently, only MRC files are supported.
+- `files:input_stack`: Input stack. Only MRC files with extension `.st`, `.mrc`, or `.mrcs`, are currently supported. If `files:input_directory` is left empty, this parameter has to be specified.
+
+### Input metadata
+
+- `files:input_tilt`: File with the tilt angles of each slice, in degrees, in the same order as saved in the input stack. Each slice is separated by a new line. This file is optional if the [tilt scheme:order](#tilt-scheme) parameters are entered. Note that this file takes precedence over the [tilt scheme:order](#tilt-scheme) entries. If `files:input_directory` is specified, existing files with extension `.tlt` or `.tilt` are considered.
 
 
-- `files:input_tlt`: File with the tilt angles of each slice, in degrees, as saved in the input stack. Each slice should be separated by a new line. This file is optional if the [tilt scheme:order](#tilt-scheme) parameters are entered. Note that this file takes precedence over the [tilt scheme:order](#tilt-scheme) entries.
+- `files:input_exposure`: File with the accumulated exposure of each slice, in e/A^2, as saved in the input stack. This is used for exposure weighting and is optional. It should have the same format as `files:input_tilt`. Note that this file takes precedence over the [tilt scheme:order](#tilt-scheme) entry `per_view_exposure`. If `files:input_directory` is specified, existing files with extension `.exp` or `.exposure` are considered.
 
 
-- `files:input_exposure`: File with the accumulated exposure of each slice, in e/A^2, as saved in the input stack. This is used for exposure weighting and is optional. It should have the same format as `files:input_tlt`. Note that this file takes precedence over the [tilt scheme:order](#tilt-scheme) entry `per_view_exposure`.
+- `files:input_csv`: File with the full metadata specified. This file takes precedence over the `files:input_tilt` and `files:input_exposure` files, as well as the [tilt scheme:order](#tilt-scheme) entry.
 
 ### Output directory
 
@@ -77,7 +99,7 @@ The tilt-scheme includes the number slices, their angles, their order of collect
 
 ### Input files
 
-As mentioned in [Files](#files), `files:input_tlt` and `files:input_exposure` can be used to specify the `tilt_scheme:order` parameters. These files, if specified, overwrite the `tilt_scheme:order` parameters.
+As mentioned in [Files](#files), `files:input_tilt` and `files:input_exposure` can be used to specify the `tilt_scheme:order` parameters. These files, if specified, overwrite the `tilt_scheme:order` parameters.
 
 ### `tilt_scheme:order` parameters
 
@@ -142,7 +164,7 @@ The alignments can be turned off using `alignment:run: false` (defaults to `true
 
 - `alignment:fit_rotation_offset`: Whether to search for and/or refine the rotation offset. Defaults to `true`.
 - `alignment:fit_tilt_offset`: Whether to search for and/or refine the tilt offset. Defaults to `true`.
-- `alignment:fit_elevation_offset`: Whether to search for and/or refine the elevation offset. Defaults to `true`.
+- `alignment:fit_pitch_offset`: Whether to search for and/or refine the elevation offset. Defaults to `true`.
 - `alignment:fit_phase_shift`: Whether to search for and/or refine the phase shift. Defaults to `false`.
 - `alignment:fit_astigmatism`: Whether to search for and/or refine the astigmatism. Defaults to `true`.
 

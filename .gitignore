@@ -1,8 +1,7 @@
 .idea/
 cmake-build-debug/
-cmake-build-debug-time/
+cmake-build-debug-cpu/
 cmake-build-release/
-_build/
-_install/
-build/
-install/
+cmake-build-release-cpu/
+noa/
+tests/

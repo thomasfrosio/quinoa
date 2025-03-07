@@ -1,10 +1,11 @@
 files:
   input_directory:
-  input_stack: "/home/thomas/Projects/datasets/EMPIAR-10304/tilt1.mrc"
+#  input_stack: "/home/thomas/Projects/quinoa/tests/test_pairwise_shift/tilt_series.mrc"
+  input_stack: "/home/thomas/Projects/datasets/EMPIAR-11830/11830/data/chlamy_visual_proteomics/01122021_BrnoKrios_arctis_lam2_pos14/01122021_BrnoKrios_arctis_lam2_pos14.st"
   input_csv:
-  input_tlt:
+  input_tilt: "/home/thomas/Projects/datasets/EMPIAR-11830/11830/data/chlamy_visual_proteomics/01122021_BrnoKrios_arctis_lam2_pos14/01122021_BrnoKrios_arctis_lam2_pos14.rawtlt"
   input_exposure:
-  output_directory: "/home/thomas/Projects/quinoa/tests/tilt1"
+  output_directory: "/home/thomas/Projects/datasets/EMPIAR-11830/11830/data/chlamy_visual_proteomics/01122021_BrnoKrios_arctis_lam2_pos14/quinoa"
 
 experiment:
   collection_order:
@@ -14,44 +15,45 @@ experiment:
     group_of: 3
     exclude_start: false
     per_view_exposure: 3
-  rotation_offset: 175.1
+  rotation_offset: -83.293
   tilt_offset:
-  elevation_offset:
+  pitch_offset:
   voltage:
   amplitude:
   cs:
   phase_shift:
   astigmatism_value:
   astigmatism_angle:
-  thickness: 90
+  thickness: 100
 
 preprocessing:
-  run:
+  run: true
   exclude_blank_views:
-  exclude_view_indexes: 0
+  exclude_view_indexes:
 
 alignment:
   run: true
-  fit_rotation_offset: true
+  fit_rotation_offset: false
   fit_tilt_offset: true
-  fit_elevation_offset: true
-  fit_phase_shift:
-  fit_astigmatism:
-  use_initial_pairwise_alignment: true
-  use_ctf_estimate: true
-  use_thickness_estimate: true
-  use_projection_matching: true
-  rotation_spline_resolution: 1
+  fit_pitch_offset: true
+  fit_phase_shift: false
+  fit_astigmatism: false
+  fit_thickness:
+  do_coarse_alignment: true
+  do_ctf_alignment: true
+  do_refine_alignment: true
 
 postprocessing:
-  run:
-  save_aligned_stack:
+  run: false
+  resolution: 18
+  save_aligned_stack: true
   reconstruct_tomogram: true
-  reconstruct_tomogram_resolution:
-  reconstruct_cube_size:
+  reconstruct_mode: real # fourier or real
+  reconstruct_weighting: radial # fourier, radial, sirt-15
+  reconstruct_z_padding: 0
 
 compute:
   device: gpu
-  n_cpu_threads: 8
+  n_cpu_threads: 4
   register_input_stack:
   log_level: trace

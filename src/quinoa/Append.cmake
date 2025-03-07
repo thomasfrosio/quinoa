@@ -1,50 +1,48 @@
-set(QUINOA_SOURCES
-    src/quinoa/EntryPoint.cpp
+set(QUINOA_HEADERS
+    src/quinoa/Alignment.hpp
+    src/quinoa/CommonArea.hpp
+    src/quinoa/ExcludeViews.hpp
+    src/quinoa/GridSearch.hpp
+    src/quinoa/Logger.hpp
+    src/quinoa/Metadata.hpp
+    src/quinoa/Optimizer.hpp
+    src/quinoa/Options.hpp
+    src/quinoa/PairwiseShift.hpp
+    src/quinoa/PairwiseTilt.hpp
+    src/quinoa/Reconstruction.hpp
+    src/quinoa/RotationOffset.hpp
+    src/quinoa/Stack.hpp
+    src/quinoa/Types.hpp
+    src/quinoa/Thickness.hpp
+    src/quinoa/Utilities.hpp
+    src/quinoa/YAML.hpp
 
-    src/quinoa/Exception.h
-    src/quinoa/Exception.cpp
-    src/quinoa/Types.h
+    src/quinoa/CubicGrid.hpp
+    src/quinoa/CTF.hpp
+#    src/quinoa/Tests.hpp
+)
 
-    src/quinoa/io/Logging.h
-    src/quinoa/io/Logger.cpp
-    src/quinoa/io/Options.h
-    src/quinoa/io/Options.cpp
-    src/quinoa/io/YAML.h
+set(QUINOA_SOURCES_CXX
+    src/quinoa/Logger.cpp
+    src/quinoa/Metadata.cpp
+    src/quinoa/Options.cpp
 
-    src/quinoa/core/Alignment.h
-    src/quinoa/core/Alignment.cpp
-    src/quinoa/core/Metadata.cpp
-    src/quinoa/core/Metadata.h
-    src/quinoa/core/Stack.hpp
-    src/quinoa/core/Stack.cpp
-    src/quinoa/core/Optimizer.hpp
-    src/quinoa/core/Utilities.h
-    src/quinoa/core/CommonArea.hpp
-    src/quinoa/core/ExcludeViews.hpp
+)
 
-    src/quinoa/core/Ewise.hpp
-    src/quinoa/core/Ewise.cu
+set(QUINOA_SOURCES_UNIFIED
+    src/quinoa/Alignment.cpp
+    src/quinoa/Entry.cpp
+    src/quinoa/PairwiseShift.cpp
+    src/quinoa/PairwiseTilt.cpp
+#    src/quinoa/ProjectionMatching.cpp
+    src/quinoa/Reconstruction.cpp
+    src/quinoa/RotationOffset.cpp
+    src/quinoa/Stack.cpp
+#    src/quinoa/Thickness.cpp
 
-    src/quinoa/core/Thickness.hpp
-    src/quinoa/core/Thickness.cpp
-
-    src/quinoa/core/CTF.hpp
-    src/quinoa/core/CTFAverage.cpp
-    src/quinoa/core/CTFGlobal.cpp
-
-    src/quinoa/core/GridSearch1D.hpp
-    src/quinoa/core/CubicGrid.hpp
-
-    src/quinoa/core/PairwiseShift.hpp
-    src/quinoa/core/PairwiseShift.cpp
-    src/quinoa/core/GlobalRotation.hpp
-    src/quinoa/core/GlobalRotation.cpp
-#    src/quinoa/core/ProjectionMatching.h
-    src/quinoa/core/ProjectionMatching.hpp
-#    src/quinoa/core/ProjectionMatching.cpp
-    src/quinoa/core/ProjectionMatching2.cpp
-
-    src/quinoa/core/Reconstruction.hpp
-    src/quinoa/core/Reconstruction.cpp
-
-    )
+    src/quinoa/CTFPatches.cpp
+    src/quinoa/CTFCoarse.cpp
+#    src/quinoa/CTFAverage.cpp
+#    src/quinoa/CTFGlobal.cpp
+    src/quinoa/CTFBackground.cpp
+)

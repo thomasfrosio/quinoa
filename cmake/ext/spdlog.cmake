@@ -5,7 +5,7 @@ if (TARGET spdlog::spdlog)
     message(STATUS "Target already exists: spdlog::spdlog")
 else ()
     set(spdlog_REPOSITORY https://github.com/gabime/spdlog)
-    set(spdlog_TAG v1.11.0)
+    set(spdlog_TAG v1.14.1)
 
     message(STATUS "Repository: ${spdlog_REPOSITORY}")
     message(STATUS "Git tag: ${spdlog_TAG}")
