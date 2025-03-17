@@ -78,7 +78,7 @@ namespace qn {
         /// \param predicate A function taking a MetadataSlice a retuning a boolean
         ///                  If the predicate returns true, the slice should be removed.
         template<typename Predicate> requires std::is_invocable_r_v<bool, Predicate, const MetadataSlice&>
-        auto exclude(Predicate&& predicate) -> MetadataStack& {
+        auto exclude(Predicate&& predicate) -> MetadataStack& { // TODO rename to exclude_if
             std::erase_if(m_slices, std::forward<Predicate>(predicate));
             return *this;
         }
@@ -112,8 +112,9 @@ namespace qn {
         ) -> MetadataStack& {
             const auto scale = input_spacing / current_spacing;
             for (MetadataSlice& output_slice: slices()) {
-                for (const MetadataSlice& input_slice: input.slices()) {
+                for (const MetadataSlice& input_slice: input) {
                     if (output_slice.index == input_slice.index) {
+                        check(output_slice.index_file == input_slice.index_file);
                         if (options.update_angles)
                             output_slice.angles = input_slice.angles;
                         if (options.update_shifts)
@@ -131,14 +132,14 @@ namespace qn {
         /// Shift the sample by a given amount.
         auto add_global_shift(const Vec<f64, 3>& global_shift) -> MetadataStack& {
             for (auto& slice: slices()) {
+                // Go from volume->image space.
                 const auto angles = noa::deg2rad(slice.angles);
-                const auto projection_matrix = Mat{
+                const auto volume2image = (
                     ng::rotate_z(+angles[0]) *
-                    ng::rotate_x(+angles[2]) *
                     ng::rotate_y(+angles[1]) *
-                    ng::rotate_z(-angles[0])
-                }.pop_front(); // project along z
-                slice.shifts += projection_matrix * global_shift;
+                    ng::rotate_x(+angles[2])
+                ).pop_front(); // project along z
+                slice.shifts += volume2image * global_shift;
             }
             return *this;
         }
@@ -163,18 +164,19 @@ namespace qn {
         /// Move the average shift to 0.
         auto center_shifts() -> MetadataStack& {
             Vec<f64, 2> mean{};
-            auto mean_scale = 1 / static_cast<f64>(size());
+            // Compute the average shift in volume space...
             for (auto& slice: slices()) {
                 const auto angles = noa::deg2rad(slice.angles);
-                const auto pitch_tilt = angles.filter(2, 1);
-                const auto stretch_to_0deg = Mat{
-                    ng::rotate(angles[0]) *
-                    ng::scale(1 / noa::cos(pitch_tilt)) * // 1 = cos(0deg)
-                    ng::rotate(-angles[0])
-                };
-                const Vec<f64, 2> shift_at_0deg = stretch_to_0deg * slice.shifts;
-                mean += shift_at_0deg * mean_scale;
+                const auto image2volume = (
+                    ng::rotate_x(-angles[2]) *
+                    ng::rotate_y(-angles[1]) *
+                    ng::rotate_z(-angles[0])
+                );
+                mean += image2volume * slice.shifts;
             }
+            mean /= static_cast<f64>(size());
+
+            // Then center the volume onto that point.
             return add_global_shift(-mean);
         }
 
