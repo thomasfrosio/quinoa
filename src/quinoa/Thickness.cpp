@@ -43,6 +43,89 @@ namespace {
         }
     };
 
+    class BackProjector {
+
+        void project_z_slice() {
+
+        }
+    };
+
+    void reconstruct_tomogram(
+        const MetadataStack& metadata,
+        const View<f32>& input_images,
+        const Path& output_directory
+    ) {
+        const auto n_images = input_images.shape()[0];
+        const auto image_shape = input_images.shape().filter(2, 3);
+        const auto thickness = i64{600};
+        const auto volume_shape = Shape{i64{1}, thickness, image_shape[0], image_shape[1]};
+        const auto image_center = (image_shape.vec / 2).as<f64>();
+        const auto volume_center = (volume_shape.vec.pop_front() / 2).as<f64>();
+
+        // Compute the projection matrices.
+        auto matrices = Array<Mat<f64, 2, 4>>(n_images);
+        for (auto&& [slice, matrix]: noa::zip(metadata, matrices.span_1d())) {
+            auto angles = noa::deg2rad(slice.angles);
+            matrix = ( // volume->image
+                ng::translate((image_center + slice.shifts).push_front(0)) *
+                ng::linear2affine(ng::rotate_z(+angles[0])) *
+                ng::linear2affine(ng::rotate_y(+angles[1])) *
+                ng::linear2affine(ng::rotate_x(+angles[2])) *
+                ng::translate(-volume_center)
+            ).filter_rows(1, 2); // (y, x)
+        }
+
+        // noa::fill(input_images, 1.);
+        noa::write(input_images, output_directory / "images.mrc");
+
+        // Backproject.
+        auto volume = noa::zeros<f32>(volume_shape);
+        ng::backward_project_3d(input_images, volume, matrices, {
+            .interp = noa::Interp::LINEAR,
+            .add_to_output = false,
+        });
+        noa::write(volume, output_directory / "tomogram.mrc");
+
+        auto volume_slice_rfft = Array<c32>(image_shape.push_front<2>(1).rfft());
+        std::vector<f64> variances;
+        for (i64 i: noa::irange(thickness)) {
+            auto volume_slice = volume.view().subregion(0, i);
+
+            // TODO R-weight or SIRT-like
+            // ns::median_filter_2d(volume_slice.copy(), volume_slice, {.window_size = 5});
+
+            noa::fft::r2c(volume_slice, volume_slice_rfft);
+            ns::bandpass<"h2h">(
+                volume_slice_rfft, volume_slice_rfft, volume_slice.shape(),
+                {.highpass_cutoff = 0.1, .highpass_width = 0.1, .lowpass_cutoff = 0.4, .lowpass_width = 0.1}
+            );
+            noa::fft::c2r(volume_slice_rfft, volume_slice);
+
+            variances.push_back(noa::variance(volume_slice));
+        }
+        noa::normalize(View(variances.data(), variances.size()), View(variances.data(), variances.size()), {.mode = noa::Norm::MIN_MAX});
+        save_plot_xy({}, variances, output_directory / "variances.txt");
+        noa::write(volume, output_directory / "tomogram_filtered.mrc");
+
+        std::vector<f64> nccs;
+        for (i64 i: noa::irange(thickness - 1)) {
+            auto volume_slice = volume.view().subregion(0, ni::Slice{i, i + 2});
+            volume_slice = volume_slice.permute({1, 0, 2, 3});
+
+            // // TODO R-weight or SIRT-like
+            // noa::fft::r2c(volume_slice, volume_slice_rfft);
+            // ns::lowpass<"h2h">(
+            //     volume_slice_rfft, volume_slice_rfft, volume_slice.shape(),
+            //     {.cutoff = 0.1, .width = 0.1}
+            // );
+            // noa::fft::c2r(volume_slice_rfft, volume_slice);
+
+            nccs.push_back(ns::cross_correlation_score(volume_slice.subregion(0), volume_slice.subregion(1), true));
+        }
+        noa::normalize(View(nccs.data(), nccs.size()), View(nccs.data(), nccs.size()), {.mode = noa::Norm::MIN_MAX});
+        save_plot_xy({}, nccs, output_directory / "nccs.txt");
+    }
+
     auto compute_profile_(
         StackLoader& stack_loader,
         MetadataStack& metadata,
@@ -371,11 +454,19 @@ namespace qn {
             .zero_pad_to_square_shape = false,
         });
 
+        metadata.sort("tilt");
+        metadata.reset_indices();
         auto rescaled_metadata = metadata;
         rescaled_metadata.rescale_shifts(stack_loader.file_spacing(), stack_loader.stack_spacing());
 
         const f64 average_spacing_nm = 1e-1 * noa::mean(stack_loader.stack_spacing());
         const auto max_thickness_pixels = static_cast<i64>(std::ceil(parameters.maximum_thickness_nm / average_spacing_nm));
+
+        {
+            auto input_images = stack_loader.read_stack(metadata);
+            reconstruct_tomogram(rescaled_metadata, input_images.view(), parameters.debug_directory);
+            return 1.;
+        }
 
         // 1. Compute the profile of the tomogram (forward projection at pitch=90deg).
         //    Compute the variance of the profile along the rows.

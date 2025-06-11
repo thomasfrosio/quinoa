@@ -15,6 +15,7 @@ namespace qn {
         bool precise_cutoff;
         f64 rescale_target_resolution;
         i64 rescale_min_size{0};
+        i64 rescale_max_size{0};
 
         // Signal processing after cropping:
         bool exposure_filter{false};
@@ -53,6 +54,7 @@ namespace qn {
         [[nodiscard]] auto compute_device() const noexcept -> Device { return m_parameters.compute_device; }
         [[nodiscard]] auto allocator() const noexcept -> Allocator { return m_parameters.allocator; }
         [[nodiscard]] auto file_spacing() const noexcept -> Vec2<f64> { return m_input_spacing; }
+        [[nodiscard]] auto file_slice_shape() const noexcept -> Shape2<i64> { return m_input_slice_shape; }
         [[nodiscard]] auto stack_spacing() const noexcept -> Vec2<f64> { return m_output_spacing; }
         [[nodiscard]] auto slice_shape() const noexcept -> Shape2<i64> { return m_output_slice_shape; }
 
@@ -91,6 +93,7 @@ namespace qn {
         Array<f32> stack;
         Vec2<f64> stack_spacing;
         Vec2<f64> file_spacing;
+        Shape2<i64> file_slice_shape;
     };
 
     [[nodiscard]]
@@ -101,17 +104,16 @@ namespace qn {
     ) -> LoadStackOutputs {
         auto stack_loader = StackLoader(tilt_series_path, parameters);
         auto stack = stack_loader.read_stack(tilt_series_metadata);
-        return {stack, stack_loader.stack_spacing(), stack_loader.file_spacing()};
+        return {stack, stack_loader.stack_spacing(), stack_loader.file_spacing(), stack_loader.file_slice_shape()};
     }
 
     struct SaveStackParameters {
         bool correct_rotation{false};
         noa::Interp interp{noa::Interp::LINEAR};
         noa::Border border{noa::Border::ZERO};
+        noa::io::Encoding::Type dtype = noa::io::Encoding::F32;
     };
 
-    /// Corrects for the in-plane rotation and shifts, as encoded in the metadata,
-    /// and save the transformed slices in the same order as in the metadata.
     void save_stack(
         const Path& input_stack_path,
         const Path& output_stack_path,

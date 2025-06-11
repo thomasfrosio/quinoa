@@ -28,22 +28,21 @@ namespace qn {
     void PairwiseShift::update(
         const View<f32>& stack,
         MetadataStack& metadata,
-        const PairwiseShiftParameters& parameters,
-        const PairwiseShiftUpdateParameters& update_parameters
+        const PairwiseShiftParameters& parameters
     ) {
         if (m_buffer_rfft.is_empty())
             return;
 
         auto timer = Logger::info_scope_time("Pairwise shift alignment");
         Logger::trace(
-            "compute_device={}\n"
+            "device={}\n"
             "cosine_stretching={}\n"
             "area_match={}\n"
             "smooth_edge={}%",
             m_xmap.device(),
-            update_parameters.cosine_stretch,
-            update_parameters.area_match,
-            update_parameters.smooth_edge_percent * 100
+            parameters.cosine_stretch,
+            parameters.area_match,
+            parameters.smooth_edge_percent * 100
         );
 
         // We'll need the slices sorted by tilt angles, with the lowest absolute tilt being the pivot point.
@@ -51,51 +50,78 @@ namespace qn {
         const i64 index_lowest_tilt = metadata.find_lowest_tilt_index();
         const i64 slice_count = metadata.ssize();
 
-        // The metadata won't be updated in the loop, we can compute the common area once here.
-        if (update_parameters.area_match)
-            m_common_area.set_geometry(stack.shape().filter(2, 3), metadata);
+        //
+        Vec<f64, 2> max_shifts{};
+        Vec<f64, 2> first_average_shift{};
+        Vec<f64, 2> last_average_shift{};
+        const bool converge = parameters.update_count < 0;
+        const i32 count = converge ? 125 : parameters.update_count;
+        i32 i{};
+        while (i < count) {
+            // The metadata won't be updated in the loop, we can compute the common area once here.
+            if (parameters.area_match)
+                m_common_area.set_geometry(stack.shape().filter(2, 3), metadata);
 
-        // The main processing loop. From the lowest to the highest tilt, find the relative shifts.
-        // These shifts are the slice-to-slice shifts, i.e. the shift to apply to the target to align
-        // it onto its neighbor reference.
-        std::vector<Vec<f64, 2>> slice_to_slice_shifts;
-        slice_to_slice_shifts.reserve(static_cast<size_t>(slice_count));
-        for (i64 idx_target{}; idx_target < slice_count; ++idx_target) {
-            if (index_lowest_tilt == idx_target) {
-                // Everything is relative to this reference view, so of course its shifts are 0.
-                // We call it the global reference view.
-                slice_to_slice_shifts.emplace_back();
-                continue;
+            // The main processing loop. From the lowest to the highest tilt, find the relative shifts.
+            // These shifts are the slice-to-slice shifts, i.e. the shift to apply to the target to align
+            // it onto its neighbor reference.
+            std::vector<Vec<f64, 2>> slice_to_slice_shifts;
+            slice_to_slice_shifts.reserve(static_cast<size_t>(slice_count));
+            for (i64 idx_target{}; idx_target < slice_count; ++idx_target) {
+                if (index_lowest_tilt == idx_target) {
+                    // Everything is relative to this reference view, so of course its shifts are 0.
+                    // We call it the global reference view.
+                    slice_to_slice_shifts.push_back({});
+                    continue;
+                }
+
+                // If ith target has:
+                //  - negative tilt angle, then reference is at i + 1.
+                //  - positive tilt angle, then reference is at i - 1.
+                const bool is_negative = idx_target < index_lowest_tilt;
+                const i64 idx_reference = idx_target + 1 * is_negative - 1 * !is_negative;
+
+                // Compute the shifts.
+                const Vec<f64, 2> slice_to_slice_shift = find_relative_shifts_(
+                    stack, metadata[idx_reference], metadata[idx_target], parameters);
+                slice_to_slice_shifts.push_back(slice_to_slice_shift);
             }
 
-            // If ith target has:
-            //  - negative tilt angle, then reference is at i + 1.
-            //  - positive tilt angle, then reference is at i - 1.
-            const bool is_negative = idx_target < index_lowest_tilt;
-            const i64 idx_reference = idx_target + 1 * is_negative - 1 * !is_negative;
+            // This is the main drawback of this method. We need to compute the global shifts from the relative
+            // shifts, so the high tilt slices end up accumulating the errors of the lower tilts.
+            const auto [global_shifts, i_average_shift] = relative2global_shifts_(
+                slice_to_slice_shifts, metadata, index_lowest_tilt, parameters.cosine_stretch);
 
-            // Compute the shifts.
-            const Vec<f64, 2> slice_to_slice_shift = find_relative_shifts_(
-                stack, metadata[idx_reference], metadata[idx_target], parameters, update_parameters);
-            slice_to_slice_shifts.emplace_back(slice_to_slice_shift);
+            // Logging.
+            if (i == 0)
+                first_average_shift = i_average_shift;
+            last_average_shift = i_average_shift;
+
+            // Update the metadata.
+            max_shifts = 0;
+            for (auto&& [slice, global_shift]: noa::zip(metadata, global_shifts)) {
+                slice.shifts += global_shift;
+                max_shifts = max(max_shifts, abs(global_shift));
+            }
+
+            // Loop logic.
+            ++i;
+            if (converge and noa::sqrt(noa::dot(i_average_shift, i_average_shift)) <= 0.001)
+                break;
         }
 
-        // This is the main drawback of this method. We need to compute the global shifts from the relative
-        // shifts, so the high tilt slices end up accumulating the errors of the lower tilts.
-        const std::vector<Vec<f64, 2>> global_shifts = relative2global_shifts_(
-            slice_to_slice_shifts, metadata, index_lowest_tilt, update_parameters.cosine_stretch);
-
-        // Update the metadata.
-        for (auto&& [slice, global_shift]: noa::zip(metadata, global_shifts))
-            slice.shifts += global_shift;
+        Logger::info(
+            "first_average_shift={::.3f}, last_average_shift={::.3f}, max_shift={::.3f}, n_iter={}",
+            first_average_shift, last_average_shift, max_shifts, i
+        );
+        save_plot_shifts(metadata, parameters.output_directory / "coarse_shifts.txt", {.title = "Coarse Shifts"});
     }
 
     auto PairwiseShift::find_relative_shifts_(
         const View<f32>& stack,
         const MetadataSlice& reference_slice,
         const MetadataSlice& target_slice,
-        const PairwiseShiftParameters& parameters,
-        const PairwiseShiftUpdateParameters& update_parameters
+        const PairwiseShiftParameters& parameters
     ) const -> Vec2<f64> {
         // Compute the affine matrix to transform the target "onto" the reference.
         const Vec3<f64> target_angles = noa::deg2rad(target_slice.angles);
@@ -106,11 +132,11 @@ namespace qn {
         // These angles are flipped, since the cos-scaling is perpendicular to the axis of rotation.
         // So since the tilt axis is along Y, its stretching is along X.
         Vec2<f64> cos_factor{1, 1};
-        if (update_parameters.cosine_stretch)
+        if (parameters.cosine_stretch)
             cos_factor = noa::cos(reference_angles.filter(2, 1)) / noa::cos(target_angles.filter(2, 1));
 
         // Cancel the difference (if any) in rotation and shift as well.
-        const Mat33 fwd_stretch_target_to_reference_d =
+        const Mat33<f64> fwd_stretch_target_to_reference_d =
             ng::translate(slice_center + reference_slice.shifts) *
             ng::linear2affine(ng::rotate(reference_angles[0])) *
             ng::linear2affine(ng::scale(cos_factor)) *
@@ -132,7 +158,7 @@ namespace qn {
         // This is relevant for large shifts between images and high-tilt angles, but also to restrict the
         // alignment to a specific region, i.e., the center of the image.
         const auto indices = std::array{reference_slice.index, target_slice.index};
-        if (update_parameters.area_match) {
+        if (parameters.area_match) {
             // Copy if stack isn't on the compute-device.
             View<f32> input_reference = stack.subregion(indices[0]);
             View<f32> input_target = stack.subregion(indices[1]);
@@ -145,8 +171,8 @@ namespace qn {
             // This is more restrictive and removes regions from the higher tilts that aren't in the 0deg view.
             // This is quite good to remove the regions in the higher tilts that varies a lot from one tilt to the
             // next, and where cosine stretching isn't a good approximation of what is happening in 3d space.
-            m_common_area.mask(input_reference, reference, reference_slice, false, update_parameters.smooth_edge_percent);
-            m_common_area.mask(input_target, target, target_slice, false, update_parameters.smooth_edge_percent);
+            m_common_area.mask(input_reference, reference, reference_slice, false, parameters.smooth_edge_percent);
+            m_common_area.mask(input_target, target, target_slice, false, parameters.smooth_edge_percent);
 
         } else {
             // The area match can be very restrictive in the high tilts. When the shifts are not known and
@@ -154,7 +180,7 @@ namespace qn {
             // the two images that are being compared.
             const auto reference_and_target = buffer.subregion(ni::Slice{1, 3});
             const auto hw = reference_and_target.shape().pop_front<2>();
-            const auto smooth_edge_size = static_cast<f64>(noa::max(hw)) * update_parameters.smooth_edge_percent;
+            const auto smooth_edge_size = static_cast<f64>(noa::max(hw)) * parameters.smooth_edge_percent;
 
             noa::copy_batches(stack, reference_and_target, View(indices.data(), 2));
 
@@ -179,9 +205,9 @@ namespace qn {
         const auto target_stretched_and_reference = buffer.subregion(ni::Slice{0, 2});
         const auto xmap = m_xmap.view();
 
-        if (not parameters.debug_directory.empty()) {
+        if (Logger::is_debug()) {
             const auto target_reference_filename =
-                parameters.debug_directory / fmt::format("target_stretched_and_reference_{:0>2}.mrc", indices[0]);
+                parameters.output_directory / fmt::format("target_stretched_and_reference_{:0>2}.mrc", indices[0]);
             noa::write(target_stretched_and_reference, target_reference_filename);
             Logger::debug("{} saved", target_reference_filename);
         }
@@ -200,7 +226,8 @@ namespace qn {
         ns::cross_correlation_map<"h2f">(
             target_stretched_and_reference_rfft.subregion(0),
             target_stretched_and_reference_rfft.subregion(1),
-            xmap, {.mode = ns::Correlation::CONVENTIONAL});
+            xmap, {.mode = ns::Correlation::CONVENTIONAL}
+        );
 
         if (not parameters.debug_directory.empty()) {
             const auto xmap_filename = parameters.debug_directory / fmt::format("xmap_{:0>2}.mrc", indices[0]);
@@ -213,14 +240,12 @@ namespace qn {
         // we would then need to subtract this shift to the stretched target.
         const auto [peak_coordinate, peak_value] = ns::cross_correlation_peak_2d<"f2f">(xmap, {
             .maximum_lag =
-                (update_parameters.max_shift_percent >= 0.99 ? -1 : update_parameters.max_shift_percent) *
+                (parameters.max_shift_percent >= 0.99 ? -1 : parameters.max_shift_percent) *
                 xmap.shape().vec.filter(2, 3).as<f64>()
         });
 
         const auto shift_reference = (peak_coordinate - slice_center).as<f64>();
-        Logger::trace("peak {:>2}: pos={::> 8.3f}, value={:.6g}", indices[0], shift_reference, peak_value);
-
-        if (not update_parameters.cosine_stretch)
+        if (not parameters.cosine_stretch)
             return shift_reference;
 
         // We could destretch the shift to bring it back to the original target. However, we'll need
@@ -229,7 +254,7 @@ namespace qn {
         // Instead, it is simpler to scale all the slice-to-slice shifts to the same reference frame,
         // process everything there, and then go back to whatever higher tilt reference frame at
         // the end. Here, this global reference frame is the planar specimen (no tilt, no pitch).
-        const auto fwd_stretch_reference_to_0deg = Mat22{
+        const auto fwd_stretch_reference_to_0deg = Mat22<f64>{
             ng::rotate(reference_angles[0]) *
             ng::scale(1 / noa::cos(reference_angles.filter(2, 1))) * // 1 = cos(0deg)
             ng::rotate(-reference_angles[0])
@@ -243,7 +268,7 @@ namespace qn {
         const MetadataStack& metadata,
         i64 index_lowest_tilt,
         bool cosine_stretch
-    ) -> std::vector<Vec<f64, 2>> {
+    ) -> Pair<std::vector<Vec<f64, 2>>, Vec<f64, 2>> {
         // Compute the global shifts and the mean.
         const size_t count = relative_shifts.size();
         Vec<f64, 2> mean{};
@@ -254,6 +279,7 @@ namespace qn {
         };
 
         // Inclusive scan.
+        // FIXME
         auto global_shifts = std::vector<Vec<f64, 2>>(count);
         auto sum = Vec<f64, 2>{};
         for (i64 i = index_lowest_tilt + 1; i < static_cast<i64>(count); ++i)
@@ -262,31 +288,24 @@ namespace qn {
         for (i64 i = index_lowest_tilt - 1; i >= 0; --i)
             global_shifts.data()[i] = sum = scan_op(sum, relative_shifts.data()[i]);
 
-        Logger::info("Average shift: {::.3f}", mean);
-
         // Center the shifts.
         for (auto& shift: global_shifts)
             shift -= mean;
 
         if (not cosine_stretch)
-            return global_shifts;
+            return {global_shifts, mean};
 
         // Center the global shifts and scale them back to the original reference frame of their respective slice,
         // i.e. shrink the shifts to account for the slice's tilt and pitch.
         for (size_t i{}; i < count; ++i) {
             const auto angles = noa::deg2rad(metadata[i].angles);
-            const auto fwd_shrink_matrix = Mat22{
+            const auto fwd_shrink_matrix = Mat22<f64>{
                 ng::rotate(angles[0]) *
                 ng::scale(noa::cos(angles.filter(2, 1))) *
                 ng::rotate(-angles[0])
             };
-            const auto corrected_shift = fwd_shrink_matrix * global_shifts[i];
-            Logger::trace("view={:>02}, global_shift={::> 8.3f}, global_corrected_shift={::> 8.3f}",
-                          i, global_shifts[i], corrected_shift);
-
-            global_shifts[i] = corrected_shift;
+            global_shifts[i] = fwd_shrink_matrix * global_shifts[i];
         }
-
-        return global_shifts;
+        return {global_shifts, mean};
     }
 }

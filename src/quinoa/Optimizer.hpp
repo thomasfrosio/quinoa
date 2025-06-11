@@ -49,6 +49,11 @@ namespace qn {
             nlopt_destroy(pointer); // if nullptr, it does nothing
         }
 
+        void set_max_number_of_evaluations(i32 max_number_of_evaluations) const {
+            const nlopt_result result = nlopt_set_maxeval(pointer, max_number_of_evaluations);
+            check(result >= 0, "Failed to set the maximum number of evaluations");
+        }
+
         void set_max_objective(nlopt_func function, void* data = nullptr) const {
             const nlopt_result result = nlopt_set_max_objective(pointer, function, data);
             check(result >= 0, "Failed with status: {}", nlopt_result_to_string(result));

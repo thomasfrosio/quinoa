@@ -3,7 +3,7 @@
 #include <noa/Core.hpp>
 
 #include "quinoa/Types.hpp"
-#include "quinoa/Options.hpp"
+#include "quinoa/Settings.hpp"
 
 namespace qn {
     /// Metadata of a 2d slice.
@@ -18,14 +18,18 @@ namespace qn {
     ///     - They are offsets ("by how much the slice is rotated"), in degrees.
     ///       As such, to align the slice (aka to go from image to volume space), we subtract the angles.
     struct MetadataSlice {
+        using defocus_type = ns::DefocusAstigmatic<f64>;
+        using time_type = std::chrono::time_point<std::chrono::system_clock, std::chrono::seconds>;
+
     public:
-        i32 index{};            /// Index [0, N) of the slice in the array.
-        i32 index_file{};       /// Index [0, N) of the slice in the original file.
-        Vec<f64, 3> angles{};   /// Euler angles, in degrees, of the slice. ZYX extrinsic (rotation, tilt, pitch)
-        Vec<f64, 2> shifts{};   /// YX shifts, in pixels, of the slice.
-        Vec<f64, 2> exposure{}; /// Pre- and post-exposure, in e-/A2.
-        f64 phase_shift{};      /// Phase shift, in radians.
-        ns::DefocusAstigmatic<f64> defocus{};
+        i32 index{};            // Index [0, N) of the slice in the array.
+        i32 index_file{};       // Index [0, N) of the slice in the original file.
+        Vec<f64, 3> angles{};   // Euler angles, in degrees, of the slice. ZYX extrinsic (rotation, tilt, pitch)
+        Vec<f64, 2> shifts{};   // YX shifts, in pixels, of the slice.
+        Vec<f64, 2> exposure{}; // Pre- and post-exposure, in e-/A2.
+        f64 phase_shift{};      // Phase shift, in radians.
+        defocus_type defocus{}; // Astigmatic defocus.
+        i64 time{};             // Collection time-point.
 
     public:
         /// Convert the angle (in degrees) to the [-180,180] degrees range.
@@ -54,36 +58,30 @@ namespace qn {
         using reference = container::reference;
 
     public: // Static functions
-        static MetadataStack load_csv(const Path& filename);
+        static MetadataStack load_from_settings(Settings& options);
+        static MetadataStack load_from_csv(const Path& filename);
 
     public:
         MetadataStack() = default;
         explicit MetadataStack(container&& slices) : m_slices(std::move(slices)) {}
+        explicit MetadataStack(const MetadataSlice& slice) { m_slices.push_back(slice); }
 
-        /// Initializes the slices:
-        ///  - The tilt angles and exposure are set using the tilt_scheme:order or the tilt/exposure file.
-        ///  - The known angle offsets are added.
-        ///  - The slice index and index_file are set, either from the tilt_scheme:order (in which case
-        ///    slices are assumed to be saved in tilt-ascending order), or from the tilt file.
-        explicit MetadataStack(const Options& options);
-
-        void save_csv(
-            const Path& filename,
-            Shape<i64, 2> shape,
-            Vec<f64, 2> spacing
-        ) const;
+        void save_csv(const Path& filename, Shape<i64, 2> shape, Vec<f64, 2> spacing) const;
+        // void save_relion(const Path& filename, Shape<i64, 2> shape, Vec<f64, 2> spacing) const;
+        // void save_warp(const Path& filename, Shape<i64, 2> shape, Vec<f64, 2> spacing) const;
+        // void save_imod(const Path& filename, Shape<i64, 2> shape, Vec<f64, 2> spacing) const;
 
     public: // Stack manipulations
         /// Excludes slice(s) according to a predicate.
-        /// \param predicate A function taking a MetadataSlice a retuning a boolean
+        /// \param predicate A function taking a MetadataSlice a retuning a boolean.
         ///                  If the predicate returns true, the slice should be removed.
         template<typename Predicate> requires std::is_invocable_r_v<bool, Predicate, const MetadataSlice&>
-        auto exclude(Predicate&& predicate) -> MetadataStack& { // TODO rename to exclude_if
+        auto exclude_if(Predicate&& predicate) -> MetadataStack& {
             std::erase_if(m_slices, std::forward<Predicate>(predicate));
             return *this;
         }
 
-        /// Resets the index field from [0, N), using the current order.
+        /// Resets the .index field from [0, N), using the current slice order.
         auto reset_indices() -> MetadataStack& {
             i32 count{};
             for (auto& slice: m_slices)
@@ -171,8 +169,8 @@ namespace qn {
                     ng::rotate_x(-angles[2]) *
                     ng::rotate_y(-angles[1]) *
                     ng::rotate_z(-angles[0])
-                );
-                mean += image2volume * slice.shifts;
+                ).pop_front(); // project along z
+                mean += image2volume * slice.shifts.push_front(0);
             }
             mean /= static_cast<f64>(size());
 
@@ -212,20 +210,8 @@ namespace qn {
         /// of the slice with the lowest absolute tilt angle.
         [[nodiscard]] auto find_lowest_tilt_index() const -> i64;
 
-        /// Find the index (as currently sorted in this instance)
-        /// of the slice with the highest absolute tilt angle.
-        [[nodiscard]] auto minmax_tilts() const -> std::pair<f64, f64>;
-
-    private:
-        void generate_(const Path& tilt_filename, const Path& exposure_filename);
-        void generate_(f64 starting_angle, i64 starting_direction, f64 tilt_increment,
-                       i64 group_of, bool exclude_start, f64 per_view_exposure, i32 n_slices);
-
-        void sort_on_indexes_(bool ascending = true);
-        void sort_on_file_indexes_(bool ascending = true);
-        void sort_on_tilt_(bool ascending = true);
-        void sort_on_absolute_tilt_(bool ascending = true);
-        void sort_on_exposure_(bool ascending = true);
+        [[nodiscard]] auto tilt_range() const -> Vec<f64, 2>;
+        [[nodiscard]] auto time_range() const -> Vec<i64, 2>;
 
     private:
         std::vector<MetadataSlice> m_slices;

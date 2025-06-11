@@ -1,10 +1,14 @@
+#include "quinoa/Logger.hpp"
+
+#include <noa/core/math/Distribution.hpp>
+
+// Include this after our Logger.hpp to properly set the spdlog levels.
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/basic_file_sink.h>
 
-#include "quinoa/Logger.hpp"
-
 namespace qn {
     spdlog::logger Logger::s_logger(std::string{}); // empty logger
+    uint64_t Logger::s_uuid = noa::random_value(noa::Uniform<uint64_t>{0, std::numeric_limits<uint64_t>::max()});
     bool Logger::s_is_debug = false;
 
     void Logger::initialize() {
@@ -12,9 +16,9 @@ namespace qn {
         auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
         console_sink->set_color(spdlog::level::critical, console_sink->red_bold); // our error
         console_sink->set_color(spdlog::level::err, console_sink->yellow_bold); // our warn
-        console_sink->set_color(spdlog::level::warn, console_sink->green); // our status
-        console_sink->set_color(spdlog::level::info, console_sink->reset); // our info
-        console_sink->set_color(spdlog::level::debug, console_sink->white); // our trace
+        console_sink->set_color(spdlog::level::warn, console_sink->blue); // our status
+        console_sink->set_color(spdlog::level::info, console_sink->green); // our info
+        console_sink->set_color(spdlog::level::debug, console_sink->reset); // our trace
         console_sink->set_color(spdlog::level::trace, console_sink->cyan); // our debug
         console_sink->set_pattern("%^%v%$"); // colored log
         console_sink->set_level(spdlog::level::info); // default to our into
@@ -48,5 +52,21 @@ namespace qn {
 
         // Save for easy access whether we are in debug mode.
         s_is_debug = level == spdlog::level::trace; // our debug is spdlog's trace
+    }
+
+    Logger::ScopeTimer::~ScopeTimer() {
+        std::chrono::duration elapsed = timer.elapsed();
+        if (elapsed > std::chrono::minutes(1)) {
+            auto minutes = stdc::floor<stdc::minutes>(elapsed);
+            auto seconds = stdc::duration_cast<stdc::seconds>(elapsed - minutes);
+            s_logger.log(level, "{}... done. Took {} {}.\n", name, minutes, seconds);
+        } else if (elapsed > std::chrono::seconds(1)) {
+            auto seconds = stdc::floor<stdc::seconds>(elapsed);
+            auto milliseconds = stdc::duration_cast<stdc::milliseconds>(elapsed - seconds);
+            s_logger.log(level, "{}... done. Took {} {}.\n", name, seconds, milliseconds);
+        } else {
+            auto milliseconds = stdc::round<stdc::milliseconds>(elapsed);
+            s_logger.log(level, "{}... done. Took {}.\n", name, milliseconds);
+        }
     }
 }

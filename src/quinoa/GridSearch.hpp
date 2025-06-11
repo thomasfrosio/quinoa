@@ -14,10 +14,15 @@ namespace qn {
             U start;
             U end;
             U step;
+
+            static constexpr auto from_vec(const Vec<U, 3>& vec) -> Range {
+                return {vec[0], vec[1], vec[2]};
+            }
         };
 
     public:
         constexpr explicit GridSearch(const Range<T>&... ranges) noexcept : m_ranges(noa::make_tuple(ranges...)) {}
+        constexpr explicit GridSearch(const Vec<T, 3>&... ranges) noexcept : m_ranges(noa::make_tuple(Range<T>::from_vec(ranges)...)) {}
 
         template<typename Function>
         constexpr void for_each(Function&& function) const {
@@ -34,7 +39,7 @@ namespace qn {
             auto get_size = [this](auto i){
                 const auto& range = m_ranges[i];
                 auto count = range.end - range.start + range.step;
-                return static_cast<size_t>(count / range.step);
+                return static_cast<size_t>(std::round(count / range.step));
             };
             return [&]<size_t... I>(std::index_sequence<I...>) {
                 return Shape<size_t, SIZE>{get_size(Tag<I>{})...};

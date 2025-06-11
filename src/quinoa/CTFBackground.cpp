@@ -7,253 +7,193 @@ namespace {
     using namespace qn;
     using namespace qn::ctf;
 
-    template<typename T>
-    struct SmoothCurveFittingData {
-        SpanContiguous<const T> span{};
-        CubicSplineGrid<f64, 1> spline{};
-        f64 norm{};
+    ///
+    class Simulator {
+    public:
+        constexpr static size_t SIMULATED_LOGICAL_SIZE = 8192;
+        constexpr static f64 SIMULATED_FREQ_STEP = 1 / static_cast<f64>(SIMULATED_LOGICAL_SIZE);
 
-        auto get_coordinate(i64 i) {
-            if constexpr (nt::real<T>) {
-                return static_cast<f64>(i) * norm; // uniform spacing
-            } else {
-                return span[i][0];
-            }
+    public:
+        [[nodiscard]] static auto sample_at(
+            SpanContiguous<const f32> spectrum,
+            const Vec<f64, 2>& fftfreq_range,
+            f64 fftfreq
+        ) -> f64 {
+            const auto spectrum_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum.ssize() - 1);
+            const auto spectrum_frequency = (fftfreq - fftfreq_range[0]) / spectrum_step;
+            const auto floored_f64 = std::floor(spectrum_frequency);
+            const auto floored_i64 = static_cast<i64>(floored_f64);
+            const auto fraction = spectrum_frequency - floored_f64;
+
+            // Lerp.
+            const auto index_0 = ni::index_at<noa::Border::REFLECT>(floored_i64 + 0, spectrum.ssize());
+            const auto index_1 = ni::index_at<noa::Border::REFLECT>(floored_i64 + 1, spectrum.ssize());
+            const auto interpolated =
+                static_cast<f64>(spectrum[index_0]) * (1 - fraction) +
+                static_cast<f64>(spectrum[index_1]) * fraction;
+            return interpolated;
         }
 
-        auto get_value(i64 i) {
-            if constexpr (nt::real<T>) {
-                return static_cast<f64>(span[i]);
-            } else {
-                return static_cast<f64>(span[i][1]);
+    public:
+        constexpr explicit Simulator(
+            const ns::CTFIsotropic<f64>& ctf,
+            const Vec<f64, 2>& fftfreq_range
+        ) :
+            m_ctf{&ctf},
+            m_simulated_range_index{noa::round(fftfreq_range * SIMULATED_LOGICAL_SIZE).as<i64>()}
+        {}
+
+    public: // range-for loop support
+        struct Iterator {
+        public:
+            [[nodiscard]] auto fftfreq() const -> f64 {
+                return static_cast<f64>(m_index) * SIMULATED_FREQ_STEP;
             }
-        }
+
+            /// Given the current position i, retrieve the slope [i-1,i] and [i,i+1].
+            [[nodiscard]] auto slopes() const -> Vec<f64, 2> {
+                const f64 ctf_value_0 = circular_buffer_get_(-2); // i - 1
+                const f64 ctf_value_1 = circular_buffer_get_(-1); // i
+                const f64 ctf_value_2 = circular_buffer_get_( 0); // i + 1
+                return {
+                    ctf_value_1 - ctf_value_0,
+                    ctf_value_2 - ctf_value_1
+                };
+            }
+
+            [[nodiscard]] auto is_ctf_zero() const -> bool {
+                auto [slope_0, slope_1] = slopes();
+                return slope_0 < 0 and slope_1 >= 0;
+            }
+            [[nodiscard]] auto is_ctf_peak() const -> bool {
+                auto [slope_0, slope_1] = slopes();
+                return slope_0 > 0 and slope_1 <= 0;
+            }
+
+        public: // minimal range-for support
+            constexpr explicit Iterator(const Simulator* parent, i64 index) noexcept: m_parent{parent}, m_index{index} {
+                circular_buffer_next_(m_index - 1);
+                circular_buffer_next_(m_index);
+                circular_buffer_next_(m_index + 1);
+            }
+            constexpr bool operator!=(const i64& end) const noexcept { return m_index != end; }
+            constexpr auto operator*() const noexcept -> const Iterator& { return *this; }
+            constexpr Iterator& operator++() noexcept {
+                ++m_index;
+                // Sample one ahead, so that when this returns, we have:
+                // m_index-1 at circular_buffer_get_(offset: -2)
+                // m_index   at circular_buffer_get_(offset: -1)
+                // m_index+1 at circular_buffer_get_(offset:  0)
+                circular_buffer_next_(m_index + 1);
+                return *this;
+            }
+
+        private:
+            const Simulator* m_parent;
+            i64 m_index;
+
+            // Circular buffer.
+            constexpr static i64 CIRCULAR_BUFFER_SIZE = 3;
+            Vec<f64, CIRCULAR_BUFFER_SIZE> m_circular_buffer{};
+            i64 m_circular_index{};
+
+            constexpr void circular_buffer_next_(i64 simulated_index) {
+                const auto fftfreq = static_cast<f64>(simulated_index) * SIMULATED_FREQ_STEP;
+                m_circular_index = (m_circular_index + 1) % CIRCULAR_BUFFER_SIZE;
+                m_circular_buffer[static_cast<size_t>(m_circular_index)] = std::abs(m_parent->m_ctf->value_at(fftfreq));
+            }
+            [[nodiscard]] constexpr auto circular_buffer_get_(i64 offset) const -> f64 {
+                auto current = (m_circular_index + CIRCULAR_BUFFER_SIZE + offset) % CIRCULAR_BUFFER_SIZE;
+                return m_circular_buffer[static_cast<size_t>(current)];
+            }
+        };
+
+        [[nodiscard]] auto begin() const -> Iterator { return Iterator(this, m_simulated_range_index[0]); }
+        [[nodiscard]] auto end() const -> i64 { return m_simulated_range_index[1]; }
+
+    private:
+        // Simulate CTF.
+        const ns::CTFIsotropic<f64>* m_ctf{};
+        Vec<i64, 2> m_simulated_range_index{};
     };
-
-    template<typename T>
-    void smooth_curve_fitting(
-        const SpanContiguous<const T>& span,
-        const SpanContiguous<f64>& spline
-    ) {
-        // Compute the least-square score between the experimental points and the model.
-        auto cost = [](u32, const f64* params, f64*, void* instance) {
-            auto& opt = *static_cast<SmoothCurveFittingData<T>*>(instance);
-            check(params == opt.spline.span().data());
-
-            f64 score{};
-            for (i64 i{}; i < opt.span.ssize(); ++i) {
-                const f64 coordinate = opt.get_coordinate(i);
-                const f64 experiment = opt.get_value(i);
-                const f64 predicted = opt.spline.interpolate_at(coordinate);
-                const f64 diff = experiment - predicted;
-                score += diff * diff;
-            }
-            // fmt::println("spline={}, score={}", opt.spline.span()[0], score);
-            return score;
-        };
-
-        auto optimizer_data = SmoothCurveFittingData<T>{
-            .span = span,
-            .spline = CubicSplineGrid<f64, 1>(
-                spline.ssize(), 1,
-                SpanContiguous(spline.data(), spline.shape().push_front(1))
-            ),
-            .norm = 1 / static_cast<f64>(span.ssize() - 1), // [0,1] inclusive
-        };
-
-        // Some stats about the data points.
-        f64 mean{}, min{std::numeric_limits<f64>::max()}, max{std::numeric_limits<f64>::lowest()};
-        for (i64 i{}; i < span.ssize(); ++i) {
-            const auto value = optimizer_data.get_value(i);
-            mean += value;
-            min = std::min(min, value);
-            max = std::max(max, value);
-        }
-        mean *= optimizer_data.norm;
-
-        // Initialize the spline to a line at the mean.
-        for (auto& v: spline)
-            v = mean;
-
-        // Here use a local derivative-less algorithm, since we assume
-        // the spline resolution is <= 5, and the cost is cheap to compute.
-        auto optimizer = Optimizer(NLOPT_LN_SBPLX, spline.ssize());
-        optimizer.set_min_objective(cost, &optimizer_data);
-
-        // Usually min/max are large values, but the range is small, so use that to set the bounds.
-        const auto value_range = max - min;
-        optimizer.set_bounds(min - value_range * 5, max + value_range * 5);
-        optimizer.set_fx_tolerance_abs(1e-5);
-        optimizer.optimize(spline.data());
-        fmt::println("n_evaluations={}", optimizer.n_evaluations());
-    }
-
-    struct FetchedCTFValues {
-        // [0]=frequency between [0,1], [1]=value
-        std::vector<f64> zeros_x;
-        std::vector<f64> zeros_y;
-        std::vector<f64> peaks_x;
-        std::vector<f64> peaks_y;
-    };
-
-    [[nodiscard]] auto fetch_ctf_values(
-        const SpanContiguous<const f32>& rotational_average,
-        const Vec<f64, 2>& fftfreq_range,
-        const ns::CTFIsotropic<f64>& ctf,
-        bool fit_envelope = false
-    ) -> FetchedCTFValues {
-        // Simulate ctf slope with more than enough sampling to precisely detect the CTF zeros and peaks.
-        constexpr i64 SIMULATED_SIZE = 2 * 8192;
-        constexpr f64 SIMULATED_FREQUENCY_STEP = 1 / static_cast<f64>(SIMULATED_SIZE);
-
-        // Only evaluates the frequencies that are within the fftfreq range.
-        const auto range_index = noa::round(fftfreq_range * SIMULATED_SIZE).as<i64>();
-        i64 simulated_start = std::max(range_index[0] - 3, i64{0});
-        i64 simulated_end = std::min(range_index[1] + 3, SIMULATED_SIZE - 1);
-
-        // Go from the index in the simulated spectrum, to the index in the trimmed spectrum.
-        const auto n_samples_in_range = rotational_average.ssize();
-        const auto range_norm = static_cast<f64>(n_samples_in_range - 1); // -1 for inclusive
-        const auto fftfreq_range_step = (fftfreq_range[1] - fftfreq_range[0]) / range_norm;
-
-        // We use the change in the sign of the slope to detect the zeros and peaks of the ctf^2 function.
-        // To compute this change at index i, we need the slope at i and i+1, which requires 3 ctf evaluations
-        // (at i, i+1 and i+2). Instead, use a circular buffer to only sample the ctf once per iteration.
-        // Each iteration computes the i+2 element, so we need to precompute the first two for the first iteration.
-        constexpr auto index_circular_buffer = [](size_t index, i64 step) {
-            if (step == 0)
-                return index;
-            const i64 value = static_cast<i64>(index) + step;
-            return static_cast<size_t>(value < 0 ? (value + 3) : value);
-        };
-        size_t circular_count = 2;
-        auto ctf_values = Vec<f64, 3>{
-            std::abs(ctf.value_at(static_cast<f64>(simulated_start + 0) * SIMULATED_FREQUENCY_STEP)),
-            std::abs(ctf.value_at(static_cast<f64>(simulated_start + 1) * SIMULATED_FREQUENCY_STEP)),
-            0
-        };
-
-        // Collect zeros and peaks.
-        FetchedCTFValues output;
-        for (i64 i = simulated_start; i < simulated_end; ++i) {
-            // Do your part, sample ith+2.
-            ctf_values[circular_count] = std::abs(ctf.value_at(static_cast<f64>(i + 2) * SIMULATED_FREQUENCY_STEP));
-
-            // Get the corresponding index in the experimental spectrum.
-            // Here we want the frequency in the middle of the window, so at i + 1.
-            const auto fftfreq = static_cast<f64>(i + 1) * SIMULATED_FREQUENCY_STEP;
-            const auto corrected_frequency = (fftfreq - fftfreq_range[0]) / fftfreq_range_step;
-            const auto index = static_cast<i64>(std::round(corrected_frequency));
-
-            if (index >= 0 and index < rotational_average.ssize()) {
-                // Compute the simulated CTF slope.
-                // Based on the slope, we could lerp the index and value, but nearest is good enough here.
-                const f64 ctf_value_0 = ctf_values[index_circular_buffer(circular_count, -2)];
-                const f64 ctf_value_1 = ctf_values[index_circular_buffer(circular_count, -1)];
-                const f64 ctf_value_2 = ctf_values[index_circular_buffer(circular_count, 0)];
-                const f64 slope_0 = ctf_value_1 - ctf_value_0;
-                const f64 slope_1 = ctf_value_2 - ctf_value_1;
-
-                const auto& value = rotational_average[index];
-                if (slope_0 < 0 and slope_1 >= 0) {
-                    // zero: negative slope to positive slope.
-                    output.zeros_x.push_back(fftfreq);
-                    output.zeros_y.push_back(static_cast<f64>(value));
-                }
-                if (fit_envelope and slope_0 > 0 and slope_1 <= 0) {
-                    // peak: positive slope to negative slope.
-                    output.peaks_x.push_back(fftfreq);
-                    output.peaks_y.push_back(static_cast<f64>(value));
-                }
-            }
-
-            // Increment circular buffer.
-            circular_count = (circular_count + 1) % 3; // 0,1,2,0,1,2,...
-        }
-        return output;
-    }
 }
 
 namespace qn::ctf {
-    auto Background::fit_coarse_background_1d(
-        const View<const f32>& spectrum,
-        i64 spline_resolution
-    ) -> CubicSplineGrid<f64, 1> {
-        auto spline = CubicSplineGrid<f64, 1>(spline_resolution);
-        if (spectrum.is_dereferenceable())
-            smooth_curve_fitting(spectrum.reinterpret_as_cpu().span_1d_contiguous(), spline.span()[0]);
-        else
-            smooth_curve_fitting(spectrum.to_cpu().span_1d_contiguous<const f32>(), spline.span()[0]);
-        return spline;
+    auto Background::smallest_defocus_for_fitting(
+        const Vec<f64, 2>& fftfreq_range,
+        ns::CTFIsotropic<f64> ctf,
+        i64 n_zeroes
+    ) -> f64 {
+        // There's probably a better way to do this, but since this only used once per image, brute force.
+        auto get_n_zeroes = [&] {
+            i32 count{};
+            for (auto e: Simulator(ctf, fftfreq_range))
+                if (e.is_ctf_zero() and ++count >= n_zeroes)
+                    break;
+            return count;
+        };
+
+        f64 defocus = 1.;
+        for (f64 step: {0.1, 0.01}) {
+            if (get_n_zeroes() >= n_zeroes) {
+                // Decrease the defocus as much as possible.
+                while (true) {
+                    defocus -= step;
+                    ctf.set_defocus(defocus);
+                    if (get_n_zeroes() < n_zeroes)
+                        break;
+                }
+            } else {
+                // Increase the defocus until we get enough zeros.
+                while (true) {
+                    defocus += step;
+                    ctf.set_defocus(defocus);
+                    if (get_n_zeroes() >= n_zeroes)
+                        break;
+                }
+            }
+        }
+        return defocus;
     }
 
-    auto Background::fit_coarse_background_2d(
-        const View<const f32>& spectrum,
+    void Background::fit(
+        SpanContiguous<const f32> spectrum,
         const Vec<f64, 2>& fftfreq_range,
-        i64 spline_resolution
-    ) -> CubicSplineGrid<f64, 1> {
-        const auto logical_size = spectrum.shape()[2];
-        const auto spectrum_size = spectrum.shape()[3];
-
-        auto rotational_averages = noa::zeros<f32>({2, 1, 1, spectrum_size}, {
-            .device = spectrum.device(),
-            .allocator = Allocator::ASYNC,
-        });
-        auto rotational_average = rotational_averages.view().subregion(0);
-        auto rotational_average_weights = rotational_averages.view().subregion(1);
-
-        ng::rotational_average<"h2h">(
-            spectrum, {1, 1, logical_size, logical_size},
-            rotational_average, rotational_average_weights, {
-                .input_fftfreq = {0, fftfreq_range[1]},
-                .output_fftfreq = {fftfreq_range[0], fftfreq_range[1]},
-                .add_to_output = true
-            });
-        return fit_coarse_background_1d(rotational_average, spline_resolution);
-    }
-
-    void Background::fit_1d(
-        const View<const f32>& spectrum,
-        const Vec<f64, 2>& fftfreq_range,
-        const ns::CTFIsotropic<f64>& ctf
+        const ns::CTFIsotropic<f64>& new_ctf
     ) {
-        // When fetching ctf values at the ctf zeros/peaks, use a smoothed version of the spectrum.
-        auto spectrum_smooth = noa::Array<f32>(spectrum.shape(), {
-            .device = spectrum.device(),
-            .allocator = Allocator::MANAGED
-        });
-        ns::convolve(
-            spectrum, spectrum_smooth,
-            ns::window_gaussian<f32>(7, 1.25, {.normalize = true}).to(spectrum.options()),
-            {.border = noa::Border::REFLECT}
-        );
-
-        auto [zeros_x, zeros_y, peaks_x, peaks_y] = fetch_ctf_values(
-            spectrum_smooth.reinterpret_as_cpu().span_1d_contiguous<const f32>(),
-            fftfreq_range, ctf, false
-        );
+        std::vector<f64> zeros_x;
+        std::vector<f64> zeros_y;
+        zeros_x.reserve(16);
+        zeros_y.reserve(16);
+        for (auto e: Simulator(new_ctf, fftfreq_range)) {
+            if (e.is_ctf_zero()) {
+                f64 fftfreq = e.fftfreq();
+                zeros_x.push_back(fftfreq);
+                zeros_y.push_back(Simulator::sample_at(spectrum, fftfreq_range, fftfreq));
+            }
+        }
 
         if (zeros_x.size() < 2) {
             Logger::error(
-                "CTF background fitting failed: less than two CTF zeros are within the frequency range.\n"
-                "defocus={:.2f}, phase_shift={:.2f}, spacing={:.2f}, fftfreq_cutoff={:.2f})\n"
+                "CTF background fitting failed: less than two CTF zeros are within the frequency range. "
                 "This is usually due to a very low defocus estimate, combined with a large pixel size "
                 "and/or low resolution cutoff. Try to increase the resolution cutoff, and make sure the input data "
-                "is not Fourier cropped to a low-resolution (the smaller the pixel size the better).",
-                ctf.defocus(), ctf.phase_shift(), ctf.pixel_size(), fftfreq_range[1]
+                "is not Fourier cropped to a low-resolution (the smaller the pixel size the better).\n"
+                "defocus={:.2f}, phase_shift={:.2f}, spacing={:.2f}, fftfreq_cutoff={:.2f})",
+                new_ctf.defocus(), new_ctf.phase_shift(), new_ctf.pixel_size(), fftfreq_range[1]
             );
             panic();
         }
-        if (zeros_x.size() < 3) {
+        if (zeros_x.size() == 2) {
             Logger::warn(
-               "Only two CTF zeros are located within the current frequency range. This is not great...\n"
-               "defocus={:.2f}, phase_shift={:.2f}, spacing={:.2f}, fftfreq_cutoff={:.2f})\n"
+               "Only two CTF zeros are located within the current frequency range. This is not great... "
                "This is usually due to a very low defocus estimate, combined with a large pixel size "
                "and/or low resolution cutoff. Instead of fitting a cubic spline, a line is fitted through "
                "these two points and it will be used as a background. However, this is unlikely to give good results."
                "Instead, you may want to increase the resolution cutoff, and make sure the input data is not Fourier "
-               "cropped to a low-resolution (the smaller the pixel size the better).",
-               ctf.defocus(), ctf.phase_shift(), ctf.pixel_size(), fftfreq_range[1]
+               "cropped to a low-resolution (the smaller the pixel size the better).\n"
+               "defocus={:.2f}, phase_shift={:.2f}, spacing={:.2f}, fftfreq_cutoff={:.2f})",
+               new_ctf.defocus(), new_ctf.phase_shift(), new_ctf.pixel_size(), fftfreq_range[1]
            );
             // Add an extra point between the two and make it monotonic.
             zeros_x.push_back(zeros_x[0] + (zeros_x[1] - zeros_x[0]) / 2);
@@ -262,11 +202,12 @@ namespace qn::ctf {
             std::swap(zeros_y[1], zeros_y[2]);
         }
 
-        spline = Spline(
-            SpanContiguous(zeros_x.data(), std::ssize(zeros_x)),
-            SpanContiguous(zeros_y.data(), std::ssize(zeros_y)), {
+        m_ctf = new_ctf;
+        m_spline.fit(
+            SpanContiguous(zeros_x.data(), static_cast<i64>(zeros_x.size())),
+            SpanContiguous(zeros_y.data(), static_cast<i64>(zeros_y.size())), {
                 .type = zeros_x.size() == 3 ? Spline::LINEAR : Spline::CSPLINE,
-                .monotonic = false,
+                .monotonic = true,
                 .left = Spline::SECOND_DERIVATIVE,
                 .right = Spline::SECOND_DERIVATIVE,
                 .left_value = 0.,
@@ -274,47 +215,82 @@ namespace qn::ctf {
             });
     }
 
-    void Background::fit_2d(
-        const View<const f32>& spectrum,
+    auto Background::tune_fitting_range(
+        SpanContiguous<const f32> spectrum,
         const Vec<f64, 2>& fftfreq_range,
-        const ns::CTFAnisotropic<f64>& ctf
-    ) {
-        const auto logical_size = spectrum.shape()[2];
-        const auto spectrum_size = spectrum.shape()[3];
-        auto rotational_averages = noa::zeros<f32>({2, 1, 1, spectrum_size}, {
-            .device = spectrum.device(),
-            .allocator = Allocator::ASYNC,
-        });
-        auto rotational_average = rotational_averages.view().subregion(0);
-        auto rotational_average_weights = rotational_averages.view().subregion(1);
+        f64 threshold,
+        i32 keep_minimum
+    ) const -> Vec<f64, 2> {
+        // Collect fftfreq of zeros and peaks.
+        std::vector<f64> zeros{};
+        std::vector<f64> peaks{};
+        zeros.reserve(10);
+        peaks.reserve(10);
+        for (auto& e: Simulator(m_ctf, fftfreq_range)) {
+            if (e.is_ctf_zero())
+                zeros.push_back(e.fftfreq());
+            else if (e.is_ctf_peak())
+                peaks.push_back(e.fftfreq());
+        }
 
-        // If there's no astigmatism, this is equivalent to a normal rotational average.
-        ng::rotational_average_anisotropic<"h2h">(
-            spectrum, {1, 1, logical_size, logical_size}, ctf,
-            rotational_average, rotational_average_weights, {
-                .input_fftfreq = {0, fftfreq_range[1]},
-                .output_fftfreq = {fftfreq_range[0], fftfreq_range[1]},
-                .add_to_output = true,
-            });
+        // Tune low frequency base on the height of the first (or second) peak.
+        auto fitting_range = fftfreq_range;
+        const f64 fftfreq_peak = peaks[zeros[0] < peaks[0] ? 0 : 1];
+        threshold *= (Simulator::sample_at(spectrum, fftfreq_range, fftfreq_peak) - sample_at(fftfreq_peak));
 
-        fit_1d(rotational_average, fftfreq_range, ns::CTFIsotropic(ctf));
+        const f64 fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum.ssize() - 1);
+        for (i64 i{}; i < spectrum.ssize(); ++i) {
+            const f64 fftfreq = fftfreq_range[0] + static_cast<f64>(i) * fftfreq_step;
+            const f64 bs_spectrum = static_cast<f64>(spectrum[i]) - sample_at(fftfreq);
+            if (bs_spectrum <= threshold) {
+                fitting_range[0] = fftfreq;
+                break;
+            }
+        }
+
+        // Tune high frequency based on the quality of the peaks.
+        // Keep the first 3 peaks and start tuning.
+        for (auto i = static_cast<size_t>(keep_minimum); i < zeros.size() - 1; ++i) {
+            auto peak_range = Vec{zeros[i], zeros[i + 1]};
+            const f64 ncc = normalized_cross_correlation(spectrum, m_ctf, fftfreq_range, peak_range, *this);
+            if (ncc < 0.45) {
+                fitting_range[1] = zeros[i];
+                break;
+            }
+        }
+        return fitting_range;
+    }
+
+    void Background::sample(
+        SpanContiguous<f32> spectrum,
+        const Vec<f64, 2>& fftfreq_range
+    ) const {
+        const auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum.ssize() - 1);
+        for (i64 i{}; i < spectrum.ssize(); ++i) {
+            const auto fftfreq = static_cast<f64>(i) * fftfreq_step + fftfreq_range[0];
+            spectrum[i] = static_cast<f32>(m_spline.interpolate_at(fftfreq));
+        }
     }
 
     void Background::sample(
         const View<f32>& spectrum,
         const Vec<f64, 2>& fftfreq_range
     ) const {
-        const auto height = spectrum.shape().filter(2);
-        const auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum.shape()[3] - 1);
-        const auto span = spectrum.reinterpret_as_cpu().span().filter(2, 3).as_contiguous();
+        auto [b, d, h, w] = spectrum.shape();
+        check(b == 1 and d == 1 and h == 1);
+        sample(spectrum.reinterpret_as_cpu().span_1d_contiguous(), fftfreq_range);
+    }
 
-        for (i64 i{}; i < span.shape()[0]; ++i) {
-            for (i64 j{}; j < span.shape()[1]; ++j) {
-                const auto frequency = nf::index2frequency<false, true>(Vec{i, j}, height); // rfft, non-centered
-                const auto fftfreq_2d = frequency.as<f64>() * fftfreq_step;
-                const auto fftfreq = noa::sqrt(noa::dot(fftfreq_2d, fftfreq_2d)) + fftfreq_range[0];
-                span(i, j) = static_cast<f32>(spline.interpolate_at(fftfreq));
-            }
+    void Background::subtract(
+        SpanContiguous<const f32> input,
+        SpanContiguous<f32> output,
+        const Vec<f64, 2>& fftfreq_range
+    ) const {
+        check(input.ssize() == output.ssize());
+        const auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(output.ssize() - 1);
+        for (i64 i{}; i < output.ssize(); ++i) {
+            const auto fftfreq = static_cast<f64>(i) * fftfreq_step + fftfreq_range[0];
+            output[i] = input[i] - static_cast<f32>(m_spline.interpolate_at(fftfreq));
         }
     }
 
@@ -323,21 +299,13 @@ namespace qn::ctf {
         const View<f32>& output,
         const Vec<f64, 2>& fftfreq_range
     ) const {
+        auto [b, d, h, w] = output.shape();
         check(noa::all(input.shape() == output.shape()));
-        const auto height = input.shape().filter(2);
-        const auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(input.shape()[3] - 1);
-        const auto input_s = input.reinterpret_as_cpu().span().filter(0, 2, 3).as_contiguous();
-        const auto output_s = output.reinterpret_as_cpu().span().filter(0, 2, 3).as_contiguous();
+        check(d == 1 and h == 1);
 
-        for (i64 b{}; b < input_s.shape()[0]; ++b) { // FIXME
-            for (i64 i{}; i < input_s.shape()[1]; ++i) {
-                for (i64 j{}; j < input_s.shape()[2]; ++j) {
-                    const auto frequency = nf::index2frequency<false, true>(Vec{i, j}, height); // rfft, non-centered
-                    const auto fftfreq_2d = frequency.as<f64>() * fftfreq_step;
-                    const auto fftfreq = noa::sqrt(noa::dot(fftfreq_2d, fftfreq_2d)) + fftfreq_range[0];
-                    output_s(b, i, j) = input_s(b, i, j) - static_cast<f32>(spline.interpolate_at(fftfreq));
-                }
-            }
-        }
+        const auto input_2d = input.reinterpret_as_cpu().span().filter(0, 3).as_contiguous();
+        const auto output_2d = output.reinterpret_as_cpu().span().filter(0, 3).as_contiguous();
+        for (i64 i{}; i < b; ++i)
+            subtract(input_2d[i], output_2d[i], fftfreq_range);
     }
 }

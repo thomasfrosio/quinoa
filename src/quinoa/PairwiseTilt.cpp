@@ -3,8 +3,8 @@
 #include "quinoa/Metadata.hpp"
 #include "quinoa/PairwiseTilt.hpp"
 #include "quinoa/Types.hpp"
+#include "quinoa/Utilities.hpp"
 
-#include <noa/IO.hpp>
 #include <noa/Geometry.hpp>
 #include <noa/Signal.hpp>
 
@@ -62,7 +62,6 @@ namespace {
         const View<f32>& stack,
         const MetadataStack& metadata
     ) {
-        auto timer = Logger::trace_scope_time("inner");
         check(metadata.ssize() == stack.shape()[0]);
 
         const auto device = stack.device();
@@ -102,7 +101,7 @@ namespace {
         using interpolator_t = noa::Interpolator<2, noa::Interp::LINEAR, noa::Border::ZERO, decltype(stack_span)>;
 
         noa::reduce_axes_iwise( // DHW->D11
-            slice_shape.push_front(n_slices), device, noa::wrap(f32{}, f32{}, f32{}), nccs.flat(1),
+            slice_shape.push_front(n_slices), device, noa::wrap(0.f, 0.f, 0.f), nccs.flat(1),
             CrossCorrelate{
                 .stack = interpolator_t(stack_span, slice_shape.as<i32>()),
                 .inverse_matrices = matrices.span_1d_contiguous(),
@@ -119,32 +118,62 @@ namespace {
 }
 
 namespace qn {
-    void coarse_fit_tilt(const View<f32>& stack, MetadataStack& metadata, const PairwiseTiltOptions& options) {
+    void coarse_fit_tilt(
+        const View<f32>& stack,
+        MetadataStack& metadata,
+        f64& tilt_offset,
+        const PairwiseTiltOptions& options
+    ) {
         auto timer = Logger::info_scope_time("Tilt offset alignment using pairwise cosine-stretching");
+        Logger::trace(
+            "device={}\n"
+            "angle_range={:.2f}deg\n"
+            "angle_step={:.2f}deg\n",
+            stack.device(), options.grid_search_range, options.grid_search_step
+        );
 
-        // The algorithm assumes that the slices are sorted by their tilt angles.
+        // The algorithm assumes that the slices in the stack are sorted by their tilt angles.
+        // We know this to be true during the coarse alignment, but just in case we change something:
         auto metadata_sorted = metadata;
         metadata_sorted.sort("tilt");
+        bool stack_is_sorted{true};
+        for (i32 expected_index{0}; const auto& slice: metadata_sorted) {
+            if (expected_index++ != slice.index) {
+                stack_is_sorted = false;
+                break;
+            }
+        }
+        check(stack_is_sorted, "The tilts in the stack should be sorted in ascending order");
 
         f64 best_ncc{};
         f64 best_tilt_offset{};
+        std::vector<f64> nccs;
         GridSearch<f64>({
             .start = -options.grid_search_range,
             .end = options.grid_search_range,
             .step = options.grid_search_step,
-        }).for_each([&](f64 tilt_offset) {
+        }).for_each([&](f64 offset) {
             auto i_metadata = metadata_sorted;
-            i_metadata.add_global_angles({0, tilt_offset, 0});
-            const auto ncc = ncc_(stack, i_metadata);
+            i_metadata.add_global_angles({0, offset, 0});
+            const auto ncc = ncc_(stack.view(), i_metadata);
             if (ncc > best_ncc) {
                 best_ncc = ncc;
-                best_tilt_offset = tilt_offset;
+                best_tilt_offset = offset;
             }
-            Logger::trace("tilt_offset={:+.3f}, ncc={:.5f}", tilt_offset, ncc);
+            nccs.emplace_back(ncc);
         });
-        Logger::info("tilt_offset={:.3f} degrees (ncc={:.4f})", best_tilt_offset, best_ncc);
 
         // Save the offset.
+        tilt_offset += best_tilt_offset;
         metadata.add_global_angles({0, best_tilt_offset, 0});
+        Logger::info("tilt_offset={:.3f} ({:+.3f}) degrees (ncc={:.4f})", tilt_offset, best_tilt_offset, best_ncc);
+
+        save_plot_xy(
+            noa::Arange{tilt_offset - options.grid_search_range, options.grid_search_step},
+            nccs, options.output_directory / "tilt_offsets.txt", {
+                .title = "Tilt offset alignment using pairwise cosine-stretching",
+                .x_name = "Tilt offsets (degrees)",
+                .y_name = "NCC",
+            });
     }
 }

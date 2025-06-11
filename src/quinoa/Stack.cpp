@@ -47,12 +47,16 @@ namespace {
     /// \param target_min_size          Minimum tolerable size.
     ///                                 It is used to ensure a minimum output.cropped_shape. This is used to prevent
     ///                                 inputs with a very small pixel sizes to be cropped to a very small shape.
+    /// \param target_max_size          Maximum tolerable size.
+    ///                                 It is used to ensure a maximum output.cropped_shape. This is used to prevent
+    ///                                 inputs with large pixel sizes to be kept at a size that is too big.
     auto fourier_crop_dimensions(
         Shape<i64, 2> current_shape,
         Vec<f64, 2> current_spacing,
         Vec<f64, 2> target_spacing,
         f64 maximum_relative_error = 5e-4,
-        i64 target_min_size = 0
+        i64 target_min_size = 0,
+        i64 target_max_size = 0
     ) -> FourierCropDimensions {
         qn::check(noa::all(current_spacing > 0 and target_spacing >= 0));
 
@@ -63,11 +67,19 @@ namespace {
             target_spacing = noa::max(current_spacing);
 
         // Clamp the target spacing to the maximum spacing corresponding to the minimum allowed size.
-        if (target_min_size > 0) {
-            const auto target_max_spacing = noa::max(
+        if (target_min_size > 0 and target_min_size < min(current_shape)) {
+            const auto target_max_spacing = noa::min(
                 current_spacing * current_shape.vec.as<f64>() / static_cast<f64>(target_min_size));
             if (noa::any(target_max_spacing < target_spacing))
                 target_spacing = target_max_spacing;
+        }
+
+        // Clamp the target spacing to the minimum spacing corresponding to the maximum allowed size.
+        if (target_max_size > 0 and target_max_size < min(current_shape)) {
+            const auto target_min_spacing = noa::max(
+                current_spacing * current_shape.vec.as<f64>() / static_cast<f64>(target_max_size));
+            if (noa::any(target_spacing < target_min_spacing))
+                target_spacing = target_min_spacing;
         }
 
         // Possibly zero-pad in real space to place the frequency cutoff at a particular index of the spectrum.
@@ -139,18 +151,21 @@ namespace qn {
         const auto n_elements = file.shape().n_elements();
         const auto encoded_size = static_cast<f32>(Encoding::encoded_size(file.dtype(), n_elements));
         const auto decoded_size = static_cast<f32>(Encoding::encoded_size(Encoding::F32, n_elements));
+        constexpr i32 n_threads = 4;
         Logger::trace(
             "Stack registry:\n"
             "  path={}\n"
             "  shape={}\n"
             "  dtype={}->f32\n"
-            "  size={:.2f}GB->{:.2f}GB",
+            "  size={:.2f}GB->{:.2f}GB\n"
+            "  n_threads={}",
             filename, file.shape(), file.dtype(),
-            encoded_size / 1e9f, decoded_size / 1e9f
+            encoded_size / 1e9f, decoded_size / 1e9f,
+            n_threads
         );
 
         s_input_stack = Array<f32>(file.shape());
-        file.read_all(s_input_stack.span(), {.n_threads = 4});
+        file.read_all(s_input_stack.span(), {.n_threads = n_threads});
 
         // Some files are not encoded correctly; reinterpret a volume as a stack of images.
         if (s_input_stack.shape()[0] == 1 and s_input_stack.shape()[1] > 1)
@@ -176,7 +191,9 @@ namespace qn {
         const auto relative_freq_error = parameters.precise_cutoff ? 2.5e-4 : 1.;
         const FourierCropDimensions fourier_crop = fourier_crop_dimensions(
             m_input_slice_shape, m_input_spacing,
-            target_spacing, relative_freq_error, parameters.rescale_min_size);
+            target_spacing, relative_freq_error,
+            parameters.rescale_min_size, parameters.rescale_max_size
+        );
         m_padded_slice_shape = fourier_crop.padded_shape;
         m_cropped_slice_shape = fourier_crop.cropped_shape;
         m_output_spacing = fourier_crop.cropped_spacing;
@@ -217,10 +234,10 @@ namespace qn {
             "  normalize={} (mean=0, stddev=1)\n"
             "  zero_taper={:.1f}%\n"
             "  n_slices={}\n"
-            "  input_shape={}   (spacing={::.2f}, registered={})\n"
+            "  input_shape={}   (spacing={::.3f}, registered={})\n"
             "  padded_shape={}  (precise_cutoff={})\n"
             "  cropped_shape={} (rescale_shift={::.3f})\n"
-            "  output_shape={}  (spacing={::.2f}, fast_shape={})\n",
+            "  output_shape={}  (spacing={::.3f}, fast_shape={})\n",
             parameters.compute_device,
             parameters.exposure_filter,
             parameters.normalize_and_standardize,
@@ -369,66 +386,66 @@ namespace qn {
         return stack;
     }
 
-    void save_stack(
-        const Path& input_stack_path,
-        const Path& output_stack_path,
-        const MetadataStack& metadata,
-        const LoadStackParameters& loading_parameters,
-        const SaveStackParameters& saving_parameters
-    ) {
-        auto timer = Logger::trace_scope_time("Saving aligned stack");
-
-        auto stack_loader = StackLoader(input_stack_path, loading_parameters);
-        const auto output_slice_shape = stack_loader.slice_shape().push_front<2>(1);
-        const auto output_slice_center = (stack_loader.slice_shape().vec / 2).as<f64>();
-        const auto options = ArrayOption{stack_loader.compute_device(), stack_loader.allocator()};
-
-        // Output buffers.
-        auto output_slice = noa::Array<f32>(output_slice_shape, options);
-        auto output_slice_aligned = noa::Array<f32>(output_slice_shape, options);
-        auto output_slice_io = options.is_dereferenceable() ? noa::Array<f32>{} : noa::Array<f32>(output_slice_shape);
-
-        // Set up the output file.
-        auto output_file = noa::io::ImageFile(output_stack_path, {.write = true}, {
-            .shape = stack_loader.slice_shape().push_front(Vec{metadata.ssize(), i64{1}}),
-            .spacing = stack_loader.stack_spacing().push_front(1),
-            .dtype = noa::io::Encoding::F32
-        });
-
-        // As always, the metadata should be unscaled, i.e. shifts are at the original spacing as
-        // encoded in the input file. Here we apply the shifts on the rescaled images returned by
-        // the stack loader, so we need to scale the shifts from the metadata down before applying them.
-        const auto shift_scale_factor = stack_loader.file_spacing() / stack_loader.stack_spacing();
-
-        // Slices are saved in the same order as specified in the metadata.
-        i64 output_file_index{};
-        for (const MetadataSlice& slice_metadata: metadata) {
-            stack_loader.read_slice(output_slice.view(), slice_metadata.index_file);
-
-            const auto slice_shifts = slice_metadata.shifts * shift_scale_factor;
-            const auto slice_rotation =
-                saving_parameters.correct_rotation ?
-                noa::deg2rad(slice_metadata.angles[0]) : 0;
-
-            const auto inverse_transform = (
-                ng::translate(output_slice_center) *
-                ng::linear2affine(ng::rotate(-slice_rotation)) *
-                ng::translate(-output_slice_center - slice_shifts)
-            ).inverse().as<f32>();
-
-            ng::transform_2d(output_slice.view(), output_slice_aligned.view(), inverse_transform, {
-                .interp = saving_parameters.interp,
-                .border = saving_parameters.border,
-            });
-
-            View<const f32> to_write = options.is_dereferenceable() ?
-                output_slice_aligned.view().reinterpret_as_cpu() :
-                output_slice_aligned.view().to(output_slice_io.view());
-
-            output_file.write_slice(to_write.span(), {.bd_offset = {output_file_index, 0}});
-            ++output_file_index;
-        }
-    }
+    // void save_stack(
+    //     const Path& input_stack_path,
+    //     const Path& output_stack_path,
+    //     const MetadataStack& metadata,
+    //     const LoadStackParameters& loading_parameters,
+    //     const SaveStackParameters& saving_parameters
+    // ) {
+    //     auto timer = Logger::trace_scope_time("Saving aligned stack");
+    //
+    //     auto stack_loader = StackLoader(input_stack_path, loading_parameters);
+    //     const auto output_slice_shape = stack_loader.slice_shape().push_front<2>(1);
+    //     const auto output_slice_center = (stack_loader.slice_shape().vec / 2).as<f64>();
+    //     const auto options = ArrayOption{stack_loader.compute_device(), stack_loader.allocator()};
+    //
+    //     // Output buffers.
+    //     auto output_slice = noa::Array<f32>(output_slice_shape, options);
+    //     auto output_slice_aligned = noa::Array<f32>(output_slice_shape, options);
+    //     auto output_slice_io = options.is_dereferenceable() ? noa::Array<f32>{} : noa::Array<f32>(output_slice_shape);
+    //
+    //     // Set up the output file.
+    //     auto output_file = noa::io::ImageFile(output_stack_path, {.write = true}, {
+    //         .shape = stack_loader.slice_shape().push_front(Vec{metadata.ssize(), i64{1}}),
+    //         .spacing = stack_loader.stack_spacing().push_front(1),
+    //         .dtype = noa::io::Encoding::F32
+    //     });
+    //
+    //     // As always, the metadata should be unscaled, i.e. shifts are at the original spacing as
+    //     // encoded in the input file. Here we apply the shifts on the rescaled images returned by
+    //     // the stack loader, so we need to scale the shifts from the metadata down before applying them.
+    //     const auto shift_scale_factor = stack_loader.file_spacing() / stack_loader.stack_spacing();
+    //
+    //     // Slices are saved in the same order as specified in the metadata.
+    //     i64 output_file_index{};
+    //     for (const MetadataSlice& slice_metadata: metadata) {
+    //         stack_loader.read_slice(output_slice.view(), slice_metadata.index_file);
+    //
+    //         const auto slice_shifts = slice_metadata.shifts * shift_scale_factor;
+    //         const auto slice_rotation =
+    //             saving_parameters.correct_rotation ?
+    //             noa::deg2rad(slice_metadata.angles[0]) : 0;
+    //
+    //         const auto inverse_transform = (
+    //             ng::translate(output_slice_center) *
+    //             ng::linear2affine(ng::rotate(-slice_rotation)) *
+    //             ng::translate(-output_slice_center - slice_shifts)
+    //         ).inverse().as<f32>();
+    //
+    //         ng::transform_2d(output_slice.view(), output_slice_aligned.view(), inverse_transform, {
+    //             .interp = saving_parameters.interp,
+    //             .border = saving_parameters.border,
+    //         });
+    //
+    //         View<const f32> to_write = options.is_dereferenceable() ?
+    //             output_slice_aligned.view().reinterpret_as_cpu() :
+    //             output_slice_aligned.view().to(output_slice_io.view());
+    //
+    //         output_file.write_slice(to_write.span(), {.bd_offset = {output_file_index, 0}});
+    //         ++output_file_index;
+    //     }
+    // }
 
     void save_stack(
         const View<f32>& stack,
@@ -437,12 +454,12 @@ namespace qn {
         const Path& filename,
         const SaveStackParameters& saving_parameters
     ) {
-        auto timer = Logger::trace_scope_time("Saving aligned stack");
+        auto timer = Logger::trace_scope_time("Saving stack");
 
         // Output buffer.
-        const auto output_slice_shape = stack.shape().set<0>(1);
-        const auto output_slice_center = (output_slice_shape.filter(2, 3).vec / 2).as<f64>();
-        auto output = noa::Array<f32>(output_slice_shape, {
+        const auto slice_shape = stack.shape().set<0>(1);
+        const auto center = (slice_shape.filter(2, 3).vec / 2).as<f64>();
+        auto output = noa::Array<f32>(slice_shape, {
             .device = stack.device(),
             .allocator = Allocator::MANAGED
         });
@@ -451,19 +468,19 @@ namespace qn {
         auto output_file = noa::io::ImageFile(filename, {.write = true}, {
             .shape = stack.shape(),
             .spacing = spacing.push_front(1),
-            .dtype = noa::io::Encoding::F32
+            .dtype = saving_parameters.dtype,
         });
 
-        // Slices will be saved in the same order as specified in the metadata.
+        // Slices will be saved in the same order as in the metadata.
         for (i64 i{}; const auto& slice: metadata) {
             const auto slice_rotation =
                 saving_parameters.correct_rotation ?
                 noa::deg2rad(-slice.angles[0]) : 0;
 
             const auto inverse_transform = (
-                ng::translate(output_slice_center) *
+                ng::translate(center) *
                 ng::linear2affine(ng::rotate(-slice_rotation)) *
-                ng::translate(-output_slice_center - slice.shifts)
+                ng::translate(-center - slice.shifts)
             ).inverse().as<f32>();
 
             ng::transform_2d(stack.subregion(slice.index), output.view(), inverse_transform, {
@@ -476,5 +493,6 @@ namespace qn {
                 {.bd_offset = {i++, 0}}
             );
         }
+        Logger::trace("{} saved", filename);
     }
 }

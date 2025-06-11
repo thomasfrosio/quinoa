@@ -6,7 +6,7 @@ set(QUINOA_HEADERS
     src/quinoa/Logger.hpp
     src/quinoa/Metadata.hpp
     src/quinoa/Optimizer.hpp
-    src/quinoa/Options.hpp
+    src/quinoa/Settings.hpp
     src/quinoa/PairwiseShift.hpp
     src/quinoa/PairwiseTilt.hpp
     src/quinoa/Reconstruction.hpp
@@ -17,16 +17,22 @@ set(QUINOA_HEADERS
     src/quinoa/Utilities.hpp
     src/quinoa/YAML.hpp
 
-    src/quinoa/CubicGrid.hpp
+    src/quinoa/SplineCurve.hpp
+    src/quinoa/SplineGrid.hpp
+
     src/quinoa/CTF.hpp
+    src/quinoa/CTFBackground.hpp
+    src/quinoa/CTFGrid.hpp
+    src/quinoa/CTFPatches.hpp
+
 #    src/quinoa/Tests.hpp
+    src/quinoa/FiguresBCI.hpp
 )
 
 set(QUINOA_SOURCES_CXX
     src/quinoa/Logger.cpp
     src/quinoa/Metadata.cpp
-    src/quinoa/Options.cpp
-
+    src/quinoa/Settings.cpp
 )
 
 set(QUINOA_SOURCES_UNIFIED
@@ -38,11 +44,13 @@ set(QUINOA_SOURCES_UNIFIED
     src/quinoa/Reconstruction.cpp
     src/quinoa/RotationOffset.cpp
     src/quinoa/Stack.cpp
-#    src/quinoa/Thickness.cpp
+    src/quinoa/Thickness.cpp
 
-    src/quinoa/CTFPatches.cpp
-    src/quinoa/CTFCoarse.cpp
-#    src/quinoa/CTFAverage.cpp
-#    src/quinoa/CTFGlobal.cpp
     src/quinoa/CTFBackground.cpp
+    src/quinoa/CTFCoarse.cpp
+    src/quinoa/CTFPatches.cpp
+    src/quinoa/CTFRefine.cpp
+
+    src/quinoa/Utilities.cpp
+
 )

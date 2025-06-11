@@ -5,11 +5,13 @@
 #include "quinoa/Logger.hpp"
 #include "quinoa/Stack.hpp"
 
+#include <noa/Array.hpp>
+
 namespace qn {
     struct DetectAndExcludeBlankViewsParameters {
         Device compute_device;
         Allocator allocator{Allocator::DEFAULT_ASYNC};
-        f64 resolution{};
+        Path output_directory;
     };
 
     inline void detect_and_exclude_blank_views(
@@ -21,12 +23,13 @@ namespace qn {
 
         // Load the stack at very low resolution, without any normalization/padding/taper,
         // other than setting the mean to zero (which is not required for the next steps).
-        const auto [tilt_series, stack_spacing, file_spacing] = load_stack(stack_filename, metadata, {
+        const auto [tilt_series, stack_spacing, file_spacing, _] = load_stack(stack_filename, metadata, {
             .compute_device = parameters.compute_device,
             .allocator = parameters.allocator,
             .precise_cutoff = false,
-            .rescale_target_resolution = std::max(parameters.resolution, 20.),
+            .rescale_target_resolution = 20.,
             .rescale_min_size = 512,
+            .rescale_max_size = 1024,
             .exposure_filter = false,
             .bandpass{
                 .highpass_cutoff = 0.01,
@@ -46,14 +49,22 @@ namespace qn {
             std::move(profile).reinterpret_as_cpu() :
             std::move(profile).to_cpu();
 
-        const auto threshold = noa::median(profile) * 0.25f;
-        const auto span = profile.span_1d_contiguous();
-        Logger::trace("threshold={:.3f}, variances=[\n{:+.2f}\n]", threshold, fmt::join(span, ",\n"));
+        const auto median = noa::median(profile);
+        const auto threshold_low = median * 0.25f;
+        const auto threshold_high = median * 2.00f;
+        const auto span = profile.span_1d();
+        save_plot_xy(
+            metadata | stdv::transform([](auto& s) { return s.angles[1]; }), span,
+            parameters.output_directory / "exclude_blank_views.txt", {
+                .x_name = "Tilt (in degrees)",
+                .y_name = "Variance",
+                .label = fmt::format("t_min={:.3f}, t_max={:.3f}", threshold_low, threshold_high),
+            });
 
         // Remove blank view(s) from the metadata.
         const auto original_size = metadata.size();
-        metadata.exclude([&span, threshold](const MetadataSlice& slice) {
-            if (span[slice.index] < threshold) {
+        metadata.exclude_if([&](const MetadataSlice& slice) {
+            if (span[slice.index] < threshold_low or span[slice.index] > threshold_high) {
                 Logger::info("Excluded blank view: index={:> 2} (tilt={:+.2f})", slice.index, slice.angles[1]);
                 return true;
             }

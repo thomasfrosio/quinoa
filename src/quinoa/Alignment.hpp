@@ -1,7 +1,7 @@
 #pragma once
 
 #include "quinoa/Types.hpp"
-#include "quinoa/Options.hpp"
+#include "quinoa/Settings.hpp"
 #include "quinoa/Metadata.hpp"
 
 namespace qn {
@@ -18,25 +18,19 @@ namespace qn {
     struct CTFAlignmentParameters {
         Device compute_device;
         Path output_directory;
-        Path debug_directory;
 
         f64 voltage;
         f64 cs;
         f64 amplitude;
-        f64 astigmatism_value;
-        f64 astigmatism_angle;
         f64 phase_shift;
 
-        i64 patch_size;
+        f64 patch_size_ang;
+        i64 n_images_in_initial_average;
         Vec<f64, 2> resolution_range;
-        bool fit_envelope;
         bool fit_phase_shift;
         bool fit_astigmatism;
 
         // Coarse:
-        Vec<f64, 2> delta_z_range_nanometers;
-        f64 delta_z_shift_nanometers;
-        f64 max_tilt_for_average;
         bool has_user_rotation;
 
         // Refine:

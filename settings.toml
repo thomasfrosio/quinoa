@@ -1,0 +1,77 @@
+[files]
+#mdoc_file = '~/Datasets/11830/01122021_BrnoKrios_arctis_lam2_pos15.mdoc'
+#stack_file = '~/Datasets/11830/01122021_BrnoKrios_arctis_lam2_pos15.st'
+#output_directory = '~/Tmp/quinoa/11830/pos15/001'
+#frames_directory = '~/Datasets/11830'
+#mdoc_file = '~/Datasets/11701/Cir_15kb_c_ts_005_driftcorr.mdoc'
+#stack_file = '~/Datasets/11701/Cir_15kb_c_ts_005_driftcorr.st'
+#output_directory = '~/Tmp/quinoa/11701/001'
+#frames_directory = '~/Datasets/11701'
+#mdoc_file = '~/Datasets/10304/file.mdoc'
+#stack_file = '~/Datasets/10304/tilt1.mrc'
+#output_directory = '~/Tmp/quinoa/10304/001/tilt1'
+#frames_directory = '~/Datasets/10304'
+#mdoc_file = '~/Datasets/10304/file.mdoc'
+#stack_file = '~/Datasets/10304/tilt6.mrc'
+#output_directory = '~/Tmp/quinoa/10304/001/tilt6'
+#frames_directory = '~/Datasets/10304'
+#mdoc_file = '~/Datasets/Yakun/tilt9906.mdoc'
+#stack_file = '~/Datasets/Yakun/tilt9906.mrc'
+#output_directory = '~/Tmp/quinoa/Yakun/tilt9906/001'
+#frames_directory = '~/Datasets/Yakun'
+
+# Remote
+#mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun/tilt9906.mdoc'
+#stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun/tilt9906.mrc'
+#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/yakun/tilt9906/001'
+#frames_directory = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun'
+
+mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/TS_03.mdoc'
+stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/TS_03_cropped.mrc'
+output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/10164/TS_03/001'
+frames_directory = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164'
+
+[experiment]
+tilt_axis = 84.7
+#specimen_tilt = 0
+#specimen_pitch = 0
+voltage = 300
+amplitude = 0.07
+cs = 2.7
+phase_shift = 0
+
+[preprocessing]
+run = true
+exclude_blank_views = true
+exclude_stack_images = []
+
+[alignment.coarse]
+run = false
+fit_rotation = true
+fit_tilt = true
+
+[alignment.ctf]
+run = true
+fit_rotation = false
+fit_tilt = true
+fit_pitch = true
+fit_phase_shift = false
+fit_astigmatism = true
+
+[alignment.refine]
+run = false
+
+[postprocessing]
+run = false
+resolution = 18
+save_aligned_stack = true
+reconstruct.run = true
+reconstruct.mode = 'real' # fourier or real
+reconstruct.weighting = 'radial' # fourier, radial, sirt-15
+reconstruct.z_padding = 0
+
+[compute]
+device = 'auto'
+n_threads = 6
+register_stack = true
+log_level = 'trace'

@@ -13,8 +13,9 @@ namespace qn {
     /// FOV of the tilt images. The common area is the region left visible in every single view.
     class CommonArea {
     public:
-        CommonArea() = default;
+        using matrix_type = Mat<f32, 2, 3>;
 
+        CommonArea() = default;
         CommonArea(
             const Shape<i64, 2>& shape,
             const MetadataStack& metadata
@@ -105,8 +106,8 @@ namespace qn {
             SpanContiguous<Mat23<f32>, 1> output,
             bool correct_shifts = false
         ) const {
-            for (auto&& [inverse_transform, slice] : noa::zip(output, metadata))
-                inverse_transform = compute_inverse_transform(slice, correct_shifts);
+            for (const auto& slice : metadata)
+                output.at(slice.index) = compute_inverse_transform(slice, correct_shifts);
         }
 
         template<nt::varray_decay_or_value_of_almost_any<Mat<f32, 2, 3>> Matrices>

@@ -1,11 +1,12 @@
 cmake_minimum_required(VERSION 3.21)
 
 # Project options.
-option(QN_ENABLE_WARNINGS "Enable compiler warnings" ON)
+option(QN_ENABLE_WARNINGS "Enable compiler warnings" ON) # FIXME this is currently not used
 option(QN_ENABLE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(QN_ENABLE_CUDA "Enable CUDA support" ON)
 
 # Global settings.
+# Note: This project is meant to be the root project and shouldn't be included as a subdirectory.
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -44,6 +45,8 @@ include(${PROJECT_SOURCE_DIR}/cmake/ext/noa.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/spdlog.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/yaml-cpp.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/nlopt.cmake)
+include(${PROJECT_SOURCE_DIR}/cmake/ext/cxxopts.cmake)
+include(${PROJECT_SOURCE_DIR}/cmake/ext/tomlplusplus.cmake)
 target_link_libraries(quinoa
     PRIVATE
     noa::noa
@@ -51,8 +54,11 @@ target_link_libraries(quinoa
     spdlog::spdlog
     yaml-cpp::yaml-cpp
     nlopt
+    cxxopts::cxxopts
+    tomlplusplus::tomlplusplus
 )
 
+# In CUDA, allow extended lambdas. We use this feature in a few places.
 target_compile_options(quinoa PRIVATE $<$<COMPILE_LANGUAGE:CUDA>: --extended-lambda>)
 
 # TODO install

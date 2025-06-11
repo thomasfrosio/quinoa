@@ -3,7 +3,9 @@
 #include <filesystem>
 #include <spdlog/common.h>
 #include <spdlog/spdlog.h>
+
 #include <noa/Utils.hpp>
+#include <quinoa/Types.hpp>
 
 namespace qn {
     // Static logger.
@@ -20,7 +22,7 @@ namespace qn {
 
         template<typename... Args>
         static void warn(fmt::format_string<Args...>&& fmt, Args&&... args) {
-            s_logger.warn(fmt::runtime(fmt), std::forward<Args>(args)...);
+            s_logger.error(fmt::runtime(fmt), std::forward<Args>(args)...);
         }
 
         template<typename... Args>
@@ -46,6 +48,18 @@ namespace qn {
         static bool is_debug() { return s_is_debug; };
 
 
+        template<typename... Args>
+        static auto warn_once(noa::guts::FormatWithLocation<std::type_identity_t<Args>...> fmt, Args&&... args) -> bool {
+            static std::vector<std::string> hashes;
+            std::string hash = fmt::format("{}:{}", fmt.location.file_name(), fmt.location.line());
+            if (std::ranges::find(hashes, hash) == hashes.end()) {
+                hashes.push_back(std::move(hash));
+                return false;
+            }
+            s_logger.warn(fmt::runtime(fmt.fmt), std::forward<Args>(args)...);
+            return true;
+        }
+
     public:
         struct ScopeTimer {
             noa::Timer timer{};
@@ -61,18 +75,7 @@ namespace qn {
                 timer.start();
             }
 
-            ~ScopeTimer() {
-                std::chrono::duration<double, std::milli> elapsed = timer.elapsed();
-
-                // TODO There's probably a better way to do this.
-                if (elapsed > std::chrono::minutes(1)) {
-                    s_logger.log(level, "{}... done. Took {:.3f} mins.\n", name, elapsed.count() * 60e-3);
-                } else if (elapsed > std::chrono::seconds(1)) {
-                    s_logger.log(level, "{}... done. Took {:.3f} secs.\n", name, elapsed.count() * 1e-3);
-                } else {
-                    s_logger.log(level, "{}... done. Took {:.3f} ms.\n", name, elapsed.count());
-                }
-            }
+            ~ScopeTimer();
         };
 
         template<typename... Args>
@@ -90,6 +93,7 @@ namespace qn {
 
     public:
         static spdlog::logger s_logger;
+        static uint64_t s_uuid;
         static bool s_is_debug;
     };
 }

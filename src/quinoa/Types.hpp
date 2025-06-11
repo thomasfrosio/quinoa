@@ -11,6 +11,7 @@
 #include <noa/Core.hpp>
 
 namespace qn {
+    namespace stdc = std::chrono;
     namespace stdr = std::ranges;
     namespace stdv = std::views;
     namespace fs = std::filesystem;
@@ -27,4 +28,7 @@ namespace qn {
     using noa::panic_at_location;
     using noa::check;
     using noa::check_at_location;
+
+    using CTFIsotropic64 = ns::CTFIsotropic<f64>;
+    using CTFAnisotropic64 = ns::CTFAnisotropic<f64>;
 }

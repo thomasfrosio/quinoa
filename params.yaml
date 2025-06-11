@@ -1,21 +1,23 @@
 files:
   input_directory:
-#  input_stack: "/home/thomas/Projects/quinoa/tests/test_pairwise_shift/tilt_series.mrc"
-  input_stack: "/home/thomas/Projects/datasets/EMPIAR-11830/11830/data/chlamy_visual_proteomics/01122021_BrnoKrios_arctis_lam2_pos14/01122021_BrnoKrios_arctis_lam2_pos14.st"
+#  input_stack: "/Users/cix56657/Datasets/11830/01122021_BrnoKrios_arctis_lam2_pos15.st"
+  input_stack: "/Users/cix56657/Datasets/12482/20210608_Position_7.preali"
   input_csv:
-  input_tilt: "/home/thomas/Projects/datasets/EMPIAR-11830/11830/data/chlamy_visual_proteomics/01122021_BrnoKrios_arctis_lam2_pos14/01122021_BrnoKrios_arctis_lam2_pos14.rawtlt"
+    #mdoc_file:
+    #frames_directory:
+#  input_tilt: "/Users/cix56657/Datasets/11830/01122021_BrnoKrios_arctis_lam2_pos15.rawtlt"
   input_exposure:
-  output_directory: "/home/thomas/Projects/datasets/EMPIAR-11830/11830/data/chlamy_visual_proteomics/01122021_BrnoKrios_arctis_lam2_pos14/quinoa"
+  output_directory: "/Users/cix56657/Tmp/quinoa/12482/001"
 
 experiment:
   collection_order:
     starting_angle: 0
     starting_direction: +1
-    tilt_increment: 3
+    tilt_increment: 2
     group_of: 3
     exclude_start: false
     per_view_exposure: 3
-  rotation_offset: -83.293
+  rotation_offset: 86
   tilt_offset:
   pitch_offset:
   voltage:
@@ -27,19 +29,19 @@ experiment:
   thickness: 100
 
 preprocessing:
-  run: true
+  run: false
   exclude_blank_views:
   exclude_view_indexes:
 
 alignment:
   run: true
-  fit_rotation_offset: false
+  fit_rotation_offset: true
   fit_tilt_offset: true
   fit_pitch_offset: true
   fit_phase_shift: false
   fit_astigmatism: false
   fit_thickness:
-  do_coarse_alignment: true
+  do_coarse_alignment: false
   do_ctf_alignment: true
   do_refine_alignment: true
 
@@ -53,7 +55,7 @@ postprocessing:
   reconstruct_z_padding: 0
 
 compute:
-  device: gpu
-  n_cpu_threads: 4
+  device: cpu
+  n_cpu_threads: 6
   register_input_stack:
   log_level: trace

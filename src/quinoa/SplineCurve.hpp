@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "quinoa/Types.hpp"
+#include <noa/Array.hpp>
 
 namespace qn::guts {
     /// Band matrix solver
@@ -146,7 +147,7 @@ namespace qn {
     /// (non-uniform) Interpolating spline.
     /// \note Adapted from https://github.com/ttk592/spline
     ///       The implementation originally had a .solve(y) function, to solve for all x that satisfied: spline(x)=y.
-    ///       I removed it since we don't plan to use it, and it was 300 lines of code...
+    ///       I removed it since I don't plan to use it, and it was 300 lines of code...
     class Spline {
     public:
         using value_type = f64;
@@ -181,6 +182,23 @@ namespace qn {
         Spline() = default;
 
         Spline(
+            const SpanContiguous<value_type>& x,
+            const SpanContiguous<value_type>& y,
+            const Parameters& parameters
+        ) {
+            fit(x, y, parameters);
+        }
+
+    public:
+        /// Allocates n elements now.
+        /// Future calls to fit(...) or set_points(...) will not need to allocate
+        /// if called with vectors of fewer or as many elements.
+        void reserve(i64 n) {
+            allocate_(n, true);
+        }
+
+        /// Creates a spline.
+        void fit(
             const SpanContiguous<value_type>& x,
             const SpanContiguous<value_type>& y,
             const Parameters& parameters
@@ -476,9 +494,17 @@ namespace qn {
         [[nodiscard]] auto is_empty() const -> bool { return m_buffer == nullptr; }
 
     private:
-        void allocate_(i64 n) {
-            m_buffer = std::make_unique<value_type[]>(static_cast<size_t>(n * 5));
-            std::fill_n(m_buffer.get(), n * 5, 0.);
+        void allocate_(i64 n, bool reserve_only = false) {
+            // Reuse the buffer if you can.
+            const i64 n_to_allocate = n * 5;
+            if (m_buffer == nullptr or n_allocated < n_to_allocate) {
+                n_allocated = n_to_allocate;
+                m_buffer = std::make_unique<value_type[]>(static_cast<size_t>(n_allocated));
+            }
+            if (reserve_only)
+                return;
+
+            std::fill_n(m_buffer.get(), n_to_allocate, 0.);
             m_x = SpanContiguous(m_buffer.get() + n * 0, n);
             m_y = SpanContiguous(m_buffer.get() + n * 1, n);
             m_b = SpanContiguous(m_buffer.get() + n * 2, n);
@@ -510,10 +536,12 @@ namespace qn {
         }
 
     private:
+        std::unique_ptr<value_type[]> m_buffer;
+        i64 n_allocated{};
+
         // interpolation parameters
         // f(x) = a_i + b_i*(x-x_i) + c_i*(x-x_i)^2 + d_i*(x-x_i)^3
         // where a_i = y_i, or else it won't go through grid points
-        std::unique_ptr<value_type[]> m_buffer;
         SpanContiguous<value_type> m_x;
         SpanContiguous<value_type> m_y;
         SpanContiguous<value_type> m_b;
@@ -521,11 +549,11 @@ namespace qn {
         SpanContiguous<value_type> m_d;
 
         value_type m_c0{}; // for left extrapolation
-        Type m_type;
-        Boundary m_left;
-        Boundary m_right;
-        value_type m_left_value;
-        value_type m_right_value;
+        Type m_type{};
+        Boundary m_left{};
+        Boundary m_right{};
+        value_type m_left_value{};
+        value_type m_right_value{};
         bool m_made_monotonic{};
     };
 
