@@ -98,7 +98,6 @@ namespace qn::ctf {
 
 namespace qn::ctf {
     struct FitInitialOptions {
-        Vec<f64, 2> fftfreq_range;
         i64 n_slices_to_average;
         bool fit_phase_shift{};
         Path output_directory{};
@@ -112,8 +111,8 @@ namespace qn::ctf {
     ) -> Vec<f64, 2>;
 
     struct FitCoarseOptions {
-        Vec<f64, 2> fftfreq_range;
         Vec<f64, 2> initial_fitting_range;
+        bool exclude_bad_images{};
         bool first_image_has_higher_exposure;
         bool fit_phase_shift{};
         bool has_user_rotation;
@@ -121,9 +120,9 @@ namespace qn::ctf {
     };
     void coarse_fit(
         const Grid& grid,
-        const Patches& patches,
+        Patches patches, // images can be removed
         ns::CTFIsotropic<f64>& ctf, // .defocus (and .phase_shift) updated
-        MetadataStack& metadata, // .defocus (and .phase_shift) updated, angles[0] may be flipped
+        MetadataStack& metadata, // images can be removed, .defocus (and .phase_shift) updated, angles[0] may be flipped
         const FitCoarseOptions& options
     );
 
@@ -138,8 +137,7 @@ namespace qn::ctf {
     void refine_fit(
         MetadataStack& metadata,
         const Grid& grid,
-        const Patches& patches_rfft_ps,
-        const Vec<f64, 2>& fftfreq_range,
+        const Patches& patches,
         ns::CTFIsotropic<f64>& isotropic_ctf,
         const FitRefineOptions& fit
     );

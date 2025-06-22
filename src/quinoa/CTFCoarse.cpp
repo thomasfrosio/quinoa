@@ -8,13 +8,12 @@ namespace {
     using namespace qn::ctf;
 
     struct AverageSpectrum {
-        SpanContiguous<const f32, 2> input;
+        SpanContiguous<const f32, 3> input;
         SpanContiguous<const i32> indices;
-        i32 chunk_size;
         f32 norm;
 
         constexpr void init(i32 b, i32 i, i32 x, f32& isum) const {
-            isum += input(b * chunk_size + indices[i], x);
+            isum += input(b, indices[i], x);
         }
         static constexpr void join(f32& isum, f32& sum) {
             sum += isum;
@@ -26,15 +25,12 @@ namespace {
     };
 
     /// For each slice, collect the tiles near the tilt-axis, then average them.
-    // FIXME do we load patches within a delta z? It should be close enough since we have an estimate of the tilt.
-    //       and the rotation +-180 has no effect.
     auto compute_spectra_near_tilt_axis(
         const Grid& grid,
-        const View<const f32>& spectra,
-        const MetadataStack& metadata,
-        i64 chunk_size,
+        const View<const f32>& spectra, // (n,p,1,w)
+        f64 rotation_offset,
         f64 fraction
-    ) -> Array<f32> {
+    ) -> Array<f32> { // (n,1,1,w)
         const auto options_async = ArrayOption{.device = spectra.device(), .allocator = Allocator::ASYNC};
 
         // Get the patches that are near the tilt-axis.
@@ -42,7 +38,7 @@ namespace {
         // 2. The tilt angles and shifts are not used.
         // As such, we select the same patches for every slice in the stack.
         Array<i32> indices = [&] {
-            const auto image_rotation = ng::rotate(noa::deg2rad(-metadata[0].angles[0]));
+            const auto image_rotation = ng::rotate(noa::deg2rad(-rotation_offset));
             const auto image_shape = grid.slice_shape().vec;
             const auto image_center = (image_shape / 2).as<f64>();
             const auto image_size = noa::mean(image_shape.as<f64>());
@@ -68,7 +64,7 @@ namespace {
         }();
 
         // Reduce: (n,p,w) -> (n,1,w).
-        const i64 n = metadata.ssize();
+        const i64 n = spectra.shape()[0];
         const i64 p = indices.ssize();
         const i64 w = spectra.shape()[3];
 
@@ -76,10 +72,9 @@ namespace {
         auto spectra_average = Array<f32>({n, 1, 1, w}, options_async);
         noa::reduce_axes_iwise(
             Shape{n, p, w}, spectra_average.device(),
-            f32{0}, spectra_average.permute({1, 0, 2, 3}), AverageSpectrum{
-                .input = spectra.span().filter(0, 3).as_contiguous(),
+            f32{0}, spectra_average.permute({2, 0, 1, 3}), AverageSpectrum{
+                .input = spectra.span().filter(0, 1, 3).as_contiguous(),
                 .indices = indices.span_1d(),
-                .chunk_size = static_cast<i32>(chunk_size),
                 .norm = 1 / static_cast<f32>(std::ssize(indices)),
             });
 
@@ -136,13 +131,14 @@ namespace {
         f64 smallest_defocus,
         f64 initial_defocus_range,
         f64 initial_phase_shift_range
-    ) {
+    ) -> f64 {
         Background background{};
 
         const auto defocus_offset = Vec{initial_defocus_range, 0.1};
         const auto defocus_step = Vec{0.02, 0.001};
         const auto phase_shift_offset = Vec{initial_phase_shift_range, std::min(initial_phase_shift_range, 10.)};
 
+        f64 best_ncc{};
         for (i32 i: noa::irange(2)) {
             const auto defocus = ctf.defocus();
             const auto defocus_range = Vec{
@@ -157,10 +153,11 @@ namespace {
                 1.
             });
 
-            coarse_grid_search<false>(
+            best_ncc = coarse_grid_search<false>(
                 spectrum, fftfreq_range, fitting_range, ctf, phase_shift_range, defocus_range, background);
             fitting_range = background.fit_and_tune_fitting_range(spectrum, fftfreq_range, ctf);
         }
+        return best_ncc;
     }
 
     auto fit_spectrum_from_scratch(
@@ -175,7 +172,7 @@ namespace {
         auto spectrum0 = buffer.span().subregion(0).as_1d();
         auto spectrum1 = buffer.span().subregion(1).as_1d();
 
-        // TODO Fit baseline within [0.1,0.4]
+        // TODO Fit baseline within [0.08,0.4]
 
         // Get the baseline.
         // Use strong smooth gaussian-smoothing to get the baseline. The spectrum size can vary significantly,
@@ -259,28 +256,24 @@ namespace {
         MetadataStack& metadata,
         const ns::CTFIsotropic<f64>& ctf,
         const Grid& grid,
-        const Patches& patches,
-        const View<const f32>& spectra,
+        const View<const f32>& spectra, // (n,p,1,w)
         const Vec<f64, 2>& fftfreq_range,
         const Path& output_directory
     ) -> bool {
         auto timer = Logger::info_scope_time("Rotation check");
-        const i64 n_images = patches.n_slices();
-        const i64 n_patches_per_image = grid.n_patches();
-        const i64 width = spectra.shape()[3];
+        const auto [n, p, w] = spectra.shape().filter(0, 1, 3);
+        const auto fftfreq_linspace = noa::Linspace<f64>::from_vec(fftfreq_range);
 
         auto background = Background{};
         const auto options_managed = ArrayOption{.device = spectra.device(), .allocator = Allocator::MANAGED};
-        const auto ctfs_per_patch = Array<ns::CTFIsotropic<f64>>(n_patches_per_image, options_managed);
-        const auto ctfs_per_image = Array<ns::CTFIsotropic<f64>>(n_images);
+        const auto ctfs_per_patch = Array<ns::CTFIsotropic<f64>>(p, options_managed);
+        const auto ctfs_per_image = Array<ns::CTFIsotropic<f64>>(n);
 
         const auto spacing = Vec<f64, 2>::from_value(ctf.pixel_size());
-        const auto fftfreq_linspace = noa::Linspace<f64>::from_vec(fftfreq_range);
+        const auto image_spectrum = Array<f32>(w, options_managed);
+        const auto image_weights = Array<f32>(w, options_managed);
 
-        const auto image_spectrum = noa::Array<f32>(width, options_managed);
-        const auto image_weights = noa::Array<f32>(width, options_managed);
-
-        const auto buffer = noa::Array<f32>({n_images + 2, 1, 1, width});
+        const auto buffer = Array<f32>({n + 2, 1, 1, w});
         const auto spectrum = buffer.view().subregion(0);
         const auto spectrum_weights = buffer.view().subregion(1);
         const auto spectra_smoothed = buffer.view().subregion(ni::Slice{2});
@@ -311,8 +304,8 @@ namespace {
                 // the average. For a fair comparison, we simply want to scale the spectrum to the same (expected)
                 // phase and average them together.
                 const auto spectrum_smooth = spectra_smoothed.span().subregion(slice.index).as_1d();
-                const auto image_spectra = spectra.subregion(patches.chunk_slice(slice.index));
-                const auto image_spectra_bw = image_spectra.span().filter(0, 3).as_contiguous();
+                const auto image_spectra = spectra.subregion(slice.index).permute({1, 0, 2, 3});
+                const auto image_spectra_pw = image_spectra.span().filter(0, 3).as_contiguous();
 
                 ng::fuse_spectra( // (p,1,1,w) -> (1,1,1,w)
                     image_spectra, fftfreq_linspace, ctfs_per_patch,
@@ -332,8 +325,8 @@ namespace {
                 f64 incc{};
                 for (i64 b{}; auto& pctf: ctfs_per_patch.span_1d())
                     incc += normalized_cross_correlation(
-                        image_spectra_bw[b++], pctf, fftfreq_range, fitting_range, background);
-                ncc += (incc / static_cast<f64>(n_patches_per_image) * iweight);
+                        image_spectra_pw[b++], pctf, fftfreq_range, fitting_range, background);
+                ncc += (incc / static_cast<f64>(p) * iweight);
 
                 // For diagnostics, we plot the average spectrum of the stack.
                 // So subtract the background so we can fuse this spectrum with the others.
@@ -342,9 +335,9 @@ namespace {
                 // Set the weight of this image for fuse_spectra.
                 ictf.set_scale(iweight);
             }
-            ncc /= static_cast<f64>(n_images);
+            ncc /= static_cast<f64>(n);
 
-            // Fuse every background subtracted spectrum to the average CTF and plot for diagnostics.
+            // Fuse every background subtracted spectrum to the average CTF.
             ng::fuse_spectra( // (n,1,1,w) -> (1,1,1,w)
                 spectra_smoothed, fftfreq_linspace, ctfs_per_image,
                 spectrum, fftfreq_linspace, ctf,
@@ -353,11 +346,18 @@ namespace {
             background.fit(spectrum.span_1d(), fftfreq_range, ctf);
             background.subtract(spectrum, spectrum, fftfreq_range);
             noa::normalize(spectrum, spectrum, {.mode = noa::Norm::L2});
-            save_plot_xy(fftfreq_linspace, spectrum, output_directory / "rotation_check.txt", {
-                .title = "Weighted average spectrum",
-                .x_name = "fftfreq",
-                .label = fmt::format("tilt-axis={:+.2f}deg", rotation),
-            });
+
+            // Tune low-frequency range and plot for diagnostics.
+            auto fitting_range = background.tune_fitting_range(spectrum.span_1d(), fftfreq_range);
+            auto [start_index, start_fftfreq] = nearest_integer_fftfreq(w, fftfreq_range, fitting_range[0]);
+            auto new_spectrum = spectrum.subregion(ni::Ellipsis{}, ni::Slice{start_index});
+            save_plot_xy(
+                noa::Linspace{start_fftfreq, fftfreq_range[1], true}, new_spectrum,
+                output_directory / "rotation_check.txt", {
+                    .title = "Weighted average spectrum",
+                    .x_name = "fftfreq",
+                    .label = fmt::format("tilt-axis={:+.2f}deg", rotation),
+                });
 
             return ncc;
         };
@@ -377,26 +377,14 @@ namespace {
         return ncc > ncc_flipped;
     }
 
-    auto compute_rotational_averages(
-        const Patches& patches,
-        const Vec<f64, 2>& fftfreq_range
-    ) -> Array<f32> {
-        // Compute the rotational average of every patch.
-        const auto logical_size = patches.shape().height();
-        const auto spectrum_size = logical_size / 2 + 1;
-        auto buffer = noa::zeros<f32>({2, patches.n_patches_per_stack(), 1, spectrum_size}, {
-            .device = patches.rfft_ps().device(),
+    // Reduce the height/phi dimension to get the rotational average.
+    auto compute_rotational_averages(const Patches& patches) -> Array<f32> {
+        auto spectra = Array<f32>(patches.view().shape().set<2>(1), {
+            .device = patches.view().device(),
             .allocator = Allocator::MANAGED, // TODO PITCHED_MANAGED
         });
-        auto spectra = buffer.subregion(0).permute({1, 0, 2, 3});
-        auto spectra_weights = buffer.view().subregion(1).permute({1, 0, 2, 3});
-        ng::rotational_average<"h2h">(
-            patches.rfft_ps(), {patches.n_patches_per_stack(), 1, logical_size, logical_size},
-            spectra.view(), spectra_weights, {
-                .input_fftfreq = {0, fftfreq_range[1]},
-                .output_fftfreq = {fftfreq_range[0], fftfreq_range[1]},
-                .add_to_output = true,
-            });
+        const f32 n_patches_per_image = static_cast<f32>(patches.height());
+        noa::reduce_axes_ewise(patches.view(), f32{0}, spectra, noa::ReduceMean{.size=n_patches_per_image});
         return spectra;
     }
 }
@@ -412,9 +400,9 @@ namespace qn::ctf {
         auto timer = Logger::info_scope_time("Initial fitting");
 
         // Compute the per-image spectra.
-        const auto spectra_per_patch = compute_rotational_averages(patches, options.fftfreq_range);
+        const auto spectra_per_patch = compute_rotational_averages(patches);
         const auto spectra_per_image = compute_spectra_near_tilt_axis(
-            grid, spectra_per_patch.view(), metadata, patches.n_patches_per_slice(), 0.2
+            grid, spectra_per_patch.view(), metadata[0].angles[0], 0.2
         );
 
         // Get the average spectrum.
@@ -428,14 +416,14 @@ namespace qn::ctf {
         }
 
         const auto plot_filename = options.output_directory / "initial_power_spectrum.txt";
-        save_plot_xy(noa::Linspace<f64>::from_vec(options.fftfreq_range), average_spectrum_w, plot_filename, {
+        save_plot_xy(patches.rho(), average_spectrum_w, plot_filename, {
             .title = fmt::format("initial spectrum (n_images={})", options.n_slices_to_average),
             .x_name = "fftfreq",
             .label = "spectrum",
         });
 
         auto fitting_range = fit_spectrum_from_scratch(
-            average_spectrum_w, options.fftfreq_range,
+            average_spectrum_w, patches.rho_vec(),
             ctf, options.fit_phase_shift, plot_filename
         );
 
@@ -444,7 +432,7 @@ namespace qn::ctf {
 
     void coarse_fit(
         const Grid& grid,
-        const Patches& patches,
+        Patches patches,
         ns::CTFIsotropic<f64>& ctf,
         MetadataStack& metadata, // defocus is updated, rotation may be flipped
         const FitCoarseOptions& options
@@ -452,16 +440,11 @@ namespace qn::ctf {
         auto timer = Logger::info_scope_time("Coarse fitting");
 
         // Compute the per-image spectrum.
-        const auto spectra_per_patch = compute_rotational_averages(patches, options.fftfreq_range);
+        const auto spectra_per_patch = compute_rotational_averages(patches);
         const auto spectra_per_image = compute_spectra_near_tilt_axis(
-            grid, spectra_per_patch.view(), metadata, patches.n_patches_per_slice(), 0.2);
+            grid, spectra_per_patch.view(), metadata[0].angles[0], 0.2);
         const auto spectra = spectra_per_image.span().filter(0, 3).as_contiguous();
-
-        {
-            // FIXME
-            save_plot_xy(noa::Linspace<f64>::from_vec(options.fftfreq_range),
-                spectra.as_strided(), options.output_directory / "coarse_spectra.txt");
-        }
+        save_plot_xy(patches.rho(), spectra.as_strided(), options.output_directory / "coarse_spectra.txt");
 
         auto metadata_fit = metadata;
 
@@ -470,13 +453,13 @@ namespace qn::ctf {
         if (options.first_image_has_higher_exposure) {
             Logger::trace("Fitting higher exposure image:");
             const auto plot_filename = options.output_directory / "hybrid_power_spectrum.txt";
-            save_plot_xy(noa::Linspace<f64>::from_vec(options.fftfreq_range), spectra[0], plot_filename, {
+            save_plot_xy(patches.rho(), spectra[0], plot_filename, {
                 .title = "Power spectrum of the first image of the stack",
                 .x_name = "fftfreq",
                 .label = "spectrum",
             });
             auto ictf = ctf;
-            fit_spectrum_from_scratch(spectra[0], options.fftfreq_range, ictf, options.fit_phase_shift, plot_filename);
+            fit_spectrum_from_scratch(spectra[0], patches.rho_vec(), ictf, options.fit_phase_shift, plot_filename);
             metadata[0].defocus = {ictf.defocus(), 0., 0.};
             metadata[0].phase_shift = ictf.phase_shift();
 
@@ -490,10 +473,10 @@ namespace qn::ctf {
             // Instead, use the phase-shift from the initial reference as first approximation.
             // TODO Maybe fitting the phase-shift could be useful here?
             metadata_fit.sort("tilt");
-            const auto smallest_defocus = Background::smallest_defocus_for_fitting(options.fftfreq_range, ctf, 3);
+            const auto smallest_defocus = Background::smallest_defocus_for_fitting(patches.rho_vec(), ctf, 3);
             auto fit_neighbor_image = [&](i64 i, auto& ifitting_range, auto& ictf) {
                 refine_grid_search(
-                    spectra[metadata_fit[i].index], options.fftfreq_range,
+                    spectra[metadata_fit[i].index], patches.rho_vec(),
                     ifitting_range, ictf, smallest_defocus, 0.6, 0
                 );
                 metadata_fit[i].defocus = {ictf.defocus(), 0., 0.};
@@ -549,8 +532,8 @@ namespace qn::ctf {
         // so use the defocus gradients in the images to get the correct rotation. Note that rotating the tilt-axis
         // by +/-180deg is equivalent to negating the tilt angles.
         const bool is_ok = rotation_check(
-            metadata_fit, ctf, grid, patches, spectra_per_patch.view(),
-            options.fftfreq_range, options.output_directory
+            metadata_fit, ctf, grid, spectra_per_patch.view(),
+            patches.rho_vec(), options.output_directory
         );
         if (is_ok) {
             Logger::info("The defocus ramp matches the tilt-axis and tilt angles.");
@@ -560,7 +543,8 @@ namespace qn::ctf {
                 Logger::info(
                     "The defocus ramp is reversed.\n"
                     "Not to worry, this is expected as the tilt-axis was computed using the common-line method.\n"
-                    "Rotating the tilt-axis by 180 degrees to match the CTF.");
+                    "Rotating the tilt-axis by 180 degrees to match the CTF."
+                );
             } else {
                 Logger::warn(
                     "The defocus ramp is reversed. This is a bad sign!\n"

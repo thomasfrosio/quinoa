@@ -45,6 +45,7 @@ set(QUINOA_SOURCES_UNIFIED
     src/quinoa/RotationOffset.cpp
     src/quinoa/Stack.cpp
     src/quinoa/Thickness.cpp
+    src/quinoa/ExcludeViews.cpp
 
     src/quinoa/CTFBackground.cpp
     src/quinoa/CTFCoarse.cpp

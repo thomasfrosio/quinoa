@@ -158,12 +158,34 @@ namespace qn {
         return spacing / fftfreq;
     }
 
-    inline auto fourier_crop_to_resolution(i64 size, f64 spacing, f64 resolution) {
-        const f64 input_size = static_cast<f64>(size);
-        const f64 target_spacing = resolution / 2;
-        const f64 target_size = input_size * spacing / target_spacing;
-        const i64 final_size = std::min(size, nf::next_fast_size(static_cast<i64>(std::round(target_size))));
-        const f64 final_fftfreq = (static_cast<f64>(final_size) / input_size) / 2;
-        return Pair{static_cast<i64>(final_size), final_fftfreq};
+    inline auto fourier_crop_to_resolution(i64 input_logical_size, f64 input_spacing, f64 target_resolution, bool fast_size) {
+        const f64 input_size = static_cast<f64>(input_logical_size);
+        const f64 target_spacing = target_resolution / 2;
+        const f64 target_size = input_size * input_spacing / target_spacing;
+        i64 final_size = std::max(static_cast<i64>(std::round(target_size)), i64{0});
+
+        // Clamp within spectrum size and optionally optimize the final size for FFT.
+        if (fast_size)
+            final_size = nf::next_fast_size(final_size);
+        final_size = std::min(input_logical_size, final_size);
+
+        // Compute the final fftfreq. This is the fftfreq within the input reference-frame.
+        const f64 spectrum_size = static_cast<f64>(input_logical_size / 2 + 1);
+        const f64 fftfreq_step = nf::highest_fftfreq<f64>(input_logical_size) / (spectrum_size - 1);
+        const f64 final_fftfreq = static_cast<f64>(final_size / 2) * fftfreq_step ;
+
+        return Pair{final_size, final_fftfreq};
+    }
+
+    /// Given a spectrum size and fftfreq-range, return the index, and its corresponding fftfreq, closest to the target fftfreq.
+    inline auto nearest_integer_fftfreq(
+        i64 spectrum_size,
+        const Vec<f64, 2>& fftfreq_range,
+        f64 target_fftfreq
+    ) {
+        const auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum_size - 1);
+        auto frequency = std::round((target_fftfreq - fftfreq_range[0]) / fftfreq_step);
+        const auto actual_fftfreq = frequency * fftfreq_step + fftfreq_range[0];
+        return Pair{static_cast<i64>(frequency), actual_fftfreq};
     }
 }

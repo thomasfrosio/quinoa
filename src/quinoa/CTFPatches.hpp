@@ -20,41 +20,46 @@ namespace qn::ctf {
             StackLoader& stack_loader,
             const MetadataStack& metadata,
             const Grid& grid,
-            i64 fourier_cropped_size,
-            i64 final_size
+            const Vec<f64, 2>& resolution_range,
+            i64 patch_size,
+            i64 patch_padded_size,
+            i64 phi_size,
+            noa::Interp polar_interp = noa::Interp::CUBIC_BSPLINE
         ) -> Patches;
 
     public:
         Patches() = default;
-        Patches(i64 patch_size, i64 n_patch_per_slice, i64 n_slices, ArrayOption options);
-
-    public:
-        [[nodiscard]] auto rfft_ps() const noexcept -> View<value_type> { return m_rfft_ps.view(); }
-        [[nodiscard]] auto rfft_ps(i64 chunk_index) const -> View<value_type> {
-            return rfft_ps().subregion(chunk_slice(chunk_index));
+        [[nodiscard]] auto view() const noexcept { return m_polar.view(); }
+        [[nodiscard]] auto patches(i64 index) const noexcept {
+            return m_polar.view().subregion(index).permute({1, 0, 2, 3});
         }
 
-        [[nodiscard]] auto n_slices() const noexcept -> i64 { return m_n_slices; }
-        [[nodiscard]] auto n_patches_per_slice() const noexcept -> i64 { return m_n_patches_per_slice; }
-        [[nodiscard]] auto n_patches_per_stack() const noexcept -> i64 { return m_rfft_ps.shape()[0]; }
-
-        [[nodiscard]] auto shape() const noexcept -> Shape<i64, 2> {
-            const i64 logical_size = m_rfft_ps.shape()[2]; // patches are square
-            return {logical_size, logical_size};
+        [[nodiscard]] auto view_batched() const noexcept {
+            return m_polar.view().reshape({n_patches_total(), 1, height(), width()});
+        }
+        [[nodiscard]] auto chunk(i64 index) const noexcept {
+            const i64 start = index * n_patches_per_image();
+            return ni::Slice{start, start + n_patches_per_image()};
         }
 
-        [[nodiscard]] auto chunk_shape() const noexcept -> Shape<i64, 4> {
-            return shape().push_front(Vec{n_patches_per_slice(), i64{1}});
-        }
+        [[nodiscard]] auto phi() const noexcept { return m_phi_range; }
+        [[nodiscard]] auto rho() const noexcept { return m_rho_range; }
+        [[nodiscard]] auto rho_vec() const noexcept { return Vec{rho().start, rho().stop}; }
 
-        [[nodiscard]] auto chunk_slice(i64 chunk_index) const noexcept -> ni::Slice {
-            const i64 start = chunk_index * n_patches_per_slice();
-            return ni::Slice{start, start + n_patches_per_slice()};
-        }
+        [[nodiscard]] auto phi_step() const noexcept -> f64 { return phi().for_size(height()).step; }
+        [[nodiscard]] auto rho_step() const noexcept -> f64 { return rho().for_size(width()).step; }
+
+        [[nodiscard]] auto n_images() const noexcept -> i64 { return m_polar.shape().batch(); }
+        [[nodiscard]] auto n_patches_per_image() const noexcept -> i64 { return m_polar.shape().depth(); }
+        [[nodiscard]] auto n_patches_total() const noexcept -> i64 { return n_images() * n_patches_per_image(); }
+        [[nodiscard]] auto height() const noexcept -> i64 { return m_polar.shape().height(); }
+        [[nodiscard]] auto width() const noexcept -> i64 { return m_polar.shape().width(); }
+
+        void exclude_views(SpanContiguous<const i64> indices);
 
     private:
-        Array<value_type> m_rfft_ps{}; // (n, 1, h, w/2+1)
-        i64 m_n_slices{};
-        i64 m_n_patches_per_slice{};
+        Array<value_type> m_polar{}; // (n,p,phi,rho)
+        noa::Linspace<f64> m_phi_range{};
+        noa::Linspace<f64> m_rho_range{};
     };
 }

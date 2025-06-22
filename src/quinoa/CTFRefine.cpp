@@ -1,4 +1,3 @@
-#include <span>
 #include <noa/Array.hpp>
 #include <noa/Geometry.hpp>
 #include <noa/Signal.hpp>
@@ -8,323 +7,66 @@
 #include "quinoa/Utilities.hpp"
 #include "quinoa/CTF.hpp"
 
-#include <noa/gpu/cuda/Block.cuh>
-#include <noa/core/utils/Atomic.hpp>
-
-namespace {
-    using namespace noa::types;
-    namespace nt = noa::traits;
-
-    template<typename Config, typename Op, typename Index>
-    __global__ __launch_bounds__(Config::block_size)
-    void iwise_3d_static(Op op, Vec2<Index> end_hw) {
-        auto dhw = Vec3<Index>::from_values(
-            blockIdx.z,
-            Config::block_work_size_y * blockIdx.y + threadIdx.y,
-            Config::block_work_size_x * blockIdx.x + threadIdx.x
-        );
-        const Index ih = dhw[1];
-        const Index iw = dhw[2];
-        const Index tid = blockDim.x * threadIdx.y + threadIdx.x;
-
-        // Initialize the shells for this block.
-        __shared__ float shells[1024];
-        __shared__ float shells_weights[1024];
-
-        for (Index i = tid; i < op.m_max_shell_index + 1; i += Config::block_size) {
-            shells[i] = 0;
-            shells_weights[i] = 0;
-        }
-        noa::cuda::guts::block_synchronize();
-
-        using coord_type = float;
-        using coord_nd_type = Vec<coord_type, 2>;
-
-        if (ih < end_hw[0] and iw < end_hw[1]) {
-            // Input indices to fftfreq.
-            const auto frequency = noa::fft::index2frequency<false, true>(noa::Vec{ih, iw}, op.m_shape);
-            const auto fftfreq_nd = coord_nd_type::from_vec(frequency) * op.m_input_fftfreq_step;
-            const auto fftfreq = static_cast<coord_type>(op.m_ctf[dhw[0]].isotropic_fftfreq(fftfreq_nd));
-
-            // Remove most out-of-bounds asap.
-            if (fftfreq >= op.m_fftfreq_cutoff[0] and fftfreq <= op.m_fftfreq_cutoff[1]) {
-                const auto value = cast_or_abs_squared<float>(op.m_input(dhw[0], dhw[1], dhw[2]));
-
-                const coord_type scaled_fftfreq = (fftfreq - op.m_output_fftfreq_start) / op.m_output_fftfreq_span;
-                const coord_type radius = scaled_fftfreq * static_cast<coord_type>(op.m_max_shell_index);
-
-                const auto shell = static_cast<Index>(round(radius));
-                if (shell >= 0 and shell <= op.m_max_shell_index) {
-                    atomicAdd(shells + shell, value);
-                    atomicAdd(shells_weights + shell, 1.f);
-                    // noa::guts::atomic_add(op.m_output, value, dhw[0], shell);
-                    // noa::guts::atomic_add(op.m_weight, 1.f, dhw[0], shell);
-                }
-            }
-        }
-
-        noa::cuda::guts::block_synchronize();
-        for (Index i = tid; i < op.m_max_shell_index + 1; i += Config::block_size) {
-            noa::guts::atomic_add(op.m_output, shells[i], dhw[0], i);
-            noa::guts::atomic_add(op.m_weight, shells_weights[i], dhw[0], i);
-        }
-    }
-
-    template<typename Config, typename Index>
-    auto iwise_3d_static_config(
-        const Shape3<Index>& shape,
-        size_t n_bytes_of_shared_memory
-    ) -> noa::cuda::LaunchConfig {
-        const auto iwise_shape = shape.template as_safe<u32>();
-        const u32 n_blocks_x = noa::divide_up(iwise_shape[2], Config::block_work_size_x);
-        const u32 n_blocks_y = noa::divide_up(iwise_shape[1], Config::block_work_size_y);
-        return {
-            .n_blocks = dim3(n_blocks_x, n_blocks_y, iwise_shape[0]),
-            .n_threads = dim3(Config::block_size_x, Config::block_size_y),
-            .n_bytes_of_shared_memory = n_bytes_of_shared_memory
-        };
-    }
-
-    template<size_t N, typename Config = noa::cuda::IwiseConfig<32, 32, 1, 1>, typename Index, typename Op>
-    void iwise_3d(
-        const Shape<Index, N>& shape,
-        Op&& op,
-        noa::cuda::Stream& stream,
-        size_t n_bytes_of_shared_memory = 0
-    ) {
-        const auto launch_config = iwise_3d_static_config<Config>(shape, n_bytes_of_shared_memory);
-        const auto end_2d = shape.pop_front().vec;
-        stream.enqueue(iwise_3d_static<Config, std::decay_t<Op>, Index>,
-                       launch_config, std::forward<Op>(op), end_2d);
-    }
-
-    template<noa::Remap REMAP,
-             size_t N,
-             nt::real Coord,
-             nt::sinteger Index,
-             nt::readable_nd<N + 1> Input,
-             nt::atomic_addable_nd<2> Output,
-             nt::atomic_addable_nd_optional<2> Weight,
-             nt::batched_parameter Ctf>
-    class RotationalAverage {
-    public:
-        static_assert((N == 2 or N == 3) and REMAP.is_xx2h());
-        static constexpr bool IS_CENTERED = REMAP.is_xc2xx();
-        static constexpr bool IS_RFFT = REMAP.is_hx2xx();
-
-        using index_type = Index;
-        using coord_type = Coord;
-        using shape_type = noa::Shape<index_type, N - IS_RFFT>;
-        using coord_nd_type = noa::Vec<coord_type, N>;
-        using coord2_type = noa::Vec2<coord_type>;
-        using shape_nd_type = noa::Shape<index_type, N>;
-
-        using input_type = Input;
-        using output_type = Output;
-        using weight_type = Weight;
-        using output_value_type = nt::value_type_t<output_type>;
-        using output_real_type = nt::value_type_t<output_value_type>;
-        using weight_value_type = nt::value_type_t<weight_type>;
-        static_assert(nt::spectrum_types<nt::value_type_t<input_type>, output_value_type>);
-        static_assert(nt::same_as<weight_value_type, output_real_type>);
-
-        using batched_ctf_type = Ctf;
-        using ctf_type = nt::mutable_value_type_t<batched_ctf_type>;
-        static_assert(nt::empty<ctf_type> or (N == 2 and nt::ctf_anisotropic<ctf_type>));
-
-    public:
-        constexpr RotationalAverage(
-            const input_type& input,
-            const shape_nd_type& input_shape,
-            const batched_ctf_type& input_ctf,
-            const output_type& output,
-            const weight_type& weight,
-            index_type n_shells,
-            noa::Linspace<coord_type> input_fftfreq,
-            noa::Linspace<coord_type> output_fftfreq
-        ) :
-            m_input(input),
-            m_output(output),
-            m_weight(weight),
-            m_ctf(input_ctf),
-            m_shape(input_shape.template pop_back<IS_RFFT>())
-        {
-            // If input_fftfreq.stop is negative, defaults to the highest frequency.
-            // In this case, and if the frequency.start is 0, this results in the full frequency range.
-            // The input is N-d, so we have to handle each axis separately.
-            coord_type max_input_fftfreq{-1};
-            for (size_t i{}; i < N; ++i) {
-                const auto max_sample_size = input_shape[i] / 2 + 1;
-                const auto fftfreq_end =
-                    input_fftfreq.stop <= 0 ?
-                    noa::fft::highest_fftfreq<coord_type>(input_shape[i]) :
-                    input_fftfreq.stop;
-                max_input_fftfreq = max(max_input_fftfreq, fftfreq_end);
-                m_input_fftfreq_step[i] = noa::Linspace<coord_type>{
-                    .start = 0,
-                    .stop = fftfreq_end,
-                    .endpoint = input_fftfreq.endpoint
-                }.for_size(max_sample_size).step;
-            }
-
-            // The output defaults to the input range. Of course, it is a reduction to 1d, so take the max fftfreq.
-            if (output_fftfreq.start < 0)
-                output_fftfreq.start = 0;
-            if (output_fftfreq.stop <= 0)
-                output_fftfreq.stop = max_input_fftfreq;
-
-            // Transform to inclusive range so that we only have to deal with one case.
-            if (not output_fftfreq.endpoint) {
-                output_fftfreq.stop -= output_fftfreq.for_size(n_shells).step;
-                output_fftfreq.endpoint = true;
-            }
-            m_output_fftfreq_start = output_fftfreq.start;
-            m_output_fftfreq_span = output_fftfreq.stop - output_fftfreq.start;
-            m_max_shell_index = n_shells - 1;
-
-            // To shortcut early, compute the fftfreq cutoffs where we know the output isn't affected.
-            auto output_fftfreq_step = output_fftfreq.for_size(n_shells).step;
-            m_fftfreq_cutoff[0] = output_fftfreq.start + -1 * output_fftfreq_step;
-            m_fftfreq_cutoff[1] = output_fftfreq.stop + static_cast<coord_type>(m_max_shell_index) * output_fftfreq_step;
-        }
-
-        // 2d or 3d rotational average, with an optional anisotropic field correction.
-        NOA_HD void operator()(index_type batch, index_type y, index_type x, __shared__ float* shells) const noexcept {
-            // Input indices to fftfreq.
-            const auto frequency = noa::fft::index2frequency<IS_CENTERED, IS_RFFT>(noa::Vec{y, x}, m_shape);
-            const auto fftfreq_nd = coord_nd_type::from_vec(frequency) * m_input_fftfreq_step;
-
-            coord_type fftfreq;
-            if constexpr (nt::empty<ctf_type>) {
-                fftfreq = sqrt(dot(fftfreq_nd, fftfreq_nd));
-            } else {
-                // Correct for anisotropic field (pixel size and defocus).
-                fftfreq = static_cast<coord_type>(m_ctf[batch].isotropic_fftfreq(fftfreq_nd));
-            }
-
-            // Remove most out-of-bounds asap.
-            if (fftfreq < m_fftfreq_cutoff[0] or fftfreq > m_fftfreq_cutoff[1])
-                return;
-
-            const auto value = cast_or_abs_squared<output_value_type>(m_input(batch, y, x));
-
-            const coord_type scaled_fftfreq = (fftfreq - m_output_fftfreq_start) / m_output_fftfreq_span;
-            const coord_type radius = scaled_fftfreq * static_cast<coord_type>(m_max_shell_index);
-
-            const auto shell = static_cast<index_type>(round(radius));
-            if (shell >= 0 and shell <= m_max_shell_index) {
-                noa::guts::atomic_add(m_output, value, batch, shell);
-                if (m_weight)
-                    noa::guts::atomic_add(m_weight, static_cast<weight_value_type>(1), batch, shell);
-            }
-        }
-
-    public:
-        input_type m_input;
-        output_type m_output;
-        weight_type m_weight;
-        NOA_NO_UNIQUE_ADDRESS batched_ctf_type m_ctf;
-
-        shape_type m_shape;
-        coord_nd_type m_input_fftfreq_step;
-        coord2_type m_fftfreq_cutoff;
-        coord_type m_output_fftfreq_start;
-        coord_type m_output_fftfreq_span;
-        index_type m_max_shell_index;
-    };
-
-
-    template<
-        noa::Remap REMAP, bool IS_GPU = false,
-        typename Input, typename Index, typename Ctf,
-        typename Output, typename Weight, typename Options>
-    void launch_rotational_average(
-        Input&& input, const noa::Shape4<Index>& input_shape, Ctf&& input_ctf,
-        Output&& output, Weight&& weight, noa::i64 n_shells, const Options& options
-    ) {
-        using input_value_t = nt::value_type_t<Input>; // FIXME nt::const_value_type_t<Input>
-        using output_value_t = nt::value_type_t<Output>;
-        using weight_value_t = nt::value_type_t<Weight>;
-        using coord_t = nt::value_type_t<output_value_t>;
-        constexpr auto EWISE_OPTION = noa::EwiseOptions{.generate_cpu = not IS_GPU, .generate_gpu = IS_GPU};
-
-        // Output must be zeroed out.
-        const auto output_view = output.view();
-        if (not options.add_to_output)
-            ewise<EWISE_OPTION>({}, output_view, noa::Zero{});
-
-        // When computing the average, the weights must be valid.
-        auto weight_view = weight.view();
-        noa::Array<weight_value_t> weight_buffer;
-        if (options.average) {
-            if (weight_view.is_empty()) {
-                weight_buffer = zeros<weight_value_t>(output_view.shape(), noa::ArrayOption{output.device(), noa::Allocator::DEFAULT_ASYNC});
-                weight_view = weight_buffer.view();
-            } else if (not options.add_to_output) {
-                ewise<EWISE_OPTION>({}, weight_view, noa::Zero{});
-            }
-        }
-
-        using output_accessor_t = noa::AccessorRestrictContiguous<output_value_t, 2, Index>;
-        using weight_accessor_t = noa::AccessorRestrictContiguous<weight_value_t, 2, Index>;
-        auto output_accessor = output_accessor_t(output_view.get(), noa::Strides1<Index>::from_value(output_view.strides()[0]));
-        auto weight_accessor = weight_accessor_t(weight_view.get(), noa::Strides1<Index>::from_value(weight_view.strides()[0]));
-
-        const auto input_fftfreq = options.input_fftfreq.template as<coord_t>();
-        const auto output_fftfreq = options.output_fftfreq.template as<coord_t>();
-        const auto iwise_shape = input.shape().template as<Index>();
-        const auto input_strides = input.strides().template as<Index>();
-
-        if (input_shape.ndim() == 2) {
-            auto ctf = noa::guts::to_batched_parameter<true>(input_ctf);
-
-            using input_accessor_t = noa::AccessorRestrict<input_value_t, 3, Index>;
-            auto op = RotationalAverage
-                <REMAP, 2, coord_t, Index, input_accessor_t, output_accessor_t, weight_accessor_t, decltype(ctf)>(
-                input_accessor_t(input.get(), input_strides.filter(0, 2, 3)), input_shape.filter(2, 3),
-                ctf, output_accessor, weight_accessor, static_cast<Index>(n_shells),
-                input_fftfreq, output_fftfreq);
-
-            iwise_3d(iwise_shape.filter(0, 2, 3), op, noa::Stream::current(output.device()).cuda());
-        }
-
-        // Some shells can be 0, so use DivideSafe.
-        if (options.average) {
-            if (weight_buffer.is_empty()) {
-                ewise<EWISE_OPTION>(wrap(output_view, weight), std::forward<Output>(output), noa::DivideSafe{});
-            } else {
-                ewise<EWISE_OPTION>(wrap(output_view, std::move(weight_buffer)), std::forward<Output>(output), noa::DivideSafe{});
-            }
-        }
-    }
-
-    template<noa::Remap REMAP,
-             nt::readable_varray_decay Input,
-             nt::writable_varray_decay Output,
-             typename Ctf,
-             typename Weight>
-        requires (REMAP.is_xx2h() and nt::spectrum_types<nt::value_type_t<Input>, nt::value_type_t<Output>>)
-    [[gnu::noinline]] void rotational_average_anisotropic(
-        Input&& input,
-        const noa::Shape4<noa::i64>& input_shape,
-        Ctf&& input_ctf,
-        Output&& output,
-        Weight&& weights = {},
-        noa::geometry::RotationalAverageOptions options = {}
-    ) {
-        const auto n_shells = output.shape().pop_front().n_elements();
-        launch_rotational_average<REMAP, true>(
-            std::forward<Input>(input), input_shape.as<noa::i64>(),
-            std::forward<Ctf>(input_ctf),
-            std::forward<Output>(output),
-            std::forward<Weight>(weights),
-            n_shells, options);
-    }
-}
-
 namespace {
     using namespace ::qn;
     using namespace ::qn::ctf;
+
+    struct ReduceAnisotropic {
+        SpanContiguous<const Patches::value_type, 3> polar{}; // (n*p,h,w)
+        SpanContiguous<const ns::CTFIsotropic<f64>, 1> isotropic_ctfs{}; // (n*p)
+        SpanContiguous<const ns::CTFAnisotropic<f64>, 1> anisotropic_ctfs{}; // (n*p)
+
+        f64 phi_start{};
+        f64 phi_step{};
+        f64 rho_start{};
+        f64 rho_step{};
+        f64 rho_range{};
+
+        NOA_HD void init(i64 batch, i64 row, i64 col, f32& r0, f32& r1) const {
+            auto phi = static_cast<f64>(row) * phi_step + phi_start; // radians
+            auto rho = static_cast<f64>(col) * rho_step + rho_start; // fftfreq
+
+            // Get the target phase.
+            auto phase = isotropic_ctfs[batch].phase_at(rho);
+
+            // Get the corresponding fftfreq within the astigmatic field.
+            const auto& anisotropic_ctf = anisotropic_ctfs[batch];
+            auto ctf = ns::CTFIsotropic(anisotropic_ctf);
+            ctf.set_defocus(anisotropic_ctf.defocus_at(phi));
+            auto fftfreq = ctf.fftfreq_at(phase);
+
+            // Scale back to unnormalized frequency.
+            const auto width = polar.shape().width();
+            const auto frequency = static_cast<f64>(width - 1) * (fftfreq - rho_start) / rho_range;
+
+            // Lerp the polar array at this frequency.
+            const auto floored = noa::floor(frequency);
+            const auto fraction = static_cast<f32>(frequency - floored);
+            const auto index = static_cast<i64>(floored);
+
+            f32 v0{}, w0{}, v1{}, w1{};
+            if (index >= 0 and index < width) {
+                v0 = static_cast<f32>(polar(batch, row, index));
+                w0 = 1;
+            }
+            if (index + 1 >= 0 and index + 1 < width) {
+                v1 = static_cast<f32>(polar(batch, row, index + 1));
+                w1 = 1;
+            }
+            r0 += v0 * (1 - fraction) + v1 * fraction;
+            r1 += w0 * (1 - fraction) + w1 * fraction;
+        }
+
+        static constexpr void join(f32 r0, f32 r1, f32& j0, f32& j1) {
+            j0 += r0;
+            j1 += r1;
+        }
+
+        using remove_default_final = bool;
+        static constexpr void final(f32 j0, f32 j1, f32& f) {
+            f = j1 > 1 ? j0 / j1 : 0;
+        }
+    };
 
     class Parameters;
 
@@ -435,9 +177,9 @@ namespace {
 
         Parameters(
             const MetadataStack& metadata,
-            const SplineGridCubic<f64, 1>& initial_phase_shift,
-            const SplineGridCubic<f64, 1>& initial_astigmatism_value,
-            const SplineGridCubic<f64, 1>& initial_astigmatism_angle,
+            const SplineGridCubic<f64, 1>& phase_shift,
+            const SplineGridCubic<f64, 1>& astigmatism_value,
+            const SplineGridCubic<f64, 1>& astigmatism_angle,
             const SetOptions<Vec<f64, 2>>& relative_bounds,
             f64 smallest_defocus_allowed
         ) {
@@ -446,9 +188,9 @@ namespace {
             m_parameters[TILT].m_ssize = 1;
             m_parameters[PITCH].m_ssize = 1;
             m_parameters[DEFOCUS].m_ssize = metadata.ssize();
-            m_parameters[PHASE_SHIFT].m_ssize = initial_phase_shift.ssize();
-            m_parameters[ASTIGMATISM_VALUE].m_ssize = initial_astigmatism_value.ssize();
-            m_parameters[ASTIGMATISM_ANGLE].m_ssize = initial_astigmatism_angle.ssize();
+            m_parameters[PHASE_SHIFT].m_ssize = phase_shift.ssize();
+            m_parameters[ASTIGMATISM_VALUE].m_ssize = astigmatism_value.ssize();
+            m_parameters[ASTIGMATISM_ANGLE].m_ssize = astigmatism_angle.ssize();
 
             // Set whether they are fitted.
             auto is_fitted = [](const auto& relative_bound) { return not noa::all(noa::allclose(relative_bound, 0.)); };
@@ -472,17 +214,18 @@ namespace {
             for (auto& data: m_parameters)
                 data.m_buffer = m_buffer.data();
 
-            // Save the default values in case the parameter isn't fitted.
-            for (auto& e: initial_phase_shift.span)
-                m_initial_phase_shift.push_back(e);
-            for (auto& e: initial_astigmatism_value.span)
-                m_initial_astigmatism_value.push_back(e);
-            for (auto& e: initial_astigmatism_angle.span)
-                m_initial_astigmatism_angle.push_back(e);
+            // Allocate for the default values.
+            m_initial_phase_shift.resize(phase_shift.size());
+            m_initial_astigmatism_value.resize(astigmatism_value.size());
+            m_initial_astigmatism_angle.resize(astigmatism_angle.size());
 
-            // Initialize the defocus values.
+            // Initialize the values, whether they're the default or fitted values.
             for (auto&& [defocus, slice]: noa::zip(defoci(), metadata))
                 defocus = slice.defocus.value;
+            for (auto&& [o, i]: noa::zip(this->astigmatism_value().span, astigmatism_value.span))
+                o = i;
+            for (auto&& [o, i]: noa::zip(this->astigmatism_angle().span, astigmatism_angle.span))
+                o = i;
 
             set_relative_bounds(relative_bounds, smallest_defocus_allowed);
         }
@@ -551,22 +294,18 @@ namespace {
     private:
         using enum Parameters::Index;
 
+        // Input data.
         const MetadataStack& m_metadata;
         const Grid& m_grid;
         const Patches& m_patches;
 
+        // Optimizer.
         Parameters m_parameters{};
         Memoizer m_memoizer{};
 
-        // Shape
-        i64 m_n; // number of images
-        i64 m_p; // number of patches per image
-        i64 m_t; // number of patches per stack, n*p
-        i64 m_s; // size of the 1d spectra
+        ReduceAnisotropic m_astig_reduce;
 
         // Patches and their ctfs.
-        noa::Linspace<f64> m_fftfreq_range_2d{};
-        noa::Linspace<f64> m_fftfreq_range_1d{};
         SpanContiguous<Vec<f64, 2>> m_fitting_ranges{}; // (n)
 
         Vec<f64, 2> m_time_range{};
@@ -582,15 +321,16 @@ namespace {
 
         // 1d spectra.
         Array<f32> m_buffer;
-        View<f32> m_spectra;         // (t,1,1,w)
-        View<f32> m_spectra_weights; // (t,1,1,w)
-        View<f32> m_spectra_average; // (n,1,1,w)
+        View<f32> m_spectra;                // (n*p,1,1,w)
+        View<f32> m_spectra_average;        // (n,1,1,w)
+        View<f32> m_spectra_average_smooth; // (n,1,1,w)
 
         Array<f32> m_gaussian_filter;
 
         Array<f64> m_nccs; // (3,1,1,n)
         bool m_are_rotational_averages_ready{false};
         Background m_background;
+        std::array<Background, 4> m_background2;
 
         std::vector<f64> m_gradient_buffer;
 
@@ -600,7 +340,6 @@ namespace {
             const Grid& grid,
             const Patches& patches,
             const ns::CTFIsotropic<f64>& average_ctf,
-            const Vec<f64, 2>& fftfreq_range,
             const SpanContiguous<Vec<f64, 2>>& fitting_ranges,
             const SplineGridCubic<f64, 1>& phase_shift,
             const SplineGridCubic<f64, 1>& astigmatism_value,
@@ -612,10 +351,10 @@ namespace {
             m_patches(patches),
             m_fitting_ranges(fitting_ranges)
         {
-            //
+            // Initialize and configure the optimization parameters.
             m_parameters = Parameters(
                 metadata, phase_shift, astigmatism_value, astigmatism_angle,
-                relative_bounds, Background::smallest_defocus_for_fitting(fftfreq_range, average_ctf)
+                relative_bounds, Background::smallest_defocus_for_fitting(m_patches.rho_vec(), average_ctf)
             );
             m_parameters.set_abs_tolerance({
                 .rotation = noa::deg2rad(0.01),
@@ -636,37 +375,28 @@ namespace {
                 .astigmatism_angle = noa::deg2rad(0.1),
             });
 
-            m_memoizer = Memoizer(m_parameters.ssize(), 5),
+            // The optimizer may ask for the same cost multiple times, so memoize it.
+            m_memoizer = Memoizer(m_parameters.ssize(), 5);
 
             // Quick access of the dimensions.
-            m_n = patches.n_slices();
-            m_p = patches.n_patches_per_slice();
-            m_t = patches.n_patches_per_stack(); // n * p
-
-            // When computing the rotational average, don't render the low frequencies before fftfreq_range[0].
-            const auto spectrum_size = patches.shape().width() / 2 + 1;
-            const auto fftfreq_step = fftfreq_range[1] / static_cast<f64>(spectrum_size - 1);
-            const auto start_index = noa::round(fftfreq_range[0] / fftfreq_step);
-            m_s = spectrum_size - static_cast<i64>(start_index);
-            m_fftfreq_range_1d = {start_index * fftfreq_step, fftfreq_range[1]};
-            m_fftfreq_range_2d = {0, fftfreq_range[1]};
+            const auto [n, p, h, w] = m_patches.view().shape();
 
             // Prepare for the rotational averages.
             // Since accesses are per row, use a pitched layout for better performance on the GPU.
-            const auto options = patches.rfft_ps().options();
+            const auto options = patches.view().options();
             const auto options_managed = ArrayOption{options}.set_allocator(Allocator::MANAGED);
 
-            m_buffer = Array<f32>({m_t + m_t + m_n, 1, 1, m_s}, options_managed); // FIXME MANAGED_PITCHED
-            m_spectra = m_buffer.view().subregion(ni::Slice{0, m_t}); // (t,1,1,s)
-            m_spectra_weights = m_buffer.view().subregion(ni::Slice{m_t, m_t + m_t}); // (t,1,1,s)
-            m_spectra_average = m_buffer.view().subregion(ni::Slice{m_t + m_t}); // (n,1,1,s)
+            m_buffer = Array<f32>({n * p + n + n, 1, 1, w}, options_managed); // FIXME MANAGED_PITCHED
+            m_spectra = m_buffer.view().subregion(ni::Slice{0, n * p}); // (n*p,1,1,s)
+            m_spectra_average = m_buffer.view().subregion(ni::Slice{n * p, n * p + n}); // (n,1,1,s)
+            m_spectra_average_smooth = m_buffer.view().subregion(ni::Slice{n * p + n}); // (n,1,1,s)
 
             // Allocate for the CTFs. Everything needs to be dereferenceable.
             // Initialize CTFs with the microscope parameters.
             // The defocus and phase-shift are going to be overwritten.
-            m_ctfs = Array<CTFIsotropic64>(m_n, options_managed);
-            m_ctfs_isotropic = Array<CTFIsotropic64>(m_t, options_managed);
-            m_ctfs_anisotropic = Array<CTFAnisotropic64>(m_t, options_managed);
+            m_ctfs = Array<CTFIsotropic64>(n, options_managed);
+            m_ctfs_isotropic = Array<CTFIsotropic64>(n * p, options_managed);
+            m_ctfs_anisotropic = Array<CTFAnisotropic64>(n * p, options_managed);
             for (auto& ictf: m_ctfs.span_1d())
                 ictf = average_ctf;
             for (auto& pctf: m_ctfs_isotropic.span_1d())
@@ -679,14 +409,14 @@ namespace {
 
             // Allocate buffers for the cross-correlation. In total, to compute the gradients efficiently,
             // we need a set of 3 NCCs per patch, and these are only accessed on the CPU.
-            m_nccs = noa::Array<f64>({3, 1, 1, m_n});
+            m_nccs = noa::Array<f64>({3, 1, 1, n});
 
             // Precompute the spline range and weights.
             m_tilt_range = metadata.tilt_range();
             m_time_range = metadata.time_range().as<f64>();
-            m_phase_shift_weights = Array<f64>({1, 1, phase_shift.ssize(), m_n});
-            m_astig_value_weights = Array<f64>({1, 1, astigmatism_value.ssize(), m_n});
-            m_astig_angle_weights = Array<f64>({1, 1, astigmatism_angle.ssize(), m_n});
+            m_phase_shift_weights = Array<f64>({1, 1, phase_shift.ssize(), n});
+            m_astig_value_weights = Array<f64>({1, 1, astigmatism_value.ssize(), n});
+            m_astig_angle_weights = Array<f64>({1, 1, astigmatism_angle.ssize(), n});
 
             auto set_weights = [&](auto&& to_norm_coordinate, const auto& range, const auto& array) {
                 auto span = array.template span<f64, 2>();
@@ -700,6 +430,18 @@ namespace {
             set_weights([](auto& s) { return static_cast<f64>(s.time); }, m_time_range, m_phase_shift_weights);
             set_weights([](auto& s) { return s.angles[1]; }, m_tilt_range, m_astig_value_weights);
             set_weights([](auto& s) { return s.angles[1]; }, m_tilt_range, m_astig_angle_weights);
+
+            // Initialize the reduction operator. Reduce: (n*p,1,h,w) -> (n*p,1,1,w)
+            m_astig_reduce = ReduceAnisotropic{
+                .polar = m_patches.view_batched().span().filter(0, 2, 3).as_contiguous(), // (n*p,h,w)
+                .isotropic_ctfs = m_ctfs_isotropic.span_1d(), // (n*p)
+                .anisotropic_ctfs = m_ctfs_anisotropic.span_1d(), // (n*p)
+                .phi_start = m_patches.phi().start,
+                .phi_step = m_patches.phi_step(),
+                .rho_start = m_patches.rho().start,
+                .rho_step = m_patches.rho_step(),
+                .rho_range = m_patches.rho().stop - m_patches.rho().start, // assumes endpoint=true
+            };
         }
 
         // Read the current parameters and update the CTF of each patch accordingly.
@@ -712,7 +454,7 @@ namespace {
             const SpanContiguous<f64> defoci = m_parameters.defoci();
 
             const auto ictfs = m_ctfs.span_1d();
-            for (i64 i{}; i < m_n; ++i) {
+            for (i64 i{}; i < m_patches.n_images(); ++i) {
                 // Time-resolved phase-shift.
                 const auto itime = normalized_time(m_metadata[i]);
                 const f64 phase_shift = time_resolved_phase_shift.interpolate_at(itime);
@@ -727,14 +469,14 @@ namespace {
                 ictfs[i].set_phase_shift(phase_shift);
 
                 // Update the CTFs of the patches belonging to the current image.
-                const auto chunk = m_patches.chunk_slice(i);
-                const auto ctfs_anisotropic = m_ctfs_anisotropic.span_1d().subregion(chunk);
+                const auto chunk = m_patches.chunk(i);
                 const auto ctfs_isotropic = m_ctfs_isotropic.span_1d().subregion(chunk);
+                const auto ctfs_anisotropic = m_ctfs_anisotropic.span_1d().subregion(chunk);
                 const auto slice_spacing = Vec<f64, 2>::from_value(ictfs[i].pixel_size());
                 const auto slice_angles = noa::deg2rad(m_metadata[i].angles) + angle_offsets;
                 const auto patch_centers = m_grid.patches_centers();
 
-                for (i64 j{}; j < m_p; ++j) {
+                for (i64 j{}; j < m_patches.n_patches_per_image(); ++j) {
                     const auto patch_z_offset_um = m_grid.patch_z_offset(slice_angles, slice_spacing, patch_centers[j]);
                     const auto patch_defocus = defoci[i] - patch_z_offset_um;
                     ctfs_isotropic[j].set_phase_shift(phase_shift);
@@ -750,95 +492,85 @@ namespace {
         }
 
         auto cost(i64 nccs_index) -> f64 {
-            auto t = Logger::trace_scope_time("cost");
+            // auto t = Logger::trace_scope_time("cost");
             update_ctfs();
 
             // Compute the 1d spectra, if needed.
+            // noa::Event start{}, stop{};
+            // noa::Stream stream = noa::Stream::current(m_patches.view().device());
+            // start.record(stream);
             if (not m_are_rotational_averages_ready) {
-                const auto patches_shape = m_patches.shape().push_front(Vec{m_t, i64{1}});
-
                 if (m_parameters[ASTIGMATISM_VALUE].is_fitted()) {
-                    // This is the most expensive step of the optimization, and since the astigmatism
-                    // is part of the rotational average, it needs to be recomputed everytime.
-                    noa::Event start, end;
-                    start.record(Stream::current(m_spectra.device()));
-                    rotational_average_anisotropic<"h2h">(
-                    // ng::rotational_average_anisotropic<"h2h">(
-                        m_patches.rfft_ps(), patches_shape, m_ctfs_anisotropic.view(),
-                        m_spectra, m_spectra_weights, {
-                            .input_fftfreq = m_fftfreq_range_2d,
-                            .output_fftfreq = m_fftfreq_range_1d,
-                        });
-
-                    end.record(Stream::current(m_spectra.device()));
-                    end.synchronize();
-                    fmt::println("ra took={}", noa::Event::elapsed(start, end));
+                    noa::reduce_axes_iwise(
+                        m_patches.view_batched().shape().filter(0, 2, 3), m_patches.view().device(),
+                        noa::wrap(f32{0}, f32{0}), m_spectra.permute({1, 0, 2, 3}), m_astig_reduce
+                    );
                 } else {
-                    ng::rotational_average<"h2h">(
-                        m_patches.rfft_ps(), patches_shape,
-                        m_spectra, m_spectra_weights, {
-                            .input_fftfreq = m_fftfreq_range_2d,
-                            .output_fftfreq = m_fftfreq_range_1d,
-                        });
+                    noa::reduce_axes_ewise(m_patches.view_batched(), f32{0}, m_spectra, noa::ReduceMean{m_patches.height()});
                     m_are_rotational_averages_ready = true;
                 }
             }
 
-            // noa::Event start, end;
-            // start.record(Stream::current(m_spectra.device()));
             // Compute the average spectrum of each image to compute the per-image backgrounds.
-            const auto spectra_average_smoothed = m_spectra_weights.subregion(ni::Slice{0, m_n}); // reuse buffer
             ng::fuse_spectra( // (n*p,1,1,s) -> (n,1,1,s)
-                m_spectra, m_fftfreq_range_1d, m_ctfs_isotropic.view(),
-                m_spectra_average, m_fftfreq_range_1d, m_ctfs.view(),
-                spectra_average_smoothed
+                m_spectra, m_patches.rho(), m_ctfs_isotropic.view(),
+                m_spectra_average, m_patches.rho(), m_ctfs.view(),
+                m_spectra_average_smooth
             );
-            // end.record(Stream::current(m_spectra.device()));
-            // end.synchronize();
-            // fmt::println("fuse took={}", noa::Event::elapsed(start, end));
 
             ns::convolve(
-                m_spectra_average, spectra_average_smoothed,
+                m_spectra_average, m_spectra_average_smooth,
                 m_gaussian_filter.view(), {.border = noa::Border::REFLECT}
             );
+
+            // stop.record(stream);
+            // stop.synchronize();
+            // fmt::println("gpu={}", noa::Event::elapsed(start, stop));
 
             // Prepare direct access.
             const auto spectrum_np = m_spectra.span().filter(0, 3).as_contiguous();
             const auto ctf_np = m_ctfs_isotropic.span_1d();
-            const auto spectrum_n = spectra_average_smoothed.span().filter(0, 3).as_contiguous();
+            const auto spectrum_n = m_spectra_average_smooth.span().filter(0, 3).as_contiguous();
             const auto ctf_n = m_ctfs.span_1d();
             const auto ncc_n = m_nccs.subregion(nccs_index).span_1d();
-            const auto baseline = m_spectra_weights.subregion(ni::Slice{m_n, m_n + 1}).span_1d();
+            // const auto baseline = m_spectra_average.subregion(0).span_1d();
 
             // Wait for the compute device. Everything below is done on the CPU.
             m_spectra.eval();
 
+            // auto timer = Logger::trace_scope_time("cpu");
+
             // Compute the background based on the average spectrum of the image.
             // Then for every patch of the image, compute the NCC between the
             // background-subtracted spectrum and the simulated CTF.
-            auto fftfreq_range = Vec{m_fftfreq_range_1d.start, m_fftfreq_range_1d.stop};
             f64 sum{};
-            for (i64 i{}; i < m_n; ++i) { // per image
+            #pragma omp parallel for reduction(+:sum) num_threads(2)
+            for (i64 i=0; i < m_patches.n_images(); ++i) {
+                auto& b = m_background2[omp_get_thread_num()];
+                const auto baseline = m_spectra_average.subregion(omp_get_thread_num()).span_1d();
+
                 // As opposed to the fitting range, the background is reevaluated every time.
                 // This is mostly useful for the astigmatism search; fitting the background helps to identify
                 // cases where the Thon rings are averaged out due to a wrong astigmatism.
-                m_background.fit(spectrum_n[i], fftfreq_range, ctf_n[i]);
-                m_background.sample(baseline, fftfreq_range);
+                b.fit(spectrum_n[i], m_patches.rho_vec(), ctf_n[i]);
+                b.sample(baseline, m_patches.rho_vec());
 
                 // Get the image spectra and CTFs.
-                const auto chunk = m_patches.chunk_slice(i);
+                const auto chunk = m_patches.chunk(i);
                 const auto spectrum_p = spectrum_np.subregion(chunk);
                 const auto ctf_p = ctf_np.subregion(chunk);
 
                 f64 ncc{};
-                for (i64 j{}; j < m_p; ++j) // per patch
+                for (i64 j{}; j < m_patches.n_patches_per_image(); ++j) {
                     ncc += normalized_cross_correlation(
-                        spectrum_p[j], ctf_p[j], fftfreq_range, m_fitting_ranges[i], baseline);
-                ncc /= static_cast<f64>(m_p);
+                        spectrum_p[j], ctf_p[j], m_patches.rho_vec(), m_fitting_ranges[i], baseline);
+                }
+                ncc /= static_cast<f64>(m_patches.n_patches_per_image());
+
                 ncc_n[i] = ncc;
                 sum += ncc;
             }
-            return sum / static_cast<f64>(m_n);
+            return sum / static_cast<f64>(m_patches.n_images());
         }
 
         template<nt::any_of<SpanContiguous<f64, 2>, Empty> T = Empty>
@@ -877,15 +609,16 @@ namespace {
             gradients += parameter.offset();
 
             // Compute the gradient for each variable by reducing the per-image costs.
+            const i64 n = m_patches.n_images();
             for (i64 i{}; i < span.ssize(); ++i) {
                 f64 cost_minus_delta{0};
                 f64 cost_plus_delta{0};
-                for (i64 j{}; j < m_n; ++j) {
+                for (i64 j{}; j < n; ++j) {
                     f64 weight{};
                     if (span.ssize() == 1) {
                         // If there's a single variable, it affects every image.
                         weight = 1;
-                    } else if (span.ssize() == m_n) {
+                    } else if (span.ssize() == n) {
                         // Each variable only affects its corresponding image, so recompose the total cost based on that.
                         // The resulting cost is equivalent to the single-variable case above, but allows to compute
                         // the cost only twice, as opposed to twice per variable.
@@ -904,8 +637,8 @@ namespace {
                     cost_minus_delta += fx[j] * (1 - weight) + fx_minus_delta[j] * weight;
                     cost_plus_delta += fx[j] * (1 - weight) + fx_plus_delta[j] * weight;
                 }
-                cost_minus_delta /= static_cast<f64>(m_n);
-                cost_plus_delta /= static_cast<f64>(m_n);
+                cost_minus_delta /= static_cast<f64>(n);
+                cost_plus_delta /= static_cast<f64>(n);
                 gradients[i] = CentralFiniteDifference::get(cost_minus_delta, cost_plus_delta, parameter.delta());
             }
         }
@@ -952,34 +685,6 @@ namespace {
         }
 
         auto fit(nlopt_algorithm algorithm, i32 max_number_of_evaluations) -> f64 {
-            auto cartesian = noa::like<f32>(m_patches.rfft_ps());
-            noa::cast(m_patches.rfft_ps(), cartesian);
-
-            auto polar = noa::like(cartesian);
-            auto shells = Array<f32>(cartesian.shape().set<2>(1), polar.options());
-
-            const auto patches_shape = m_patches.shape().push_front(Vec{m_t, i64{1}});
-            for (i32 i{}; i < 15; ++i) {
-                noa::Event start, end;
-                start.record(Stream::current(m_spectra.device()));
-                // rotational_average_anisotropic<"h2h">(
-                //     m_patches.rfft_ps(), patches_shape, m_ctfs_anisotropic.view(),
-                //     m_spectra, m_spectra_weights, {
-                //         .input_fftfreq = m_fftfreq_range_2d,
-                //         .output_fftfreq = m_fftfreq_range_1d,
-                //     });
-
-                ng::spectrum2polar<"h2fc">(cartesian, patches_shape, polar, {.interp = noa::Interp::NEAREST});
-                noa::reduce_axes_ewise(polar, f32{}, shells, noa::Plus{});
-
-                end.record(Stream::current(m_spectra.device()));
-                end.synchronize();
-                fmt::println("ra took={}", noa::Event::elapsed(start, end));
-            }
-
-            panic();
-
-
             auto optimizer = Optimizer(algorithm, m_parameters.ssize());
             optimizer.set_max_objective(function_to_maximise, this);
             optimizer.set_bounds(
@@ -1003,27 +708,23 @@ namespace {
                 min_phase_shift = std::min(min_phase_shift, ictf.phase_shift());
             }
             ns::CTFIsotropic<f64> target_ctf = m_ctfs.first();
-            target_ctf.set_defocus(average_defocus / static_cast<f64>(m_n));
+            target_ctf.set_defocus(average_defocus / static_cast<f64>(m_patches.n_images()));
             target_ctf.set_phase_shift(min_phase_shift);
 
             // Compute the average spectrum of each image.
-            const auto patches_shape = m_patches.shape().push_front(Vec{m_t, i64{1}});
-            ng::rotational_average_anisotropic<"h2h">(
-                m_patches.rfft_ps(), patches_shape, m_ctfs_anisotropic.view(),
-                m_spectra, m_spectra_weights, {
-                    .input_fftfreq = m_fftfreq_range_2d,
-                    .output_fftfreq = m_fftfreq_range_1d,
-                });
-            auto spectra_average_smoothed = m_spectra_weights.subregion(ni::Slice{0, m_n});
-            ng::fuse_spectra( // (p*n,1,1,w) -> (n,1,1,w)
-                m_spectra, m_fftfreq_range_1d, m_ctfs_isotropic.view(),
-                m_spectra_average, m_fftfreq_range_1d, m_ctfs.view(),
-                spectra_average_smoothed
+            noa::reduce_axes_iwise( // (n*p,1,h,w) -> (n*p,1,1,w)
+                m_patches.view_batched().shape().filter(0, 2, 3), m_patches.view().device(),
+                noa::wrap(f32{0}, f32{0}), m_spectra.permute({1, 0, 2, 3}), m_astig_reduce
             );
-            m_spectra_average.to(spectra_average_smoothed); // FIXME
+            ng::fuse_spectra( // (n*p,1,1,w) -> (n,1,1,w)
+                m_spectra, m_patches.rho(), m_ctfs_isotropic.view(),
+                m_spectra_average, m_patches.rho(), m_ctfs.view(),
+                m_spectra_average_smooth
+            );
+            m_spectra_average.to(m_spectra_average_smooth); // FIXME
             // ns::convolve(
-            //     m_spectra_average, spectra_average_smoothed, m_gaussian_filter.view(),
-            //     {.border = noa::Border::REFLECT}
+                // m_spectra_average, m_spectra_average_smooth, m_gaussian_filter.view(),
+                // {.border = noa::Border::REFLECT}
             // );
 
             // Wait for the compute device and prepare for direct access.
@@ -1034,24 +735,24 @@ namespace {
             noa::fill(spectrum, 0);
             noa::fill(weights, 0);
 
-            const auto fftfreq_range = Vec{m_fftfreq_range_1d.start, m_fftfreq_range_1d.stop};
-            const auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(m_s - 1);
-            const auto spectrum_n = spectra_average_smoothed.span().filter(0, 3).as_contiguous();
+            const auto fftfreq_step = m_patches.rho_step();
+            const auto spectrum_n = m_spectra_average_smooth.span().filter(0, 3).as_contiguous();
             const auto ctf_n = m_ctfs.span_1d();
 
-            for (i64 i{}; i < m_n; ++i) {
+            for (i64 i{}; i < m_patches.n_images(); ++i) {
                 // Fit the background of each image and tune based on the local NCC
                 // between the background-subtracted spectrum and the simulated CTF.
-                auto fitting_range = m_background.fit_and_tune_fitting_range(spectrum_n[i], fftfreq_range, ctf_n[i]);
+                auto fitting_range = m_background.fit_and_tune_fitting_range(
+                    spectrum_n[i], m_patches.rho_vec(), ctf_n[i], 1.5, 3); // FIXME
                 m_fitting_ranges[i] = fitting_range;
 
                 // That's technically all we need, however, for diagnostics, reconstruct the spectrum of the stack:
 
                 // Scale to the target CTF.
-                m_background.subtract(spectrum_n[i], spectrum_n[i], fftfreq_range);
+                m_background.subtract(spectrum_n[i], spectrum_n[i], m_patches.rho_vec());
                 ng::phase_spectra(
-                    View(spectrum_n[i]), m_fftfreq_range_1d, ctf_n[i],
-                    phased, m_fftfreq_range_1d, target_ctf, {.interp = noa::Interp::CUBIC}
+                    View(spectrum_n[i]), m_patches.rho(), ctf_n[i],
+                    phased, m_patches.rho(), target_ctf, {.interp = noa::Interp::CUBIC}
                 );
                 for (auto j: noa::irange(2)) {
                     auto phase = ctf_n[i].phase_at(fitting_range[j]);
@@ -1061,7 +762,7 @@ namespace {
                 // Before adding this spectrum to the average, get the L2-norm within the fitting range.
                 f32 l2_norm{};
                 for (i64 j{}; const auto& e: phased.span_1d()) {
-                    const f64 fftfreq = static_cast<f64>(j++) * fftfreq_step + fftfreq_range[0];
+                    const f64 fftfreq = static_cast<f64>(j++) * fftfreq_step + m_patches.rho().start;
                     if (fitting_range[0] <= fftfreq and fftfreq <= fitting_range[1])
                         l2_norm += e * e;
                 }
@@ -1069,7 +770,7 @@ namespace {
 
                 // Exclude regions outside the fitting range from the average.
                 for (i64 j{}; auto&& [p, w, s]: noa::zip(phased.span_1d(), weights.span_1d(), spectrum.span_1d())) {
-                    const f64 fftfreq = static_cast<f64>(j++) * fftfreq_step + fftfreq_range[0];
+                    const f64 fftfreq = static_cast<f64>(j++) * fftfreq_step + m_patches.rho().start;
                     if (fftfreq < fitting_range[1]) {
                         w += 1;
                         s += p / l2_norm;
@@ -1082,7 +783,7 @@ namespace {
                 if (w > 1e-6f)
                     s /= w;
 
-            save_plot_xy(m_fftfreq_range_1d, spectrum, output_directory / "fitting_range.txt", {
+            save_plot_xy(m_patches.rho(), spectrum, output_directory / "fitting_range.txt", {
                 .title = "Reconstructed spectrum",
                 .x_name = "fftfreq",
                 .label =  fmt::format("defocus={:.3f}", target_ctf.defocus()),
@@ -1097,22 +798,33 @@ namespace {
             MetadataStack& metadata,
             SplineGridCubic<f64, 1> phase_shift,
             SplineGridCubic<f64, 1> astigmatism_value,
-            SplineGridCubic<f64, 1> astigmatism_angle
+            SplineGridCubic<f64, 1> astigmatism_angle,
+            Vec<f64, 3>& final_angle_offsets
         ) {
             phase_shift.update_from_span(m_parameters.phase_shift().span);
             astigmatism_value.update_from_span(m_parameters.astigmatism_value().span);
             astigmatism_angle.update_from_span(m_parameters.astigmatism_angle().span);
 
             // Update metadata.
+            // Note that the optimizer ignores the astigmatism and
+            // phase-shift from the metadata, and uses the splines instead.
             const auto defoci = m_parameters.defoci();
             const auto angle_offsets = noa::rad2deg(m_parameters.angles());
-            Logger::trace("angle_offsets={}, astig={::.4f}, {::.4f}", // FIXME
-                angle_offsets, m_parameters.astigmatism_value().span, m_parameters.astigmatism_angle().span);
             for (i64 i{}; i < metadata.ssize(); ++i) {
                 auto& slice = metadata[i];
+                const auto time = normalized_time(slice);
+                const auto tilt = normalized_tilt(slice); // must be before updating the tilt angles
+
                 slice.angles = MetadataSlice::to_angle_range(slice.angles + angle_offsets);
-                slice.defocus.value = defoci[i];
+                slice.phase_shift = phase_shift.interpolate_at(time);
+                slice.defocus = {
+                    .value = defoci[i],
+                    .astigmatism = astigmatism_value.interpolate_at(tilt),
+                    .angle = astigmatism_angle.interpolate_at(tilt),
+                };
             }
+
+            final_angle_offsets += angle_offsets;
         }
 
         [[nodiscard]] auto parameters() noexcept -> Parameters& { return m_parameters; }
@@ -1132,47 +844,47 @@ namespace qn::ctf {
         MetadataStack& metadata,
         const Grid& grid,
         const Patches& patches,
-        const Vec<f64, 2>& fftfreq_range,
         ns::CTFIsotropic<f64>& isotropic_ctf,
         const FitRefineOptions& options
     ) {
         auto timer = Logger::info_scope_time("Refine CTF fitting");
 
-        auto fitting_ranges = Array<Vec<f64, 2>>(patches.n_slices());
-
-        // Phase shift.
-        auto phase_shift_buffer = Array<f64>(1);
+        // Time-resolved phase-shift.
+        auto phase_shift_buffer = Array<f64>(5);
         auto phase_shift = SplineGridCubic<f64, 1>(phase_shift_buffer.span_1d());
-        phase_shift.span[0] = metadata[0].phase_shift;
+        for (auto& s: phase_shift.span)
+            s = metadata[0].phase_shift;
 
-        // Astigmatism. Importantly, use an interpolating spline since we will end up fitting per-image.
-        auto astigmatism_buffer = noa::zeros<f64>({2, 1, 1, 5});
-        auto astigmatism_value = SplineGridCubic<f64, 1>(astigmatism_buffer.span().subregion(0).as_1d());
-        auto astigmatism_angle = SplineGridCubic<f64, 1>(astigmatism_buffer.span().subregion(1).as_1d());
-        astigmatism_angle.span[0] = 45.;
-        astigmatism_angle.span[1] = 45.;
-        astigmatism_angle.span[2] = 45.;
-        astigmatism_angle.span[3] = 45.;
-        astigmatism_angle.span[4] = 45.;
+        // Tilt-resolved astigmatism value.
+        auto astigmatism_value_buffer = Array<f64>(11);
+        auto astigmatism_value = SplineGridCubic<f64, 1>(astigmatism_value_buffer.span_1d());
+        for (auto& s: astigmatism_value.span)
+            s = 0.;
 
-        Vec<f64, 3> final_angle_offsets{};
+        // Tilt-resolved astigmatism angle.
+        auto astigmatism_angle_buffer = Array<f64>(11);
+        auto astigmatism_angle = SplineGridCubic<f64, 1>(astigmatism_angle_buffer.span_1d());
+        for (auto& s: astigmatism_angle.span)
+            s = noa::deg2rad(45.);
 
+        // Set up the optimization pass.
+        auto fitting_ranges = Array<Vec<f64, 2>>(patches.n_images());
+        auto final_angle_offsets = Vec<f64, 3>{};
         auto run_optimization = [&](
             nlopt_algorithm algorithm, i32 max_number_of_evaluations,
             const Parameters::SetOptions<Vec<f64, 2>>& relative_bounds
         ) {
             auto fitter = Fitter(
-                metadata, grid, patches, isotropic_ctf,
-                fftfreq_range, fitting_ranges.span_1d(),
+                metadata, grid, patches, isotropic_ctf, fitting_ranges.span_1d(),
                 phase_shift, astigmatism_value, astigmatism_angle, relative_bounds
             );
             fitter.update_fitting_range(options.output_directory);
             fitter.fit(algorithm, max_number_of_evaluations);
-            // fitter.update_fitting_range(options.output_directory); // FIXME angle_offsets
-            fitter.update_metadata(metadata, phase_shift, astigmatism_value, astigmatism_angle);
+            fitter.update_fitting_range(options.output_directory);
+            fitter.update_metadata(metadata, phase_shift, astigmatism_value, astigmatism_angle, final_angle_offsets);
         };
 
-        // 1. Refine the stage-angles, the per-image defocus and average phase-shift.
+        // 1. Refine the stage-angles, the per-image defocus, and optionally fit the time-resolved phase-shift.
         run_optimization(NLOPT_LD_LBFGS, 30, {
             .rotation = options.fit_rotation ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
             .tilt =  options.fit_tilt ? deg2rad(Vec{-20., 20.}) : Vec{0., 0.},
@@ -1182,33 +894,117 @@ namespace qn::ctf {
         });
 
         save_plot_xy(
-            metadata | stdv::transform([&](auto& s) { return s.angles[1]; }),
+            metadata | stdv::transform([](auto& s) { return s.angles[1]; }),
             metadata | stdv::transform([](auto& s) { return s.defocus.value; }),
             options.output_directory / "defocus_fit.txt", {
                 .title = "Per-tilt defocus",
                 .x_name = "Tilts (degrees)",
                 .y_name = "Defocus (μm)",
-                .label = "Defocus - Refine fit",
+                .label = "Refine fit",
+            });
+        save_plot_xy(
+            metadata | stdv::transform([](auto& s) { return s.angles[1]; }),
+            metadata | stdv::transform([](auto& s) { return noa::rad2deg(s.phase_shift); }),
+            options.output_directory / "phase_shift_fit.txt", {
+                .title = "Time-resolved phase_shift",
+                .x_name = "Tilts (degrees)",
+                .y_name = "Phase-shift (degrees)",
+                .label = "Refine + Astigmatism fit",
             });
 
-        // 2. Fit an average astigmatism.
+        // 2. Fit the astigmatism.
         Logger::trace("Enable astigmatism");
-        run_optimization(NLOPT_GD_STOGO, 30, {
+        run_optimization(NLOPT_LD_LBFGS, 50, {
+            .tilt =  options.fit_tilt ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
+            .pitch = options.fit_pitch ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
             .phase_shift = options.fit_phase_shift ? noa::deg2rad(Vec{-20., 20.}) : Vec{0., 0.},
             .defocus = Vec{-0.3, 0.3},
-            .astigmatism_value = {-0.6, 0.6},
-            .astigmatism_angle = {0, noa::deg2rad(90.)},
+            .astigmatism_value = {-0.5, 0.5},
+            .astigmatism_angle = {-noa::deg2rad(45.), noa::deg2rad(45.)},
         });
 
         save_plot_xy(
-            metadata | stdv::transform([&](auto& s) { return s.angles[1]; }),
+            metadata | stdv::transform([](auto& s) { return s.angles[1]; }),
             metadata | stdv::transform([](auto& s) { return s.defocus.value; }),
             options.output_directory / "defocus_fit.txt", {
                 .title = "Per-tilt defocus",
                 .x_name = "Tilts (degrees)",
                 .y_name = "Defocus (μm)",
-                .label = "Defocus - Astig fit",
+                .label = "Refine + Astigmatism fit",
             });
+
+        auto metadata_sorted = metadata;
+        metadata_sorted.sort("tilt");
+        metadata_sorted.reset_indices();
+        save_plot_xy({}, //metadata_sorted | stdv::transform([](auto& s) { return s.index; }),
+             metadata_sorted | stdv::transform([](auto& s) { return s.defocus.astigmatism; }),
+             options.output_directory / "astig.txt");
+        save_plot_xy({}, //metadata_sorted | stdv::transform([](auto& s) { return s.index; }),
+             metadata_sorted | stdv::transform([](auto& s) { return noa::rad2deg(s.defocus.angle); }),
+             options.output_directory / "angles.txt");
+
+        Logger::trace("angles={}", final_angle_offsets);
+
+        panic();
+
+        // auto increase_spline_resolution = [&](SplineGridCubic<f64, 1>& spline, i64 new_size, auto&& norm_coord) -> Array<f64> {
+        //     auto buffer = Array<f64>(new_size);
+        //     for (auto& s: metadata) {
+        //         auto tilt = norm_coord(s);
+        //         v = astigmatism_value.interpolate_at(tilt);
+        //         a = astigmatism_angle.interpolate_at(tilt);
+        //     }
+        // };
+
+        // 3. Fit an average astigmatism.
+        // auto astigmatism_buffer2 = noa::zeros<f64>({2, 1, 1, patches.n_images()});
+        // auto astigmatism_value2 = SplineGridCubic<f64, 1>(astigmatism_buffer2.span().subregion(0).as_1d());
+        // auto astigmatism_angle2 = SplineGridCubic<f64, 1>(astigmatism_buffer2.span().subregion(1).as_1d());
+        // auto tilt_range = metadata.tilt_range();
+        // auto metadata_sorted = metadata;
+        // metadata_sorted.sort("tilt");
+        // for (auto&& [s, v, a]: noa::zip(metadata_sorted, astigmatism_value2.span, astigmatism_angle2.span)) {
+        //     auto tilt = (s.angles[1] - tilt_range[0]) / (tilt_range[1] - tilt_range[0]);
+        //     v = astigmatism_value.interpolate_at(tilt);
+        //     a = astigmatism_angle.interpolate_at(tilt);
+        // }
+        // astigmatism_value = astigmatism_value2;
+        // astigmatism_angle = astigmatism_angle2;
+        //
+        // save_plot_xy(metadata_sorted.slices() | stdv::transform([](auto& s) { return s.angles[1]; }),
+        //              astigmatism_value2.span,
+        //              "/dls/ebic/data/staff-scratch/thomas2/tmp/10164/TS_03/003/astig.txt");
+        // save_plot_xy(metadata_sorted.slices() | stdv::transform([](auto& s) { return s.angles[1]; }),
+        //      astigmatism_angle2.span,
+        //      "/dls/ebic/data/staff-scratch/thomas2/tmp/10164/TS_03/003/angles.txt");
+        //
+        // run_optimization(NLOPT_GD_STOGO, 40, {
+        //     .tilt =  options.fit_tilt ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
+        //     .pitch = options.fit_pitch ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
+        //     .phase_shift = options.fit_phase_shift ? noa::deg2rad(Vec{-20., 20.}) : Vec{0., 0.},
+        //     .defocus = Vec{-0.3, 0.3},
+        //     .astigmatism_value = {-0.15, 0.15},
+        //     .astigmatism_angle = {-noa::deg2rad(45.), noa::deg2rad(45.)},
+        // });
+        //
+        // save_plot_xy(
+        //     metadata | stdv::transform([](auto& s) { return s.angles[1]; }),
+        //     metadata | stdv::transform([](auto& s) { return s.defocus.value; }),
+        //     options.output_directory / "defocus_fit.txt", {
+        //         .title = "Per-tilt defocus",
+        //         .x_name = "Tilts (degrees)",
+        //         .y_name = "Defocus (μm)",
+        //         .label = "Defocus - Astig fit",
+        //     });
+        //
+        // save_plot_xy(metadata_sorted.slices() | stdv::transform([](auto& s) { return s.angles[1]; }),
+        //              astigmatism_value2.span,
+        //              options.output_directory / "astigmatism_values.txt");
+        // save_plot_xy(metadata_sorted.slices() | stdv::transform([](auto& s) { return s.angles[1]; }),
+        //              astigmatism_angle2.span,
+        //              options.output_directory / "astigmatism_angles.txt");
+        //
+        // Logger::info("stage_angles={::.2f}", final_angle_offsets);
 
         return;
 

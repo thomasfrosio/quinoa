@@ -45,6 +45,7 @@ namespace qn {
     public:
         [[nodiscard]] constexpr auto shape() const noexcept -> const shape_type& { return span.shape(); }
         [[nodiscard]] constexpr auto ssize() const noexcept -> i64 { return span.ssize(); }
+        [[nodiscard]] constexpr auto size() const noexcept -> size_t { return span.size(); }
 
         /// Updates the nodes of a given channel with the provided values.
         constexpr void update_from_span(const SpanContiguous<const_value_type, N>& values) noexcept {

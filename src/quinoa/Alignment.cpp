@@ -217,32 +217,16 @@ namespace qn {
         i64 patch_size = static_cast<i64>(std::round(parameters.patch_size_ang / spacing));
         patch_size = noa::fft::next_fast_size(noa::clamp(patch_size, 512, 1024)); // TODO Document 300 is unnecessary small?
 
-        // TODO allow maximum number of patch to limit memory usage, maybe by controlling the overlap?
-        auto grid = ctf::Grid(stack_loader.slice_shape(), patch_size, patch_size / 2);
-
-        // Resolution to fftfreq range.
-        // The patch is Fourier cropped to the integer frequency closest to the resolution.
-        const auto [fourier_cropped_size, fourier_cropped_fftfreq] = fourier_crop_to_resolution(
-            patch_size, spacing, parameters.resolution_range[1]);
-        const auto fftfreq_range = Vec{
-            resolution_to_fftfreq(spacing, parameters.resolution_range[0]),
-            fourier_cropped_fftfreq,
-        };
-        Logger::info(
-            "Patch maximum frequency range:\n"
-            "  resolution_range={::.3f}A\n"
-            "  fftfreq_range={::.5f}\n",
-            fftfreq_to_resolution(spacing, fftfreq_range),
-            fftfreq_range
-        );
-
         // The patches are Fourier cropped to fftfreq_range[1] and zero-padded to this size to increase the sampling.
         // At this point, we don't know what defocus to expect, but this should be enough to get us started and
         // remove aliasing in most cases.
         i64 patch_size_padded = noa::clamp(patch_size, 512, 1024);
 
+        // TODO allow maximum number of patch to limit memory usage, maybe by controlling the overlap?
+        auto grid = ctf::Grid(stack_loader.slice_shape(), patch_size, patch_size / 2);
+
         // Load and process images in the same order they were collected.
-        metadata.sort("absolute_tilt").reset_indices();
+        metadata.sort("time").reset_indices();
 
         // If the exposure of the first image is significantly higher than the second and third, it may also
         // be collected at a much lower defocus (see TYGRESS-like schemes), so keep track of this.
@@ -274,10 +258,11 @@ namespace qn {
                    s.index >= parameters.n_images_in_initial_average;
         });
         auto patches = ctf::Patches::from_stack(
-            stack_loader, metadata_initial, grid, fourier_cropped_size, patch_size_padded);
+            stack_loader, metadata_initial, grid, parameters.resolution_range,
+            patch_size, patch_size_padded, patch_size
+        );
         auto fitting_range = ctf::initial_fit(
             grid, patches, metadata_initial, ctf, {
-                .fftfreq_range = fftfreq_range,
                 .n_slices_to_average = parameters.n_images_in_initial_average,
                 .fit_phase_shift = parameters.fit_phase_shift,
                 .output_directory = parameters.output_directory,
@@ -285,21 +270,22 @@ namespace qn {
 
         // Now that we have an idea of the defocus range within the stack, we can compute a size that should be
         // big enough to prevent any aliasing of the CTF. Extract the entire stack and sample the patches at that size.
-        i64 aliasing_free_size = ctf::aliasing_free_size(ctf, fftfreq_range); // FIXME average vs max defocus, add +0.5
+        i64 aliasing_free_size = ctf::aliasing_free_size(ctf, patches.rho_vec()); // FIXME average vs max defocus, add +0.5
         patch_size_padded = noa::clamp(aliasing_free_size, patch_size, 1280);
         patch_size_padded = noa::fft::next_fast_size(patch_size_padded);
         Logger::trace("aliasing_free_size={} -> patch_size_padded={}", aliasing_free_size, patch_size_padded);
 
-        // grid = ctf::Grid(stack_loader.slice_shape(), patch_size, static_cast<i64>(std::round(static_cast<f64>(patch_size) * 0.77)));
         patches = ctf::Patches{}; // erase initial patches
-        patches = ctf::Patches::from_stack(stack_loader, metadata, grid, fourier_cropped_size, patch_size_padded);
+        patches = ctf::Patches::from_stack(
+            stack_loader, metadata, grid, parameters.resolution_range,
+            patch_size, patch_size_padded, patch_size
+        );
 
         // Run the coarse CTF alignment.
         // This is a simple alignment of the patches near the tilt-axis to get initial per-image estimates of the
         // defocus, and check that the defocus ramp matches the tilt geometry.
         ctf::coarse_fit(
             grid, patches, ctf, metadata, { // ctf.defocus|phase_shift and metadata.defocus|phase_shift are updated
-                .fftfreq_range = fftfreq_range,
                 .initial_fitting_range = fitting_range,
                 .first_image_has_higher_exposure = first_image_has_higher_exposure,
                 .fit_phase_shift = parameters.fit_phase_shift,
@@ -311,7 +297,7 @@ namespace qn {
         // Get the stage angles (mostly tilt and pitch), accurate per-image astigmatic defocus
         // and time-resolve phase-shift.
         ctf::refine_fit(
-            metadata, grid, patches, fftfreq_range, ctf, {
+            metadata, grid, patches, ctf, {
                 .fit_rotation = parameters.fit_rotation,
                 .fit_tilt = parameters.fit_tilt,
                 .fit_pitch = parameters.fit_pitch,
