@@ -154,7 +154,7 @@ namespace qn {
             if (m_cache_lines.empty())
                 return std::nullopt;
 
-            const auto cache = m_cache_input.view().subregion(ni::FullExtent{}, 0, 0, ni::FullExtent{});
+            const auto cache = m_cache_input.view().subregion(ni::Full{}, 0, 0, ni::Full{});
 
             // If the caller passes the gradients, we need a record with the gradients too.
             const bool requires_gradients = gradients != nullptr;
@@ -168,7 +168,7 @@ namespace qn {
                     continue;
 
                 // Check this cache line.
-                const Span cache_line_input = cache.subregion(line).span_1d_contiguous();
+                const Span cache_line_input = cache.subregion(line).span_1d();
                 bool success{true};
                 for (i64 parameter = 0; parameter < n_parameters(); ++parameter) {
                     if (not noa::allclose<4>(cache_line_input[parameter], input[parameter], epsilon)) {
@@ -196,8 +196,8 @@ namespace qn {
             // We have a match. Set the recorded gradients and return recorded value.
             if (gradients) {
                 const auto cache_line_gradient = m_cache_input.view()
-                    .subregion(successful_line, 0, 1, ni::FullExtent{})
-                    .span_1d_contiguous();
+                    .subregion(successful_line, 0, 1, ni::Full{})
+                    .span_1d();
                 for (i64 i = 0; i < cache_line_gradient.ssize(); ++i)
                     gradients[i] = cache_line_gradient[i];
             }
@@ -213,15 +213,15 @@ namespace qn {
             m_circular_index = (m_circular_index + 1) % resolution();
 
             const Span cache_line_input = m_cache_input.view()
-                .subregion(m_circular_index, 0, 0, ni::FullExtent{})
-                .span_1d_contiguous();
+                .subregion(m_circular_index, 0, 0, ni::Full{})
+                .span_1d();
             for (i64 i = 0; i < cache_line_input.ssize(); ++i)
                 cache_line_input[i] = inputs[i];
 
             if (gradients) {
                 const Span cache_line_gradient = m_cache_input.view()
-                    .subregion(m_circular_index, 0, 1, ni::FullExtent{})
-                    .span_1d_contiguous();
+                    .subregion(m_circular_index, 0, 1, ni::Full{})
+                    .span_1d();
                 for (i64 i = 0; i < cache_line_gradient.ssize(); ++i)
                     cache_line_gradient[i] = gradients[i];
             }

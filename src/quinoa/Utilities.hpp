@@ -1,150 +1,20 @@
 #pragma once
 
-#include <noa/IO.hpp>
-#include <noa/FFT.hpp>
-#include <noa/Utils.hpp>
-
-#include "quinoa/Metadata.hpp"
-#include "quinoa/Logger.hpp"
+#include <omp.h>
 #include "quinoa/Types.hpp"
 
-namespace qn::details {
-    auto has_plot_file_uuid(const Path& path) -> bool;
-}
+// noa is quite inflexible when it comes to including its headers in C++-only files.
+// At the moment, it checks and enforces that if it is built with CUDA and the header has CUDA code,
+// it must be compiled as a CUDA-C++ file. This is quite sensible as it helps users to correctly compile
+// their code, but in this case having an option to turn off the CUDA section of the headers would be nice.
+// For now though, this works fine.
+
+#ifndef QN_INCLUDE_CPU_ONLY
+#include <noa/FFT.hpp>
+#include <noa/Geometry.hpp>
+#endif
 
 namespace qn {
-    template<typename Real>
-    void save_vector_to_text(View<Real> x, const Path& filename) {
-        check(noa::indexing::is_contiguous_vector_batched_strided(x));
-
-        // Make sure it is dereferenceable and ready to read.
-        Array<std::remove_const_t<Real>> x_cpu;
-        if (not x.is_dereferenceable()) {
-            x_cpu = x.to_cpu();
-            x = x_cpu.view();
-        }
-        x.eval();
-
-        std::string format;
-        for (auto i : noa::irange(x.shape().batch()))
-            format += fmt::format("{}\n", fmt::join(x.subregion(i).span_1d(), ","));
-        noa::write_text(format, filename);
-    }
-
-    struct SavePlotXYOptions {
-        /// Name of the plot and axes.
-        /// Leaving them empty is also valid.
-        /// These are ignored when appending a plot.
-        std::string title{};
-        std::string x_name{};
-        std::string y_name{};
-
-        /// Label associated of the saved points/curve.
-        /// If the final plot has no labels, a default sequence [0,n) is used.
-        std::string label{};
-
-        /// Whether the plot should be appended.
-        /// Appending only works within the same run (see uuid).
-        /// Rerunning the program will overwrite existing files (a backup will be saved).
-        bool append{true};
-    };
-
-    /// Saves x-y values for plotting.
-    /// \param x        x-values. Arange, Linspace, or a 1d range (e.g. std::span).
-    /// \param y        y-values. A 1d range (e.g. std::span) or a batched range (e.g. View, Array, or Span).
-    /// \param path     File path where to store the values.
-    /// \param options  Plot options.
-    template<typename T = noa::Arange<f64>, typename U>
-    void save_plot_xy(
-        const T& x,
-        const U& y,
-        const Path& path,
-        const SavePlotXYOptions& options = {}
-    ) {
-        const bool has_uuid = details::has_plot_file_uuid(path);
-        const bool append = options.append and has_uuid;
-        auto text_file = noa::io::OutputTextFile(path, noa::io::Open{
-            .write = true,
-            .append = append,
-            .backup = not append,
-        });
-
-        if (not append) {
-            text_file.write(
-                fmt::format("uuid={}\ntitle={}\nxname={}\nyname={}\n\n",
-                            Logger::s_uuid, options.title, options.x_name, options.y_name));
-        }
-
-        auto print_span = []<typename S>(const S& span) -> std::string {
-            if constexpr (nt::varray<S> or nt::span_nd<S, 4, 3, 2>) {
-                // Convert to a contiguous 2d span.
-                constexpr size_t N = S::SIZE;
-                auto new_shape = Shape<i64, N>::from_value(1);
-                new_shape[0] = span.shape()[0];
-                new_shape[N - 1] = -1;
-                auto spand_2d = span.span().reshape(new_shape).filter(0, N - 1).as_contiguous();
-
-                std::string fmt{};
-                for (auto i: noa::irange(spand_2d.shape()[0]))
-                    fmt += fmt::format("{};", fmt::join(spand_2d[i], ","));
-                fmt.at(fmt.size() - 1) = '\n';
-                return fmt;
-            } else {
-                return fmt::format("{}\n", fmt::join(span, ","));
-            }
-        };
-
-        if constexpr (nt::any_of<T, noa::Arange<f32>, noa::Arange<f64>>) {
-            text_file.write("type=arange\n");
-            text_file.write(fmt::format("label={}\n", options.label));
-            text_file.write(fmt::format("x={},{}\n", x.start, x.step));
-        } else if constexpr (nt::any_of<T, noa::Linspace<f32>, noa::Linspace<f64>>) {
-            text_file.write("type=linspace\n");
-            text_file.write(fmt::format("label={}\n", options.label));
-            text_file.write(fmt::format("x={},{},{}\n", x.start, x.stop, x.endpoint));
-        } else {
-            text_file.write("type=scatter\n");
-            text_file.write(fmt::format("label={}\n", options.label));
-            text_file.write(fmt::format("x={}\n", fmt::join(x, ",")));
-        }
-        text_file.write(fmt::format("y={}\n\n", print_span(y)));
-        Logger::trace("{} {}", path, append ? "appended" : "saved");
-    }
-
-    struct SavePlotShiftsOptions {
-        std::string title{};
-        std::string label{};
-        bool append{true};
-    };
-
-    ///
-    inline void save_plot_shifts(
-        const MetadataStack& metadata,
-        const Path& path,
-        const SavePlotShiftsOptions& options = {}
-    ) {
-        const bool has_uuid = details::has_plot_file_uuid(path);
-        const bool append = options.append and has_uuid;
-        auto text_file = noa::io::OutputTextFile(path, noa::io::Open{
-            .write = true,
-            .append = append,
-            .backup = not append,
-        });
-
-        if (not append) {
-            text_file.write(fmt::format("uuid={}\ntitle={}\nxname=x-shifts (pixels)\nyname=y-shifts (pixels)\n\n",
-                Logger::s_uuid, options.title));
-        }
-
-        text_file.write("type=scatter-shifts\n");
-        text_file.write(fmt::format("label={}\n", options.label));
-        text_file.write(fmt::format("indices={}\n", fmt::join(metadata | stdv::transform([](auto& slice){ return slice.index; }), ",")));
-        text_file.write(fmt::format("tilts={:.2f}\n", fmt::join(metadata | stdv::transform([](auto& slice){ return slice.angles[1]; }), ",")));
-        text_file.write(fmt::format("x={:.5f}\n", fmt::join(metadata | stdv::transform([](auto& slice){ return slice.shifts[0]; }), ",")));
-        text_file.write(fmt::format("y={:.5f}\n\n", fmt::join(metadata | stdv::transform([](auto& slice){ return slice.shifts[1]; }), ",")));
-        Logger::trace("{} {}", path, append ? "appended" : "saved");
-    }
-
     template<typename T>
     concept vec_or_real = nt::vec_real<T> or nt::real<T>;
 
@@ -158,6 +28,7 @@ namespace qn {
         return spacing / fftfreq;
     }
 
+#ifndef QN_INCLUDE_CPU_ONLY
     inline auto fourier_crop_to_resolution(i64 input_logical_size, f64 input_spacing, f64 target_resolution, bool fast_size) {
         const f64 input_size = static_cast<f64>(input_logical_size);
         const f64 target_spacing = target_resolution / 2;
@@ -176,16 +47,137 @@ namespace qn {
 
         return Pair{final_size, final_fftfreq};
     }
+#endif
 
     /// Given a spectrum size and fftfreq-range, return the index, and its corresponding fftfreq, closest to the target fftfreq.
     inline auto nearest_integer_fftfreq(
         i64 spectrum_size,
         const Vec<f64, 2>& fftfreq_range,
-        f64 target_fftfreq
+        f64 target_fftfreq,
+        bool clamp = false
     ) {
-        const auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum_size - 1);
+        const auto last_index = static_cast<f64>(spectrum_size - 1);
+        const auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / last_index;
         auto frequency = std::round((target_fftfreq - fftfreq_range[0]) / fftfreq_step);
+        if (clamp)
+            frequency = std::clamp(frequency, 0., last_index);
         const auto actual_fftfreq = frequency * fftfreq_step + fftfreq_range[0];
         return Pair{static_cast<i64>(frequency), actual_fftfreq};
     }
+
+    void parallel_for(i32 n_threads, i64 size, auto&& func) {
+        #pragma omp parallel for num_threads(n_threads)
+        for (i64 c = 0; c < size; ++c) {
+            func(omp_get_thread_num(), c);
+        }
+    }
+
+    constexpr auto effective_thickness(f64 thickness, const Vec<f64, 3>& stage_angles) {
+        const f64 scaling = (
+            ng::rotate_y(noa::deg2rad(stage_angles[1])) *
+            ng::rotate_x(noa::deg2rad(stage_angles[2]))
+        )[0][0];
+        return thickness / scaling;
+    }
+
+    struct GaussianSlider {
+        /// Normalized coordinates of the Gaussian peak.
+        /// [0,1] is the input range, but out-of-range coordinates are valid.
+        f64 peak_coordinate{0};
+
+        /// Value of the Gaussian peak, at peak_coordinate.
+        f64 peak_value{1};
+
+        /// Normalized width of the half-Gaussian curve.
+        /// [0,1] is the input range, but out-of-range coordinates are valid.
+        f64 base_width{1};
+
+        /// Value of the Gaussian at peak_coordinate.
+        f64 base_value{1e-6};
+    };
+
+    struct ALSSOptions {
+        GaussianSlider smoothing{};
+
+        /// Asymmetric penalty. 0.5 means no bias towards values higher or lower the baseline.
+        f64 asymmetric_penalty = 0.5;
+
+        /// Maximum number of maximum iterations.
+        i32 max_iter = 100;
+
+        /// Convergence criterium, ie diff tolerance between weights
+        f64 tol = 1e-6;
+
+        /// Relaxation factor. Smooths the step of the new weight.
+        /// 1 means no relaxation, i.e. new weights are assigned to p or 1-p.
+        f64 relaxation = 1.0;
+    };
+
+    /// Compute the baseline of the spectrum.
+    template<nt::any_of<f32, f64> T>
+    void asymmetric_least_squares_smoothing(
+        SpanContiguous<const T> spectrum,
+        SpanContiguous<f64> baseline,
+        const ALSSOptions& options
+    );
+
+    void interpolating_uniform_cubic_spline(
+        SpanContiguous<const f64> a,
+        SpanContiguous<f64> b,
+        SpanContiguous<f64> c,
+        SpanContiguous<f64> d
+    );
+
+    struct FindBestPeakOptions {
+        f64 distortion_angle_deg{0};
+        f64 max_shift_percent{-1};
+    };
+
+    /// Finds the coordinates (relative to the input center) of the best peak.
+    auto find_best_peak(const SpanContiguous<const f32, 2>& xmap_centered) -> Vec<f64, 2>;
+
+#ifndef QN_INCLUDE_CPU_ONLY
+    template<noa::Remap REMAP> requires (REMAP.is_fc2xx())
+    auto find_shift(
+        const View<f32>& xmap,
+        const View<f32>& xmap_centered,
+        const FindBestPeakOptions& options = {}
+    ) -> Vec<f64, 2> {
+        check(xmap.shape().batch() == 1 and xmap_centered.shape().batch() == 1);
+        const auto xmap_shape_2d = xmap.shape().filter(2, 3);
+        const auto xmap_center = (xmap_shape_2d.vec / 2).as<f64>();
+        const auto xmap_centered_center = (xmap_centered.shape().filter(2, 3).vec / 2).as<f64>();
+        const auto distortion_angle = noa::deg2rad(options.distortion_angle_deg);
+
+        // Get the highest peak within the allowed lag.
+        auto [peak_indices, _] = ns::cross_correlation_peak_2d<"fc2fc">(xmap, {
+            .registration_radius = Vec<i64, 2>{0, 0}, // turn off the registration
+            .maximum_lag = Vec<f64, 2>::from_value(noa::min(xmap_center) * options.max_shift_percent),
+        });
+
+        // Due to the difference in tilt, the cross-correlation map can be distorted orthogonal to the tilt-axis.
+        // To improve the accuracy of the subpixel registration, correct the tilt-axis to have the distortion along x.
+        // Since the actual peak is close to argmax, focus on (and only render) a small subregion around argmax.
+        const auto rotate_xmap =
+            ng::translate(xmap_center) *
+            ng::linear2affine(ng::rotate(-distortion_angle)) *
+            ng::translate(-xmap_center);
+        peak_indices = (rotate_xmap * peak_indices.push_back(1)).pop_back();
+
+        const auto rotate_and_center_peak = (
+            ng::translate(xmap_center - peak_indices + xmap_centered_center) *
+            ng::linear2affine(ng::rotate(-distortion_angle)) *
+            ng::translate(-xmap_center)
+        ).inverse();
+        ng::transform_2d(xmap, xmap_centered, rotate_and_center_peak, {.interp = noa::Interp::LINEAR});
+
+        // Get the peak and rotate back to the original xmap reference-frame.
+        const auto peak_offset = find_best_peak(xmap_centered.reinterpret_as_cpu().span<const f32, 2>().as_contiguous());
+        const auto peak_coordinate = (rotate_xmap.inverse() * (peak_indices + peak_offset).push_back(1)).pop_back();
+        auto shift = peak_coordinate - xmap_center;
+
+        // Given cross_correlation_map(lhs, rhs, xmap), this should be subtracted to the lhs to align it onto the rhs.
+        return shift;
+    }
+#endif
 }

@@ -24,6 +24,7 @@ namespace {
             "files.stack_file"sv,
             "files.output_directory"sv,
             "files.frames_directory"sv,
+            "files.csv_file"sv,
             "experiment.tilt_axis"sv,
             "experiment.specimen_tilt"sv,
             "experiment.specimen_pitch"sv,
@@ -31,6 +32,7 @@ namespace {
             "experiment.amplitude"sv,
             "experiment.cs"sv,
             "experiment.phase_shift"sv,
+            "experiment.thickness"sv,
             "preprocessing.run"sv,
             "preprocessing.exclude_blank_views"sv,
             "preprocessing.exclude_stack_images"sv,
@@ -43,7 +45,9 @@ namespace {
             "alignment.ctf.fit_pitch"sv,
             "alignment.ctf.fit_phase_shift"sv,
             "alignment.ctf.fit_astigmatism"sv,
+            "alignment.ctf.fit_thickness"sv,
             "alignment.refine.run"sv,
+            "alignment.refine.fit_thickness"sv,
             "postprocessing.run"sv,
             "postprocessing.resolution"sv,
             "postprocessing.save_aligned_stack"sv,
@@ -139,6 +143,7 @@ namespace {
         experiment.specimen_tilt = parse_number_("experiment.specimen_tilt", table, UNSPECIFIED_VALUE);
         experiment.specimen_pitch = parse_number_("experiment.specimen_pitch", table, UNSPECIFIED_VALUE);
         experiment.phase_shift = parse_number_("experiment.phase_shift", table, UNSPECIFIED_VALUE);
+        experiment.thickness = parse_number_("experiment.thickness", table, UNSPECIFIED_VALUE);
 
         check(noa::allclose(UNSPECIFIED_VALUE, experiment.specimen_tilt) or
               std::abs(experiment.specimen_tilt) < 40,
@@ -152,6 +157,10 @@ namespace {
               (experiment.phase_shift >= 0 and experiment.phase_shift <= 150),
               "experiment.phase_shift={} (degrees). Should be between 0 and 150 degrees.",
               experiment.phase_shift);
+        check(noa::allclose(UNSPECIFIED_VALUE, experiment.thickness) or
+              (experiment.thickness >= 40 and experiment.thickness <= 550),
+              "experiment.thickness={} (nm). Should be between 40nm and 550 nm.",
+              experiment.thickness);
 
         experiment.voltage = parse_number_("experiment.voltage", table, 300.);
         experiment.amplitude = parse_number_("experiment.amplitude", table, 0.07);
@@ -208,8 +217,10 @@ namespace {
         alignment.ctf_fit_pitch = parse_boolean_("alignment.ctf.fit_pitch", table, true);
         alignment.ctf_fit_phase_shift = parse_boolean_("alignment.ctf.fit_phase_shift", table, false);
         alignment.ctf_fit_astigmatism = parse_boolean_("alignment.ctf.fit_astigmatism", table, true);
+        alignment.ctf_fit_thickness = parse_boolean_("alignment.ctf.fit_thickness", table, false);
 
         alignment.refine_run = parse_boolean_("alignment.refine.run", table, true);
+        alignment.refine_fit_thickness = parse_boolean_("alignment.refine.fit_thickness", table, true);
 
         return alignment;
     }

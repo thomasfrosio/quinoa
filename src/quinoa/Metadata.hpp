@@ -22,14 +22,14 @@ namespace qn {
         using time_type = std::chrono::time_point<std::chrono::system_clock, std::chrono::seconds>;
 
     public:
-        i32 index{};            // Index [0, N) of the slice in the array.
-        i32 index_file{};       // Index [0, N) of the slice in the original file.
-        Vec<f64, 3> angles{};   // Euler angles, in degrees, of the slice. ZYX extrinsic (rotation, tilt, pitch)
-        Vec<f64, 2> shifts{};   // YX shifts, in pixels, of the slice.
-        Vec<f64, 2> exposure{}; // Pre- and post-exposure, in e-/A2.
-        f64 phase_shift{};      // Phase shift, in radians.
-        defocus_type defocus{}; // Astigmatic defocus.
-        i64 time{};             // Collection time-point.
+        i32 index{};                // Index [0, N) of the slice in the array.
+        i32 index_file{};           // Index [0, N) of the slice in the original file.
+        Vec<f64, 3> angles{};       // Euler angles, in degrees, of the slice. ZYX extrinsic (rotation, tilt, pitch)
+        Vec<f64, 2> shifts{};       // YX shifts, in pixels, of the slice.
+        Vec<f64, 2> exposure{};     // Pre- and post-exposure, in e-/A2.
+        f64 phase_shift{};          // Phase shift, in radians.
+        defocus_type defocus{};     // Astigmatic defocus.
+        i64 time{};                 // Collection time-point.
 
     public:
         /// Convert the angle (in degrees) to the [-180,180] degrees range.
@@ -127,8 +127,10 @@ namespace qn {
             return *this;
         }
 
-        /// Shift the sample by a given amount.
-        auto add_global_shift(const Vec<f64, 3>& global_shift) -> MetadataStack& {
+        /// Shift the volume space (aka volume reference frame) by the given amount.
+        /// Importantly, this results in moving the field-of-view by the given amount,
+        /// so for instance, to move the specimen up in Z by x, -x should be passed here.
+        auto add_volume_shift(const Vec<f64, 3>& shift) -> MetadataStack& {
             for (auto& slice: slices()) {
                 // Go from volume->image space.
                 const auto angles = noa::deg2rad(slice.angles);
@@ -137,19 +139,13 @@ namespace qn {
                     ng::rotate_y(+angles[1]) *
                     ng::rotate_x(+angles[2])
                 ).pop_front(); // project along z
-                slice.shifts += volume2image * global_shift;
+                slice.shifts += volume2image * shift;
             }
             return *this;
         }
 
-        auto add_global_shift(const Vec<f64, 2>& global_shift) -> MetadataStack& {
-            return add_global_shift(global_shift.push_front(0));
-        }
-
-        auto add_global_angles(const Vec<f64, 3>& global_angles) -> MetadataStack& {
-            for (auto& slice: slices())
-                slice.angles = MetadataSlice::to_angle_range(slice.angles + global_angles);
-            return *this;
+        auto add_volume_shift(const Vec<f64, 2>& global_shift) -> MetadataStack& {
+            return add_volume_shift(global_shift.push_front(0));
         }
 
         auto rescale_shifts(const Vec<f64, 2>& current_spacing, const Vec<f64, 2>& desired_spacing) -> MetadataStack& {
@@ -162,20 +158,26 @@ namespace qn {
         /// Move the average shift to 0.
         auto center_shifts() -> MetadataStack& {
             Vec<f64, 2> mean{};
-            // Compute the average shift in volume space...
+            // Compute the average shift in volume space.
             for (auto& slice: slices()) {
                 const auto angles = noa::deg2rad(slice.angles);
-                const auto image2volume = (
-                    ng::rotate_x(-angles[2]) *
-                    ng::rotate_y(-angles[1]) *
-                    ng::rotate_z(-angles[0])
-                ).pop_front(); // project along z
-                mean += image2volume * slice.shifts.push_front(0);
+                auto scale_image2volume = (
+                    ng::scale(1 / noa::cos(angles.filter(2, 1))) *
+                    ng::rotate(-angles[0])
+                );
+                mean += scale_image2volume * slice.shifts;
             }
             mean /= static_cast<f64>(size());
+            return add_volume_shift(-mean);
+        }
 
-            // Then center the volume onto that point.
-            return add_global_shift(-mean);
+        /// Add the given angles (in degrees) to all images.
+        /// The backward projection creates an inverse relationship between volume and image space.
+        /// To tilt/pitch the volume by an angle x, the angle -x should be added to the images.
+        auto add_image_angles(const Vec<f64, 3>& angles) -> MetadataStack& {
+            for (auto& slice: slices())
+                slice.angles = MetadataSlice::to_angle_range(slice.angles + angles);
+            return *this;
         }
 
     public: // Getters

@@ -1,10 +1,7 @@
 #pragma once
 
-#include <numeric>
-
 #include <noa/Array.hpp>
 #include <noa/Signal.hpp>
-#include <noa/Session.hpp>
 
 #include "quinoa/CommonArea.hpp"
 #include "quinoa/Logger.hpp"
@@ -16,7 +13,6 @@ namespace qn {
         ns::Bandpass bandpass{0, 0, 0.5, 0};
         noa::Interp interp{noa::Interp::LINEAR_FAST};
         Path output_directory;
-        Path debug_directory;
 
         bool cosine_stretch{};
         bool area_match{};
@@ -48,16 +44,10 @@ namespace qn {
             const PairwiseShiftParameters& parameters
         ) const -> Vec2<f64>;
 
-        static auto relative2global_shifts_(
-            const std::vector<Vec2<f64>>& relative_shifts,
-            const MetadataStack& metadata,
-            i64 index_lowest_tilt,
-            bool cosine_stretch
-        ) -> Pair<std::vector<Vec<f64, 2>>, Vec<f64, 2>>;
-
     private:
-        noa::Array<c32> m_buffer_rfft;
-        noa::Array<f32> m_xmap;
+        Array<c32> m_buffer_rfft; // (3,1,h,w/2+1)
+        Array<f32> m_xmap; // (1,1,h,w)
+        Array<f32> m_xmap_centered; // (1,1,64,64)
         CommonArea m_common_area;
     };
 }

@@ -122,11 +122,11 @@ namespace qn {
                   "Shapes don't match");
 
             const auto smoothness = smooth_edge(smooth_edge_percent);
-            ng::draw_shape(input, output, ng::Rectangle{
+            ng::draw(input, output, ng::Rectangle{
                 .center = center(),
                 .radius = radius() - smoothness,
                 .smoothness = smoothness,
-            }, std::forward<Matrices>(inverse_transforms));
+            }.draw<f32>(), std::forward<Matrices>(inverse_transforms));
         }
 
         void mask(

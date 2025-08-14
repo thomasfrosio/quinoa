@@ -130,9 +130,9 @@ namespace qn {
         options.files.frames = std::move(frames);
 
         // Overwrite the mdoc with the CSV file (a serialized version of the metadata) if it exists.
-        // Note: The CSV file is mostly used for debugging, when we want to take a snapshot of the program
-        //       and start again. Using the CSV file from a previous run with different experiment settings,
-        //       like the voltage, may not give the expected results.
+        // Note: The CSV file is mostly used for debugging when we want to take a snapshot of the program
+        //       and start again. Using the CSV file from a previous run with different experiment settings
+        //       may not give the expected results.
         if (not options.files.csv_file.empty()) {
             Logger::info("Loading metadata from CSV file {}.", options.files.csv_file);
             metadata = load_from_csv(options.files.csv_file);

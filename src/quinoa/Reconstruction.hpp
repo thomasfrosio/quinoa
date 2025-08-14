@@ -14,7 +14,7 @@ namespace qn {
         std::string weighting;
         f64 z_padding_percent;
         i64 cube_size;
-        Path debug_directory;
+        Path output_directory;
     };
 
     /// Tomogram reconstruction using direct Fourier insertion of small cubes (ala Warp).
@@ -25,6 +25,7 @@ namespace qn {
         const View<f32>& stack,
         const Vec<f64, 2>& stack_spacing,
         const MetadataStack& metadata,
+        const ns::CTFIsotropic<f64>& ctf,
         const TomogramReconstructionParameters& parameters
     ) -> Array<f32>;
 }

@@ -1,7 +1,8 @@
-#include "quinoa/ExcludeViews.hpp"
-
 #include <noa/Array.hpp>
 #include <noa/Geometry.hpp>
+
+#include "quinoa/ExcludeViews.hpp"
+#include "quinoa/Plot.hpp"
 
 namespace {
     using namespace qn;

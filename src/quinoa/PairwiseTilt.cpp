@@ -3,7 +3,7 @@
 #include "quinoa/Metadata.hpp"
 #include "quinoa/PairwiseTilt.hpp"
 #include "quinoa/Types.hpp"
-#include "quinoa/Utilities.hpp"
+#include "quinoa/Plot.hpp"
 
 #include <noa/Geometry.hpp>
 #include <noa/Signal.hpp>
@@ -154,7 +154,7 @@ namespace qn {
             .step = options.grid_search_step,
         }).for_each([&](f64 offset) {
             auto i_metadata = metadata_sorted;
-            i_metadata.add_global_angles({0, offset, 0});
+            i_metadata.add_image_angles({0, offset, 0});
             const auto ncc = ncc_(stack.view(), i_metadata);
             if (ncc > best_ncc) {
                 best_ncc = ncc;
@@ -165,7 +165,7 @@ namespace qn {
 
         // Save the offset.
         tilt_offset += best_tilt_offset;
-        metadata.add_global_angles({0, best_tilt_offset, 0});
+        metadata.add_image_angles({0, best_tilt_offset, 0});
         Logger::info("tilt_offset={:.3f} ({:+.3f}) degrees (ncc={:.4f})", tilt_offset, best_tilt_offset, best_ncc);
 
         save_plot_xy(

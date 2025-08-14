@@ -56,6 +56,7 @@ target_link_libraries(quinoa
     nlopt
     cxxopts::cxxopts
     tomlplusplus::tomlplusplus
+    Eigen3::Eigen
 )
 
 # In CUDA, allow extended lambdas. We use this feature in a few places.

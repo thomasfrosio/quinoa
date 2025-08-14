@@ -30,6 +30,7 @@ namespace qn {
             f64 amplitude{};
             f64 cs{};
             f64 phase_shift{};
+            f64 thickness{};
         } experiment;
 
         struct Preprocessing {
@@ -50,8 +51,10 @@ namespace qn {
             bool ctf_fit_pitch{};
             bool ctf_fit_phase_shift{};
             bool ctf_fit_astigmatism{};
+            bool ctf_fit_thickness{};
 
             bool refine_run{};
+            bool refine_fit_thickness{};
         } alignment;
 
         struct PostProcessing {

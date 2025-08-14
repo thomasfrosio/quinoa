@@ -1,11 +1,30 @@
 #pragma once
 
-#include <noa/Array.hpp>
 #include <noa/core/Interpolation.hpp>
 #include <noa/Utils.hpp>
 
 #include "quinoa/Types.hpp"
-#include "quinoa/Optimizer.hpp"
+
+namespace qn::guts {
+    template<typename T, size_t N>
+    struct SplineGridSpanLike {
+        Shape<i64, N> m_shape;
+        Vec<i64, N> m_node_index;
+
+        SplineGridSpanLike(Shape<i64, N> shape, Vec<i64, N> node_index) : m_shape{shape}, m_node_index{node_index} {}
+
+        constexpr auto shape() const -> const Shape<i64, N>& { return m_shape; }
+        constexpr auto ssize() const -> i64 { return m_shape.n_elements(); }
+
+        constexpr auto operator[](i64 index) const requires (N > 1) {
+            return SplineGridSpanLike(m_shape.filter(index), m_node_index.filter(index));
+        }
+
+        constexpr auto operator[](i64 index) const -> T requires (N == 1) {
+            return static_cast<T>(m_node_index[0] == index);
+        }
+    };
+}
 
 namespace qn {
     /// Cubic spline interpolation on multidimensional grids (only 1d and 2d are currently supported).
@@ -88,7 +107,7 @@ namespace qn {
             const Vec<i64, N>& node_index,
             const Shape<i64, N>& shape
         ) noexcept -> T {
-            check(ni::is_inbounds(shape, node_index));
+            check(ni::is_inbound(shape, node_index));
 
             if (shape.n_elements() == 1)
                 return 1;
@@ -97,10 +116,13 @@ namespace qn {
             if constexpr (N == 2) {
                 if (noa::any(shape == 1)) {
                     const auto dim = static_cast<i32>(shape[0] == 1);
-                    return weight_at_(normalized_coordinate.filter(dim), node_index.filter(dim), shape.filter(dim).vec);
+                    auto data = guts::SplineGridSpanLike<weight_type, 1>(shape.filter(dim), node_index.filter(dim));
+                    return weight_at_(normalized_coordinate.filter(dim), data);
                 }
             }
-            return weight_at_(normalized_coordinate, node_index, shape.vec);
+
+            auto data = guts::SplineGridSpanLike<weight_type, N>(shape, node_index);
+            return interpolate_at_(normalized_coordinate, data);
         }
 
         [[nodiscard]] constexpr auto weight_at(
@@ -161,12 +183,12 @@ namespace qn {
         // Get the value at a given index. The index must be within [-1, size].
         // If the index is out of bound, i.e. equal to -1 or size, the value
         // is extrapolated using the local gradient.
-        template<size_t S>
+        template<typename U, size_t S>
         static constexpr auto get_values_or_extrapolate_(
-            SpanContiguous<const_value_type, S> data,
+            U&& data,
             Vec<Vec<i64, 4>, S> indices
         ) noexcept {
-            auto get = [](SpanContiguous<const_value_type, 1> span, i64 index) {
+            auto get = [](const auto& span, i64 index) {
                 if (index == -1) {
                     // i(0)=5, i(1)=7 -> i(-1)=3
                     // i(0)=7, i(1)=5 -> i(-1)=9
@@ -220,10 +242,10 @@ namespace qn {
             }
         }
 
-        template<size_t S>
+        template<size_t S, typename U>
         static constexpr auto interpolate_at_(
             const Vec<f64, S>& normalized_coordinate,
-            const SpanContiguous<const_value_type, S> data
+            const U data
         ) {
             const Vec<i64, S> resolution = data.shape().vec;
             const Vec<f64, S> coordinates = denormalize_coordinates_(normalized_coordinate, resolution);
@@ -249,34 +271,6 @@ namespace qn {
                 static_assert(nt::always_false<T>);
             }
             return interpolant;
-        }
-
-        template<size_t S>
-        static constexpr auto weight_at_(
-            const Vec<f64, S>& normalized_coordinate,
-            const Vec<i64, S>& node_index,
-            const Vec<i64, S>& resolution
-        ) {
-            const Vec<coord_type, S> coordinates = denormalize_coordinates_(normalized_coordinate, resolution);
-            const Vec<cubic_indices_type, S> indices = coordinates_to_interp_indices_(coordinates, resolution);
-            const Vec<coord_type, S> fraction = coordinates_to_interp_fraction_(coordinates, indices);
-            const Vec<Vec<f64, S>, 4> weights = noa::interpolation_weights<INTERP, Vec<f64, S>>(fraction);
-
-            if constexpr (S == 1) {
-                for (i32 i = 0; i < 4; ++i)
-                    if (indices[0][i] == node_index[0])
-                        return weights[i][0];
-            } else if constexpr (S == 2) {
-                for (i32 i = 0; i < 4; ++i)
-                    for (i32 j = 0; j < 4; ++j)
-                        if (indices[i] == node_index[i] and indices[j] == node_index[j])
-                            return weights[i][0] + weights[j][1];
-            } else {
-                static_assert(nt::always_false<T>);
-            }
-
-            // The node does not affect the given coordinate.
-            return weight_type{};
         }
     };
 

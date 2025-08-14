@@ -2,6 +2,7 @@
 
 #include "quinoa/CTF.hpp"
 #include "quinoa/GridSearch.hpp"
+#include "quinoa/Plot.hpp"
 
 namespace {
     using namespace qn;
@@ -31,7 +32,7 @@ namespace {
         f64 rotation_offset,
         f64 fraction
     ) -> Array<f32> { // (n,1,1,w)
-        const auto options_async = ArrayOption{.device = spectra.device(), .allocator = Allocator::ASYNC};
+        const auto device = spectra.device();
 
         // Get the patches that are near the tilt-axis.
         // 1. We assume the rotation is the same for all slices.
@@ -60,7 +61,9 @@ namespace {
                 "  n_selected={}",
                 maximum_distance, image_size, tmp.size()
             );
-            return View(std::data(tmp), std::ssize(tmp)).to(options_async).eval();
+            return View(std::data(tmp), std::ssize(tmp))
+                   .to({.device = device, .allocator = Allocator::ASYNC})
+                   .eval();
         }();
 
         // Reduce: (n,p,w) -> (n,1,w).
@@ -69,29 +72,20 @@ namespace {
         const i64 w = spectra.shape()[3];
 
         // For every slice, average the 1d spectra that are near the tilt-axis.
-        auto spectra_average = Array<f32>({n, 1, 1, w}, options_async);
+        auto spectra_average = Array<f32>({n, 1, 1, w}, {.device = device, .allocator = Allocator::MANAGED});
         noa::reduce_axes_iwise(
-            Shape{n, p, w}, spectra_average.device(),
+            Shape{n, p, w}, device,
             f32{0}, spectra_average.permute({2, 0, 1, 3}), AverageSpectrum{
                 .input = spectra.span().filter(0, 1, 3).as_contiguous(),
                 .indices = indices.span_1d(),
                 .norm = 1 / static_cast<f32>(std::ssize(indices)),
             });
 
-        // We expect a good amount of noise, so smooth it out.
-        // Use a gaussian kernel small enough to not destroy the peaks.
-        auto spectra_average_smoothed = Array<f32>({n, 1, 1, w}, spectra.options());
-        ns::convolve(
-           std::move(spectra_average), spectra_average_smoothed.view(),
-           ns::window_gaussian<f32>(7, 1.25, {.normalize = true}).to(options_async), // TODO better heuristic?
-           {.border = noa::Border::REFLECT}
-       );
-
         // The rest of the fitting is on the CPU, so sync and prefetch.
-        return spectra_average_smoothed.reinterpret_as_cpu();
+        return spectra_average.reinterpret_as_cpu();
     }
 
-    template<bool COARSE_BACKGROUND = true, nt::almost_any_of<Background, Empty> B = Empty>
+    template<nt::almost_any_of<Baseline, Empty> B = Empty>
     auto coarse_grid_search(
         SpanContiguous<const f32> spectrum,
         const Vec<f64, 2>& fftfreq_range,
@@ -99,7 +93,7 @@ namespace {
         ns::CTFIsotropic<f64>& ctf,
         const Vec<f64, 3>& phase_shift_range,
         const Vec<f64, 3>& defocus_range,
-        B&& background = B{}
+        B&& baseline = B{}
     ) -> f64 {
         f64 best_ncc{-1};
         Vec<f64, 2> best_values{};
@@ -107,10 +101,7 @@ namespace {
             .for_each([&](f64 phase_shift, f64 defocus) {
                 ctf.set_defocus(defocus);
                 ctf.set_phase_shift(phase_shift);
-                if constexpr (not nt::empty<B>)
-                    background.fit(spectrum, fftfreq_range, ctf);
-                const f64 ncc = normalized_cross_correlation<COARSE_BACKGROUND>(
-                    spectrum, ctf, fftfreq_range, fitting_range, background);
+                const f64 ncc = zero_normalized_cross_correlation(spectrum, ctf, fftfreq_range, fitting_range, baseline);
                 if (ncc > best_ncc) {
                     best_values = {defocus, phase_shift};
                     best_ncc = ncc;
@@ -122,7 +113,7 @@ namespace {
     }
 
     /// Refines the defocus (and phase-shift) of the input CTF with the fitting range.
-    /// When this function returns, the ctf is updated, as well as the fitting range.
+    /// When this function returns, the CTF is updated, as well as the fitting range.
     auto refine_grid_search(
         SpanContiguous<const f32> spectrum,
         const Vec<f64, 2>& fftfreq_range,
@@ -132,7 +123,8 @@ namespace {
         f64 initial_defocus_range,
         f64 initial_phase_shift_range
     ) -> f64 {
-        Background background{};
+        Baseline baseline{};
+        baseline.fit(spectrum, fftfreq_range, ctf);
 
         const auto defocus_offset = Vec{initial_defocus_range, 0.1};
         const auto defocus_step = Vec{0.02, 0.001};
@@ -153,9 +145,11 @@ namespace {
                 1.
             });
 
-            best_ncc = coarse_grid_search<false>(
-                spectrum, fftfreq_range, fitting_range, ctf, phase_shift_range, defocus_range, background);
-            fitting_range = background.fit_and_tune_fitting_range(spectrum, fftfreq_range, ctf);
+            best_ncc = coarse_grid_search(
+                spectrum, fftfreq_range, fitting_range, ctf,
+                phase_shift_range, defocus_range, baseline
+            );
+            fitting_range = baseline.fit_and_tune_fitting_range(spectrum, fftfreq_range, ctf);
         }
         return best_ncc;
     }
@@ -167,85 +161,52 @@ namespace {
         bool fit_phase_shift,
         const Path& baseline_plot_filename
     ) -> Vec<f64, 2> {
-        const auto w = spectrum.shape().width();
-        auto buffer = noa::zeros<f32>({2, 1, 1, w});
-        auto spectrum0 = buffer.span().subregion(0).as_1d();
-        auto spectrum1 = buffer.span().subregion(1).as_1d();
+        auto spectrum_bs = Array<f32>(spectrum.shape().width());
 
-        // TODO Fit baseline within [0.08,0.4]
-
-        // Get the baseline.
-        // Use strong smooth gaussian-smoothing to get the baseline. The spectrum size can vary significantly,
-        // so make the gaussian size and stddev about 1/8th the size of the spectrum size. This may not be able
-        // to erase the Thon rings in case of a large spacing and low defocus, but applying the smoothing
-        // iteratively should be enough to cover most if not all cases.
-        const auto kernel_stddev = static_cast<f64>(w) / 8.;
-        auto kernel_size = static_cast<i64>(std::round(kernel_stddev));
-        if (noa::is_even(kernel_size))
-            kernel_size += 1;
-        const auto kernel = ns::window_gaussian<f32>(kernel_size, kernel_stddev, {.normalize = true});
-        ns::convolve(View(spectrum), View(spectrum0), kernel, {.border = noa::Border::REFLECT});
-        ns::convolve(View(spectrum0), View(spectrum1), kernel, {.border = noa::Border::REFLECT});
-        ns::convolve(View(spectrum1), View(spectrum0), kernel, {.border = noa::Border::REFLECT});
-        ns::convolve(View(spectrum0), View(spectrum1), kernel, {.border = noa::Border::REFLECT});
-        save_plot_xy(noa::Linspace<f64>::from_vec(fftfreq_range), spectrum1, baseline_plot_filename, {.label = "baseline"});
-
-        // Subtract the baseline from the spectrum.
-        for (auto&& [i, baseline, o]: noa::zip(spectrum, spectrum1, spectrum0))
-            o = i - baseline;
+        // Fit and subtract the baseline.
+        auto baseline = Baseline{};
+        baseline.fit(spectrum, fftfreq_range, {0.07, 0.45});
+        baseline.sample(spectrum_bs.span_1d(), fftfreq_range);
+        save_plot_xy(noa::Linspace<f64>::from_vec(fftfreq_range), spectrum_bs, baseline_plot_filename, {.label = "baseline"});
+        baseline.subtract(spectrum, spectrum_bs.span_1d(), fftfreq_range);
 
         // For the initial fitting, prioritize the low-frequency rings.
-        // Anything close to Nyquist is useless at this stage, so ignore it.
         const f64 original_bfactor = ctf.bfactor();
         const f64 desired_bfactor = power_spectrum_bfactor_at(ctf, 0.4, 0.1);
         ctf.set_bfactor(desired_bfactor);
         auto fitting_range = Vec{fftfreq_range[0], 0.4};
 
-        // Do the full range search. While we could use the "varying" background method (see refine step below),
-        // for this initial full-range search, a fixed background is more stable at low and high defocus.
-        const auto initial_defocus_range = Vec{0.6, 10., 0.02}; // start, stop, step
-        const auto initial_phase_shift_range = Vec{0., fit_phase_shift ? 120. : 0., 2.}; // start, stop, step
+        // Do the full range search.
+        const auto defocus_range = Vec{0.6, 10., 0.02}; // start, stop, step
+        const auto phase_shift_range = Vec{0., fit_phase_shift ? 120. : 0., 2.}; // start, stop, step
         coarse_grid_search(
-            spectrum0, fftfreq_range, fitting_range, ctf,
-            noa::deg2rad(initial_phase_shift_range), initial_defocus_range
+            spectrum_bs.span_1d(), fftfreq_range, fitting_range, ctf,
+            noa::deg2rad(phase_shift_range), defocus_range
         );
-
         const f64 initial_defocus = ctf.defocus();
         const f64 initial_phase_shift = noa::rad2deg(ctf.phase_shift());
-        Logger::trace(
-            "  initial_defocus={:.2f}um (range={::.3f}um)\n"
-            "  initial_phase_shift={:.2f}deg (range={::.2f}deg)",
-            initial_defocus, initial_defocus_range,
-            initial_phase_shift, initial_phase_shift_range
-        );
 
-        // This is a current limitation of the background fitting, but this should only be an issue if the
-        // fftfreq_range is unreasonably too small. Now that we have the fitting_range, this is even less
-        // of an issue. We can set the fftfreq_range to a large range (e.g. [40,4]A), and then rely on the
-        // auto-tuning to remove the regions of the spectrum that are not contributing positively to the CTF fit.
-        const auto smallest_defocus = Background::smallest_defocus_for_fitting(fftfreq_range, ctf, 3);
-        if (initial_defocus < smallest_defocus) {
-            panic("The CTF fitting currently requires a minimum number of 3 CTF zeros in the fitting range. "
-                  "Please report this issue. fftfreq_range={::.4f}, defocus={:.4f}um, phase_shift={:.4f}deg, pixel_size={:.3f}Apix",
-                  fftfreq_range, initial_defocus, initial_phase_shift, ctf.pixel_size());
-        }
-
-        // Refine using more accurate background and fitting range.
+        // Refine using a more appropriate fitting range.
         ctf.set_bfactor(original_bfactor);
-        fitting_range = Background{}.fit_and_tune_fitting_range(spectrum, fftfreq_range, ctf);
+        fitting_range = baseline.fit_and_tune_fitting_range(spectrum, fftfreq_range, ctf, {
+            .keep_first_nth_peaks = 3,
+            .n_extra_peaks_to_append = 1,
+            .n_recoveries_allowed = 1,
+        });
         const f64 defocus_offset = 0.75;
         const f64 phase_shift_offset = fit_phase_shift ? 50. : 0.;
         refine_grid_search(
-            spectrum, fftfreq_range, fitting_range, ctf, smallest_defocus,
+            spectrum, fftfreq_range, fitting_range, ctf, defocus_range[0],
             defocus_offset, phase_shift_offset
         );
 
         Logger::trace(
-            "  final_defocus={:.3f}um (min={:.3f}, range=+-{:.2f}um)\n"
-            "  final_phase_shift={:.3f}deg (min=0, range=+-{}deg)\n"
-            "  final_fitting_range={::.3f} ({::.2f}A)\n",
-            ctf.defocus(), smallest_defocus, defocus_offset,
-            initial_phase_shift, phase_shift_offset,
+            "Spectrum fit:\n"
+            "  defocus={:.3f}um (initial={:.3f}um, range={::.2f}um, refine_range=+-{:.2f}um)\n"
+            "  phase_shift={:.3f}deg (initial={:.3f}deg, range={::.2f}deg, refine_range=+-{:.2f}deg)\n"
+            "  fitting_range={::.3f}cpp ({::.2f}A)",
+            ctf.defocus(), initial_defocus, defocus_range, defocus_offset,
+            noa::rad2deg(ctf.phase_shift()), initial_phase_shift, phase_shift_range, phase_shift_offset,
             fitting_range, fftfreq_to_resolution(ctf.pixel_size(), fitting_range)
         );
 
@@ -264,97 +225,96 @@ namespace {
         const auto [n, p, w] = spectra.shape().filter(0, 1, 3);
         const auto fftfreq_linspace = noa::Linspace<f64>::from_vec(fftfreq_range);
 
-        auto background = Background{};
         const auto options_managed = ArrayOption{.device = spectra.device(), .allocator = Allocator::MANAGED};
+        const auto buffer = Array<f32>({n + 2, 1, 1, w}, options_managed);
         const auto ctfs_per_patch = Array<ns::CTFIsotropic<f64>>(p, options_managed);
         const auto ctfs_per_image = Array<ns::CTFIsotropic<f64>>(n);
-
         const auto spacing = Vec<f64, 2>::from_value(ctf.pixel_size());
-        const auto image_spectrum = Array<f32>(w, options_managed);
-        const auto image_weights = Array<f32>(w, options_managed);
 
-        const auto buffer = Array<f32>({n + 2, 1, 1, w});
-        const auto spectrum = buffer.view().subregion(0);
-        const auto spectrum_weights = buffer.view().subregion(1);
-        const auto spectra_smoothed = buffer.view().subregion(ni::Slice{2});
-
-        // The final NCC is a weighted average of the per-image NCC. We want to measure the effect of the
-        // tilt-axis, so downweight the very low tilts (the zero should essentially be excluded since it is
-        // not affected by the tilt-axis). Sigmoid curve: https://www.desmos.com/calculator/elmw9ptuwc
-        auto weight = [](f64 tilt) { return 1. / (1. + std::exp((-(std::abs(tilt) - 15) / 3.5))); };
-
+        auto baseline = Baseline{};
         auto run = [&](f64 rotation) {
+            auto spectrum = buffer.view().subregion(0);
+            auto spectrum_weights = buffer.view().subregion(1);
+            auto spectra_n = buffer.view().subregion(ni::Offset(2));
+
             f64 ncc{};
             for (auto&& [slice, ictf]: noa::zip(metadata, ctfs_per_image.span_1d())) {
-                const auto angles = noa::deg2rad(Vec{rotation, slice.angles[1], slice.angles[2]});
-                const auto iweight = weight(slice.angles[1]);
-
                 // Save the CTF of the image and compute the CTF for every patch.
                 ictf = ctf;
                 ictf.set_defocus(slice.defocus.value);
                 ictf.set_phase_shift(slice.phase_shift);
+                const auto angles = noa::deg2rad(Vec{rotation, slice.angles[1], slice.angles[2]});
                 for (auto&& [pctf, patch_center]: noa::zip(ctfs_per_patch.span_1d(), grid.patches_centers())) {
                     const auto patch_z_offset_um = grid.patch_z_offset(angles, spacing, patch_center);
                     pctf = ictf;
                     pctf.set_defocus(ictf.defocus() - patch_z_offset_um);
                 }
 
-                // Compute the average spectrum of the image to get the background.
+                // Compute the average spectrum of the image to get the baseline.
                 // Note that we do not want to tune the frequency range and exclude tuned out frequencies from
                 // the average. For a fair comparison, we simply want to scale the spectrum to the same (expected)
                 // phase and average them together.
-                const auto spectrum_smooth = spectra_smoothed.span().subregion(slice.index).as_1d();
-                const auto image_spectra = spectra.subregion(slice.index).permute({1, 0, 2, 3});
+                const auto image_spectra = spectra.subregion(slice.index).permute({1, 0, 2, 3}); // (n,p,1,w) -> (p,1,1,w)
                 const auto image_spectra_pw = image_spectra.span().filter(0, 3).as_contiguous();
-
+                const auto image_spectrum = spectra_n.subregion(slice.index);
+                const auto image_spectrum_w = image_spectrum.span_1d();
                 ng::fuse_spectra( // (p,1,1,w) -> (1,1,1,w)
                     image_spectra, fftfreq_linspace, ctfs_per_patch,
-                    image_spectrum.view(), fftfreq_linspace, ictf, image_weights.view()
+                    image_spectrum, fftfreq_linspace, ictf, spectrum_weights
                 );
-                ns::convolve(
-                    image_spectrum.view().reinterpret_as_cpu(), View(spectrum_smooth),
-                    ns::window_gaussian<f32>(11, 1.5, {.normalize = true}),
-                    {.border = noa::Border::REFLECT}
-                );
+                image_spectrum.eval();
 
                 // Only tune the low frequencies for the normalization and keep the higher frequencies.
-                auto fitting_range = background.fit_and_tune_fitting_range(spectrum_smooth, fftfreq_range, ictf);
+                auto fitting_range = baseline.fit_and_tune_fitting_range(image_spectrum_w, fftfreq_range, ictf);
                 fitting_range[1] = fftfreq_range[1];
+
+                // The final NCC is a weighted average of the per-image NCC. We want to measure the effect of the
+                // tilt-axis, so downweight the very low tilts (the zero should essentially be excluded since it is
+                // not affected by the tilt-axis). Sigmoid curve: https://www.desmos.com/calculator/elmw9ptuwc
+                const auto weight = 1. / (1. + std::exp(-(std::abs(slice.angles[1]) - 15) / 3.5));
 
                 // NCC between spectrum and simulated CTF of every patch.
                 f64 incc{};
                 for (i64 b{}; auto& pctf: ctfs_per_patch.span_1d())
-                    incc += normalized_cross_correlation(
-                        image_spectra_pw[b++], pctf, fftfreq_range, fitting_range, background);
-                ncc += (incc / static_cast<f64>(p) * iweight);
+                    incc += zero_normalized_cross_correlation(
+                        image_spectra_pw[b++], pctf, fftfreq_range, fitting_range, baseline);
+                ncc += (incc / static_cast<f64>(p) * weight);
 
                 // For diagnostics, we plot the average spectrum of the stack.
-                // So subtract the background so we can fuse this spectrum with the others.
-                background.subtract(spectrum_smooth, spectrum_smooth, fftfreq_range);
+                // So subtract the baseline so we can fuse this spectrum with the others.
+                baseline.subtract(image_spectrum_w, image_spectrum_w, fftfreq_range);
 
                 // Set the weight of this image for fuse_spectra.
-                ictf.set_scale(iweight);
+                ictf.set_scale(weight);
             }
             ncc /= static_cast<f64>(n);
 
-            // Fuse every background subtracted spectrum to the average CTF.
+            // Move everything to the CPU.
+            auto buffer_cpu = buffer.view().reinterpret_as_cpu();
+            spectrum = buffer_cpu.view().subregion(0);
+            spectrum_weights = buffer_cpu.view().subregion(1);
+            spectra_n = buffer_cpu.view().subregion(ni::Offset(2));
+
+            // Fuse the baseline-subtracted spectrum of every image into a single spectrum.
             ng::fuse_spectra( // (n,1,1,w) -> (1,1,1,w)
-                spectra_smoothed, fftfreq_linspace, ctfs_per_image,
+                spectra_n, fftfreq_linspace, ctfs_per_image,
                 spectrum, fftfreq_linspace, ctf,
                 spectrum_weights
             );
-            background.fit(spectrum.span_1d(), fftfreq_range, ctf);
-            background.subtract(spectrum, spectrum, fftfreq_range);
+
+            // Subtract the baseline and normalize.
+            baseline.fit(spectrum.span_1d(), fftfreq_range, ctf);
+            baseline.subtract(spectrum, spectrum, fftfreq_range);
             noa::normalize(spectrum, spectrum, {.mode = noa::Norm::L2});
 
             // Tune low-frequency range and plot for diagnostics.
-            auto fitting_range = background.tune_fitting_range(spectrum.span_1d(), fftfreq_range);
+            auto fitting_range = baseline.tune_fitting_range(spectrum.span_1d(), fftfreq_range, ctf);
             auto [start_index, start_fftfreq] = nearest_integer_fftfreq(w, fftfreq_range, fitting_range[0]);
             auto new_spectrum = spectrum.subregion(ni::Ellipsis{}, ni::Slice{start_index});
             save_plot_xy(
                 noa::Linspace{start_fftfreq, fftfreq_range[1], true}, new_spectrum,
                 output_directory / "rotation_check.txt", {
-                    .title = "Weighted average spectrum",
+                    .title = "Tilt-weighted average spectrum",
                     .x_name = "fftfreq",
                     .label = fmt::format("tilt-axis={:+.2f}deg", rotation),
                 });
@@ -381,7 +341,7 @@ namespace {
     auto compute_rotational_averages(const Patches& patches) -> Array<f32> {
         auto spectra = Array<f32>(patches.view().shape().set<2>(1), {
             .device = patches.view().device(),
-            .allocator = Allocator::MANAGED, // TODO PITCHED_MANAGED
+            .allocator = Allocator::PITCHED_MANAGED,
         });
         const f32 n_patches_per_image = static_cast<f32>(patches.height());
         noa::reduce_axes_ewise(patches.view(), f32{0}, spectra, noa::ReduceMean{.size=n_patches_per_image});
@@ -444,9 +404,13 @@ namespace qn::ctf {
         const auto spectra_per_image = compute_spectra_near_tilt_axis(
             grid, spectra_per_patch.view(), metadata[0].angles[0], 0.2);
         const auto spectra = spectra_per_image.span().filter(0, 3).as_contiguous();
-        save_plot_xy(patches.rho(), spectra.as_strided(), options.output_directory / "coarse_spectra.txt");
+        save_plot_xy(patches.rho(), spectra, options.output_directory / "coarse_spectra.txt", {
+            .title = "Per-image coarse spectra (sorted by collection order)",
+            .x_name = "fftfreq",
+        });
 
         auto metadata_fit = metadata;
+        auto fitting_ranges = std::vector<Vec<f64, 2>>(metadata.size()); // for diagnostics
 
         // In hybrid mode, exclude the first image from the next steps since it may have a very different
         // defocus from the rest of the stack. It is also excluded from the rotation check since it won't affect it.
@@ -459,10 +423,12 @@ namespace qn::ctf {
                 .label = "spectrum",
             });
             auto ictf = ctf;
-            fit_spectrum_from_scratch(spectra[0], patches.rho_vec(), ictf, options.fit_phase_shift, plot_filename);
+            auto ifitting_range = fit_spectrum_from_scratch(spectra[0], patches.rho_vec(), ictf, options.fit_phase_shift, plot_filename);
+            fitting_ranges[0] = ifitting_range;
             metadata[0].defocus = {ictf.defocus(), 0., 0.};
             metadata[0].phase_shift = ictf.phase_shift();
 
+            Logger::trace("Excluding higher exposure image from the rest of the coarse alignment");
             metadata_fit.exclude_if([](auto& s) { return s.index == 0; });
         }
 
@@ -473,7 +439,7 @@ namespace qn::ctf {
             // Instead, use the phase-shift from the initial reference as first approximation.
             // TODO Maybe fitting the phase-shift could be useful here?
             metadata_fit.sort("tilt");
-            const auto smallest_defocus = Background::smallest_defocus_for_fitting(patches.rho_vec(), ctf, 3);
+            const auto smallest_defocus = 0.5;
             auto fit_neighbor_image = [&](i64 i, auto& ifitting_range, auto& ictf) {
                 refine_grid_search(
                     spectra[metadata_fit[i].index], patches.rho_vec(),
@@ -481,6 +447,10 @@ namespace qn::ctf {
                 );
                 metadata_fit[i].defocus = {ictf.defocus(), 0., 0.};
                 metadata_fit[i].phase_shift = ctf.phase_shift();
+
+                // Save in the same order as the original metadata.
+                const auto index = static_cast<size_t>(metadata_fit[i].index);
+                fitting_ranges[index] = ifitting_range;
             };
 
             const auto pivot = metadata_fit.find_lowest_tilt_index();
@@ -501,31 +471,60 @@ namespace qn::ctf {
 
         metadata.update_from(metadata_fit, {.update_defocus = true, .update_phase_shift = true});
         save_plot_xy(
-            metadata | stdv::transform([](auto& s) { return s.angles[1]; }),
+            metadata | stdv::transform([](auto& s) { return s.index_file; }),
             metadata | stdv::transform([](auto& s) { return s.defocus.value; }),
             options.output_directory / "defocus_fit.txt", {
                 .title = "Per-tilt defocus",
-                .x_name = "Tilts (degrees)",
-                .y_name = "Defocus (μm)",
-                .label = "Defocus - Coarse fit",
+                .x_name = "Image index (as saved in the stack)",
+                .y_name = "Defocus (um)",
+                .label = "Coarse fitting",
             });
+
+        save_plot_xy(
+            metadata | stdv::transform([](auto& s) { return s.index_file; }),
+            fitting_ranges | stdv::transform([&](const auto& v) {
+                return fftfreq_to_resolution(ctf.pixel_size(), v[1]);
+            }),
+            options.output_directory / "fitting_ranges.txt", {
+                .title = "Resolution cutoff for CTF fitting",
+                .x_name = "Image index (as saved in the file)",
+                .y_name = "Resolution (A)",
+                .label = "Coarse fitting",
+            });
+
+        // Remove hybrid from the average.
+        if (options.first_image_has_higher_exposure)
+            fitting_ranges.erase(fitting_ranges.begin());
 
         // Compute the average CTF.
         f64 min_defocus{20};
         f64 max_defocus{};
         f64 average_defocus{};
         f64 average_phase_shift{};
-        for (const auto& slice: metadata_fit) {
+        f64 min_fitting_fftfreq{1};
+        f64 max_fitting_fftfreq{};
+        auto average_fitting_range = Vec<f64, 2>{};
+        for (auto&& [slice, fitting_range]: noa::zip(metadata_fit, fitting_ranges)) {
             min_defocus = std::min(min_defocus, slice.defocus.value);
             max_defocus = std::max(max_defocus, slice.defocus.value);
             average_defocus += slice.defocus.value;
             average_phase_shift += slice.phase_shift;
+            min_fitting_fftfreq = std::min(min_fitting_fftfreq, fitting_range[1]);
+            max_fitting_fftfreq = std::max(max_fitting_fftfreq, fitting_range[1]);
+            average_fitting_range += fitting_range;
         }
         const auto n_images = static_cast<f64>(metadata_fit.size());
         ctf.set_defocus(average_defocus / n_images);
         ctf.set_phase_shift(average_phase_shift / n_images);
-        Logger::info("Average defocus={:.4f}μm [min={:.4f}, max={:.4f}]μm, phase-shift={:.2f}deg",
-                     ctf.defocus(), min_defocus, max_defocus, noa::rad2deg(ctf.phase_shift()));
+        average_fitting_range /= n_images;
+        Logger::info(
+            "phase_shift={:.2f}deg\n"
+            "average_defocus={:.4f}um (min={:.4f}um, max={:.4f}um)\n"
+            "average_fitting_range={::.3f}cpp ({::.2f}A, cutoff_min={:.3f}cpp, cutoff_max={:.3f}cpp)",
+            noa::rad2deg(ctf.phase_shift()), ctf.defocus(), min_defocus, max_defocus,
+            average_fitting_range, fftfreq_to_resolution(ctf.pixel_size(), average_fitting_range),
+            min_fitting_fftfreq, max_fitting_fftfreq
+        );
 
         // Check if the rotation is flipped.
         // If it was computed using the common-line search, there's a 50/50 chance we have the opposite tilt-axis,
@@ -539,7 +538,7 @@ namespace qn::ctf {
             Logger::info("The defocus ramp matches the tilt-axis and tilt angles.");
         } else {
             if (not options.has_user_rotation) {
-                metadata.add_global_angles({180, 0, 0});
+                metadata.add_image_angles({180, 0, 0});
                 Logger::info(
                     "The defocus ramp is reversed.\n"
                     "Not to worry, this is expected as the tilt-axis was computed using the common-line method.\n"

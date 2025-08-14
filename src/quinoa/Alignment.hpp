@@ -12,7 +12,6 @@ namespace qn {
         bool fit_tilt_offset;
         bool has_user_rotation;
         Path output_directory;
-        Path debug_directory;
     };
 
     struct CTFAlignmentParameters {
@@ -49,5 +48,5 @@ namespace qn {
         const Path& stack_filename,
         MetadataStack& metadata,
         const CTFAlignmentParameters& parameters
-    ) -> f64;
+    ) -> ns::CTFIsotropic<f64>;
 }

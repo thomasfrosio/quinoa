@@ -19,7 +19,7 @@ def static_vars(**kwargs):
     return decorate
 
 
-def add_arange(lines: Iterator[str]):
+def add_arange(lines: Iterator[str], style):
     label = next(lines).strip().split('=', 1)
     x = next(lines).strip().split('=', 1)
     y = next(lines).strip().split('=', 1)
@@ -39,7 +39,7 @@ def add_arange(lines: Iterator[str]):
     x = np.linspace(start, stop, length, endpoint=False)
 
     for batch in data:
-        plt.plot(x, batch, label=label[1], alpha=0.75, linestyle='dotted', linewidth=0.75, markersize=5, marker='.')
+        plt.plot(x, batch, label=label[1], alpha=0.75, linestyle=style, linewidth=0.75, markersize=8, marker='.')
 
 
 def add_linspace(lines: Iterator[str], style):
@@ -60,11 +60,11 @@ def add_linspace(lines: Iterator[str], style):
     offset = 0
     for batch in data:
         plt.plot(x, np.array(batch) + offset, label=label[1], alpha=0.8, linestyle=style, linewidth=2)
-        offset += 0.05
+        offset += 0.15
         # plt.show()
 
 
-def add_scatter(lines: Iterator[str]):
+def add_scatter(lines: Iterator[str], size):
     label = next(lines).strip().split('=', 1)
     x = next(lines).strip().split('=', 1)
     y = next(lines).strip().split('=', 1)
@@ -77,7 +77,7 @@ def add_scatter(lines: Iterator[str]):
 
     x_values = [float(i) for i in x[1].split(',')]
     for batch in data:
-        plt.scatter(x_values, batch, label=label[1], s=10, alpha=0.5,)
+        plt.scatter(x_values, batch, label=label[1], s=size, alpha=0.5,)
 
 @static_vars(labels=[], indices=[], tilts=[], xs=[], ys=[])
 def add_scatter_shifts(lines: Iterator[str]):
@@ -118,6 +118,7 @@ def plotter(filenames: List[str]):
     has_header = False
     for jj, filename in enumerate(filenames):
         style = ['solid', 'dashed', 'dotted']
+        size = [10, 15, 20]
         with open(filename) as file:
             lines = filter(lambda l: len(l) > 0 and not l.startswith('#'), (line.rstrip() for line in file))
 
@@ -139,11 +140,11 @@ def plotter(filenames: List[str]):
                 if line.startswith('type='):
                     plot_type = line.split('=')[1]
                     if plot_type == 'scatter':
-                        add_scatter(lines)
+                        add_scatter(lines, size[jj % 3])
                     elif plot_type == 'arange':
-                        add_arange(lines)
+                        add_arange(lines, style[jj % 3])
                     elif plot_type == 'linspace':
-                        add_linspace(lines, style[jj])
+                        add_linspace(lines, style[jj % 3])
                     elif plot_type == 'scatter-shifts':
                         add_scatter_shifts(lines)
                     else:

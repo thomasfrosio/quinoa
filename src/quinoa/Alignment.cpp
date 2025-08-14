@@ -20,7 +20,7 @@ namespace qn {
         // PairwiseTilt relies on this and will throw an error if the stack isn't ordered.
         metadata.sort("tilt").reset_indices();
 
-        // There alignments are quite robust at low tilts.
+        // These alignments are quite robust at low tilts.
         // Keep everything at low resolution, high frequencies are useless here.
         const auto [tilt_series, stack_spacing, file_spacing, file_slice_shape] = load_stack(stack_path, metadata, {
             .compute_device = parameters.compute_device,
@@ -28,34 +28,34 @@ namespace qn {
 
             // Fourier cropping:
             .precise_cutoff = false,
-            .rescale_target_resolution = std::max(parameters.maximum_resolution, 24.),
-            .rescale_min_size = 512,
+            .rescale_target_resolution = parameters.maximum_resolution,
+            .rescale_min_size = 1000,
             .rescale_max_size = 1280,
 
             // Signal processing after cropping:
             .exposure_filter = false,
             .bandpass{
-                .highpass_cutoff = 0.05,
-                .highpass_width = 0.05,
+                .highpass_cutoff = 0.03, // FIXME use resolution2fftfreq with a min, check with size 670
+                .highpass_width = 0.03,
                 .lowpass_cutoff = 0.25,
-                .lowpass_width = 0.25,
+                .lowpass_width = 0.05,
             },
+            .bandpass_mirror_padding_factor = 0.5,
 
             // Image processing after cropping:
             .normalize_and_standardize = true,
-            .smooth_edge_percent = 0.03,
+            .smooth_edge_percent = 0.,
             .zero_pad_to_fast_fft_shape = true,
             .zero_pad_to_square_shape = false,
         });
 
-        const auto debug = not parameters.debug_directory.empty();
         const auto basename = stack_path.stem().string();
         auto extension = stack_path.extension().string();
         if (not noa::io::ImageFile::is_supported_extension(extension))
             extension = ".mrc";
 
-        if (not parameters.debug_directory.empty()) {
-            const auto filename = parameters.debug_directory / fmt::format("{}_preprocessed{}", basename, extension);
+        if (Logger::is_debug()) {
+            const auto filename = parameters.output_directory / fmt::format("{}_preprocessed{}", basename, extension);
             noa::write(tilt_series, stack_spacing, filename);
             Logger::debug("{} saved", filename);
         }
@@ -67,7 +67,6 @@ namespace qn {
         auto shift_parameters = PairwiseShiftParameters{
             .interp = noa::Interp::LINEAR_FAST,
             .output_directory = parameters.output_directory,
-            .debug_directory = debug ? parameters.debug_directory / "debug_pairwise_shift" : "",
         };
 
         auto rotation_fitter = RotationOffset{};
@@ -170,7 +169,7 @@ namespace qn {
         const Path& stack_filename,
         MetadataStack& metadata,
         const CTFAlignmentParameters& parameters
-    ) -> f64 {
+    ) -> ns::CTFIsotropic<f64> {
         auto timer = Logger::status_scope_time("CTF alignment");
 
         auto stack_loader = StackLoader(stack_filename, {
@@ -222,10 +221,10 @@ namespace qn {
         // remove aliasing in most cases.
         i64 patch_size_padded = noa::clamp(patch_size, 512, 1024);
 
-        // TODO allow maximum number of patch to limit memory usage, maybe by controlling the overlap?
-        auto grid = ctf::Grid(stack_loader.slice_shape(), patch_size, patch_size / 2);
+        const auto grid = ctf::Grid(stack_loader.slice_shape(), patch_size, patch_size / 2);
 
         // Load and process images in the same order they were collected.
+        // TODO This may cause issues for cases where highest tilts are collected first.
         metadata.sort("time").reset_indices();
 
         // If the exposure of the first image is significantly higher than the second and third, it may also
@@ -268,13 +267,24 @@ namespace qn {
                 .output_directory = parameters.output_directory,
             });
 
-        // Now that we have an idea of the defocus range within the stack, we can compute a size that should be
-        // big enough to prevent any aliasing of the CTF. Extract the entire stack and sample the patches at that size.
-        i64 aliasing_free_size = ctf::aliasing_free_size(ctf, patches.rho_vec()); // FIXME average vs max defocus, add +0.5
-        patch_size_padded = noa::clamp(aliasing_free_size, patch_size, 1280);
+        // Using the initial defocus estimate of the stack, we can compute an estimate of the aliasing-free size.
+        const auto estimated_max_defocus = ctf.defocus() + 0.5;
+        auto target_ctf = ctf;
+        target_ctf.set_defocus(estimated_max_defocus);
+        i64 aliasing_free_size = ctf::aliasing_free_size(target_ctf, patches.rho_vec());
+        constexpr i64 MAX_PADDED_SIZE = 2048;
+        patch_size_padded = noa::clamp(aliasing_free_size, patch_size, MAX_PADDED_SIZE);
         patch_size_padded = noa::fft::next_fast_size(patch_size_padded);
-        Logger::trace("aliasing_free_size={} -> patch_size_padded={}", aliasing_free_size, patch_size_padded);
+        Logger::trace(
+            "Aliasing-free size:\n"
+            "  estimated_max_defocus={:.2f}\n"
+            "  aliasing_free_size={}\n"
+            "  padded_size={} (clamped between [{}, {}]\n",
+            estimated_max_defocus, aliasing_free_size, patch_size_padded,
+            patch_size, MAX_PADDED_SIZE
+        );
 
+        // Extract the entire stack and sample the patches using the aliasing-free size.
         patches = ctf::Patches{}; // erase initial patches
         patches = ctf::Patches::from_stack(
             stack_loader, metadata, grid, parameters.resolution_range,
@@ -282,8 +292,8 @@ namespace qn {
         );
 
         // Run the coarse CTF alignment.
-        // This is a simple alignment of the patches near the tilt-axis to get initial per-image estimates of the
-        // defocus, and check that the defocus ramp matches the tilt geometry.
+        // This is a simple alignment of the patches near the tilt-axis to get initial per-image
+        // estimates of the defocus and to check that the defocus ramp matches the tilt geometry.
         ctf::coarse_fit(
             grid, patches, ctf, metadata, { // ctf.defocus|phase_shift and metadata.defocus|phase_shift are updated
                 .initial_fitting_range = fitting_range,
@@ -293,9 +303,9 @@ namespace qn {
                 .output_directory = parameters.output_directory,
             });
 
-        // Final CTF fitting.
-        // Get the stage angles (mostly tilt and pitch), accurate per-image astigmatic defocus
-        // and time-resolve phase-shift.
+        // Final CTF alignment.
+        // This fits the stage angles (mostly tilt and pitch), refines the per-tilt defocus and
+        // the tilt-resolved astigmatism and time-resolve phase-shift.
         ctf::refine_fit(
             metadata, grid, patches, ctf, {
                 .fit_rotation = parameters.fit_rotation,
@@ -306,6 +316,8 @@ namespace qn {
                 .output_directory = parameters.output_directory,
             });
 
-        return 0;
+        // FIXME fit thickness using tomogram, then restart refine with the provided specimen thickness?
+
+        return ctf;
     }
 }

@@ -1,430 +1,56 @@
 #include <noa/Array.hpp>
 #include <noa/Geometry.hpp>
-#include <noa/Signal.hpp>
-#include <noa/FFT.hpp>
 
 #include "quinoa/Thickness.hpp"
-#include "quinoa/Optimizer.hpp"
+#include "quinoa/Plot.hpp"
 
 namespace {
     using namespace qn;
 
-    struct SIRTWeight {
-        using value_type = f32;
-        f32 fake_iter;
+    /// Index-wise reduction operator sampling the backprojected tomogram.
+    struct TomogramVariance {
+    public:
+        static constexpr auto INTERP = noa::Interp::LINEAR;
+        static constexpr auto BORDER = noa::Border::ZERO;
+        using input_span_t = SpanContiguous<const f32, 3>;
+        using interpolator_t = noa::Interpolator<2, INTERP, BORDER, input_span_t>;
+        using matrices_span_t = SpanContiguous<const Mat<f32, 2, 4>>;
 
-        // With a large enough level (>1000), this is equivalent to a radial weighting.
-        constexpr explicit SIRTWeight(f32 level) {
-            fake_iter = level <= 15.f ? level :
-                        level <= 30.f ? 15.f + 0.4f * (level - 15.f) :
-                                        27.f * 0.6f * (level - 30.f);
-        }
+    public:
+        interpolator_t images{}; // (n,h,w)
+        matrices_span_t projection_matrices{}; // (n)
+        f64 n_elements_per_image{};
+        SpanContiguous<f32, 3> tomogram{};
 
-        NOA_HD auto operator()(const Vec<f32, 2>& fftfreq_2d, i32) const {
-            return noa::sqrt(dot(fftfreq_2d, fftfreq_2d)) * 2;
-
-            // const f32 fftfreq = noa::sqrt(dot(fftfreq_2d, fftfreq_2d));
-            // if (fftfreq < 1e-6f or fftfreq > 0.5f)
-            //     return 0.f;
-            // const f32 max = 0.5f * (1 - noa::pow(1 - 0.00195f / 0.5f, fake_iter));
-            // const f32 current = fftfreq * (1 - noa::pow(1 - 0.00195f / fftfreq, fake_iter));
-            // return current / max;
-        }
-    };
-
-    struct ReduceAbsSum {
-        using enable_vectorization = bool;
-
-        static constexpr void init(const f32& value, f32& sum) {
-            sum += noa::abs(value);
-        }
-        static constexpr void join(const f32& ireduced, f32& reduced) {
-            reduced += ireduced;
-        }
-    };
-
-    class BackProjector {
-
-        void project_z_slice() {
-
-        }
-    };
-
-    void reconstruct_tomogram(
-        const MetadataStack& metadata,
-        const View<f32>& input_images,
-        const Path& output_directory
-    ) {
-        const auto n_images = input_images.shape()[0];
-        const auto image_shape = input_images.shape().filter(2, 3);
-        const auto thickness = i64{600};
-        const auto volume_shape = Shape{i64{1}, thickness, image_shape[0], image_shape[1]};
-        const auto image_center = (image_shape.vec / 2).as<f64>();
-        const auto volume_center = (volume_shape.vec.pop_front() / 2).as<f64>();
-
-        // Compute the projection matrices.
-        auto matrices = Array<Mat<f64, 2, 4>>(n_images);
-        for (auto&& [slice, matrix]: noa::zip(metadata, matrices.span_1d())) {
-            auto angles = noa::deg2rad(slice.angles);
-            matrix = ( // volume->image
-                ng::translate((image_center + slice.shifts).push_front(0)) *
-                ng::linear2affine(ng::rotate_z(+angles[0])) *
-                ng::linear2affine(ng::rotate_y(+angles[1])) *
-                ng::linear2affine(ng::rotate_x(+angles[2])) *
-                ng::translate(-volume_center)
-            ).filter_rows(1, 2); // (y, x)
-        }
-
-        // noa::fill(input_images, 1.);
-        noa::write(input_images, output_directory / "images.mrc");
-
-        // Backproject.
-        auto volume = noa::zeros<f32>(volume_shape);
-        ng::backward_project_3d(input_images, volume, matrices, {
-            .interp = noa::Interp::LINEAR,
-            .add_to_output = false,
-        });
-        noa::write(volume, output_directory / "tomogram.mrc");
-
-        auto volume_slice_rfft = Array<c32>(image_shape.push_front<2>(1).rfft());
-        std::vector<f64> variances;
-        for (i64 i: noa::irange(thickness)) {
-            auto volume_slice = volume.view().subregion(0, i);
-
-            // TODO R-weight or SIRT-like
-            // ns::median_filter_2d(volume_slice.copy(), volume_slice, {.window_size = 5});
-
-            noa::fft::r2c(volume_slice, volume_slice_rfft);
-            ns::bandpass<"h2h">(
-                volume_slice_rfft, volume_slice_rfft, volume_slice.shape(),
-                {.highpass_cutoff = 0.1, .highpass_width = 0.1, .lowpass_cutoff = 0.4, .lowpass_width = 0.1}
-            );
-            noa::fft::c2r(volume_slice_rfft, volume_slice);
-
-            variances.push_back(noa::variance(volume_slice));
-        }
-        noa::normalize(View(variances.data(), variances.size()), View(variances.data(), variances.size()), {.mode = noa::Norm::MIN_MAX});
-        save_plot_xy({}, variances, output_directory / "variances.txt");
-        noa::write(volume, output_directory / "tomogram_filtered.mrc");
-
-        std::vector<f64> nccs;
-        for (i64 i: noa::irange(thickness - 1)) {
-            auto volume_slice = volume.view().subregion(0, ni::Slice{i, i + 2});
-            volume_slice = volume_slice.permute({1, 0, 2, 3});
-
-            // // TODO R-weight or SIRT-like
-            // noa::fft::r2c(volume_slice, volume_slice_rfft);
-            // ns::lowpass<"h2h">(
-            //     volume_slice_rfft, volume_slice_rfft, volume_slice.shape(),
-            //     {.cutoff = 0.1, .width = 0.1}
-            // );
-            // noa::fft::c2r(volume_slice_rfft, volume_slice);
-
-            nccs.push_back(ns::cross_correlation_score(volume_slice.subregion(0), volume_slice.subregion(1), true));
-        }
-        noa::normalize(View(nccs.data(), nccs.size()), View(nccs.data(), nccs.size()), {.mode = noa::Norm::MIN_MAX});
-        save_plot_xy({}, nccs, output_directory / "nccs.txt");
-    }
-
-    auto compute_profile_(
-        StackLoader& stack_loader,
-        MetadataStack& metadata,
-        const Path& debug_directory
-    ) -> Array<f32> {
-        // Zero pad.
-        const auto slice_shape = stack_loader.slice_shape();
-        const auto slice_center = (slice_shape / 2).vec.as<f64>();
-        const auto padded_size = noa::fft::next_fast_size(noa::max(slice_shape) * 2);
-        const auto slice_padded_shape = Shape4<i64>{1, 1, padded_size, padded_size};
-        const auto stack_padded_shape = slice_padded_shape.set<0>(metadata.ssize());
-        const auto border_right = (Vec2<i64>{padded_size, padded_size} - slice_shape.vec).push_front<2>(0);
-        const auto options = ArrayOption(stack_loader.compute_device(), stack_loader.allocator());
-
-        // Compute one central-slice at a time to save memory.
-        auto slices = noa::Array<f32>({2, 1, slice_shape[0], slice_shape[1]}, options);
-        auto slice_0 = slices.view().subregion(0);
-        auto slice_1 = slices.view().subregion(1);
-
-        auto slice_padded = noa::empty<f32>(slice_padded_shape, options);
-        auto stack_padded_rfft = noa::empty<c32>(stack_padded_shape.rfft(), options);
-
-        for (i64 i{}; const auto& slice: metadata) {
-            stack_loader.read_slice(slice_0, slice.index_file);
-            noa::resize(slice_0, slice_padded.view(), {}, border_right);
-            noa::fft::r2c(slice_padded.view(), stack_padded_rfft.subregion(i++));
-        }
-
-        // Load the geometry.
-        auto shifts = noa::Array<Vec<f32, 2>>(metadata.ssize());
-        auto rotations = noa::Array<ng::Quaternion<f32>>(metadata.ssize());
-        for (auto&& [shift, rotation, slice]: noa::zip(shifts.span_1d(), rotations.span_1d(), metadata)) {
-            shift = -(slice_center + slice.shifts).as<f32>();
-            rotation = ng::matrix2quaternion((
-                ng::rotate_x(noa::deg2rad(slice.angles[2])) *
-                ng::rotate_y(noa::deg2rad(slice.angles[1])) *
-                ng::rotate_z(noa::deg2rad(-slice.angles[0]))
-            ).inverse()).as<f32>();
-        }
-        if (not stack_loader.compute_device().is_cpu()) {
-            shifts = std::move(shifts).to(options);
-            rotations = std::move(rotations).to(options);
-        }
-
-        // Prepare the central-slices for the Fourier insertion.
-        ns::phase_shift_2d<"h2h">(stack_padded_rfft, stack_padded_rfft, stack_padded_shape, shifts);
-
-        // Sample the Fourier slice.
-        auto slice_padded_rfft = noa::Array<c32>(slice_padded_shape.rfft(), options);
-        ng::fourier_insert_interpolate_and_extract_3d<"h2h">(
-            std::move(stack_padded_rfft), {}, stack_padded_shape,
-            slice_padded_rfft, {}, slice_padded_shape,
-            {}, std::move(rotations),
-            {}, ng::rotate_x(noa::deg2rad(90.)).as<f32>(),
-            {
-                .interp = noa::Interp::LINEAR,
-                .input_windowed_sinc = {-1, 0.003},
-                .add_to_output = false,
-                .correct_weights = false, // TODO test with and without correction
+    public:
+        [[nodiscard]] constexpr auto backproject(const Vec<i32, 3>& indices) const -> f32 {
+            const auto volume_coordinates = indices.as<f32>().push_back(1);
+            f32 value{};
+            for (i64 i{}; i < projection_matrices.ssize(); ++i) {
+                const auto image_coordinates = projection_matrices[i] * volume_coordinates;
+                value += images.interpolate_at(image_coordinates, i);
             }
-        );
-
-        // Reconstruct the projection.
-        ns::phase_shift_2d<"h2h">(slice_padded_rfft, slice_padded_rfft, slice_padded_shape, slice_center);
-        // ns::filter_spectrum_2d<"h2h">(slice_padded_rfft, slice_padded_rfft, slice_padded_shape, SIRTWeight{35});
-        noa::fft::c2r(std::move(slice_padded_rfft), slice_padded);
-        noa::resize(std::move(slice_padded), slice_0, {}, -border_right);
-
-        if (not debug_directory.empty()) {
-            auto variances = noa::variance(slice_0, ReduceAxes{.width = true}).to_cpu().flat();
-            noa::normalize(variances, variances, {.mode = noa::Norm::L2});
-
-            noa::write(slice_0, debug_directory / "projected_slice_rotx_90.mrc");
-            save_vector_to_text(variances.view(), debug_directory / "variances.txt");
+            tomogram(indices) = value;
+            return value;
         }
 
-        // Median filter and gaussian blur.
-        // This helps a lot removing background noise that is picked up when computing the variance.
-        ns::median_filter_2d(slice_0, slice_1, {.window_size = 11});
-        const auto gaussian = ns::window_gaussian<f32>(7, 3, {.normalize = true}).to(options);
-        ns::convolve_separable(slice_1, slice_0, {}, gaussian, {});
-        ns::convolve_separable(slice_0, slice_1, {}, {}, gaussian);
-
-        // The convolution is not great with the edges, and it messes up the gradient.
-        // As such, remove a few pixels at the edges before computing the variances.
-        // Note: the center should be preserved so we can later shift the center.
-        slice_1 = slice_1.subregion(ni::Ellipsis{}, ni::Slice{10, -10}, ni::Slice{10, -10});
-
-        // Variance of every row.
-        auto variances = noa::variance(slice_1, ReduceAxes{.width = true}).to_cpu().flat();
-        noa::normalize(variances, variances, {.mode = noa::Norm::L2});
-
-        if (not debug_directory.empty()) {
-            noa::write(slice_1, debug_directory / "projected_slice_rotx_90.mrc");
-            save_vector_to_text(variances.view(), debug_directory / "variances.txt");
+        constexpr void init(const Vec<i32, 3>& indices, f32& sum, f32& sum_sqd) const {
+            const auto v = backproject(indices);
+            sum += v;
+            sum_sqd += v * v;
         }
 
-        noa::Session::clear_fft_cache(options.device);
-        return variances;
-    }
+        static constexpr void join(const f32& isum, const f32& isum_sqd, f32& sum, f32& sum_sqd) {
+            sum += isum;
+            sum_sqd += isum_sqd;
+        }
 
-    auto compute_abs_gradient(
-        const Span<f32>& array,
-        f64 mask_diameter,
-        const Path& debug_directory
-    ) -> Array<f32> {
-        auto gradient = noa::Array<f32>(array.ssize());
-        const auto span = gradient.span_1d_contiguous();
-        const i64 last = span.ssize() - 1;
-
-        span[0] = std::abs(array[1] - array[0]); // forward difference
-        for (i64 i = 1; i < last; ++i)
-            span[i] = std::abs(array[i - 1] - array[i + 1]) / 2; // central difference
-        span[last] = std::abs(array[last] - array[last - 1]); // backward difference
-
-        if (not debug_directory.empty())
-            save_vector_to_text(gradient.view(), debug_directory / "gradient.txt");
-
-        noa::normalize(gradient, gradient); // FIXME min to 0?
-        const auto min = noa::min(gradient);
-        for (auto& e: span)
-            e -= min;
-        if (not debug_directory.empty())
-            save_vector_to_text(gradient.view(), debug_directory / "gradient_normalized.txt");
-
-        // Apply the Tuckey-like mask to remove everything outside the mask.
-        // const auto center = MetadataSlice::center<f64>(span.ssize());
-        // const auto radius = std::min(mask_diameter / 2, static_cast<f64>(span.size()) / 2);
-        // const auto edge = radius * 0.05;
-        // auto line = ng::guts::DrawLine<f32, false, f64>(center, radius, edge); // TODO Add window_tuckey()
-        // for (i64 i = 0; i < span.ssize(); ++i)
-        //     span[i] *= line(static_cast<f64>(i));
-
-//        noa::math::normalize(gradient, gradient);
-        if (not debug_directory.empty())
-            save_vector_to_text(gradient.view(), debug_directory / "gradient_masked.txt");
-
-        return gradient;
-    }
-
-//     auto adjust_to_center_of_mass(const Span<f32>& array, f64 spacing) -> std::pair<Span<f32>, f64> {
-//         const auto size = array.ssize();
-//         const auto size_f = static_cast<f64>(size);
-//
-//         // Compute the center-of-mass (supporting negative values).
-//         const auto min = static_cast<f64>(*stdr::min_element(array));
-//         f64 com{}, sum{};
-//         for (i64 i = 0; i < size; ++i) {
-//             const auto value = static_cast<f64>(array[i]) - min;
-//             com += value * static_cast<f64>(i);
-//             sum += value;
-//         }
-//         com /= sum;
-//
-//         // The shift to apply. This will ultimately be applied to the metadata.
-//         const auto current_center = MetadataSlice::center<f64>(size);
-//         auto shift = com - current_center;
-//         Logger::trace("center={}, com={}, shift={}", current_center, com, shift);
-//         if (std::abs(shift) > size_f * 0.25) {
-//             panic("The estimated center-of-mass ({:.2f}nm) is too far away from the current center ({:.2f}nm). "
-//                   "This cannot be a good sign and may break the next steps, possibly silently, so stop now",
-//                   com * spacing, current_center * spacing);
-//         }
-//         if (std::abs(shift) > size_f * 0.125) {
-//             Logger::warn(
-//                 "The estimated center-of-mass ({:.2f}nm) is far from the current center ({:.2f}nm). "
-//                 "The center will still be updated (shift={:.3f}nm) and the alignment will continue, "
-//                 "but this may not a good sign!",
-//                 com * spacing, current_center * spacing, shift * spacing);
-//         }
-//
-//         // Truncate the window to have the c-o-m fairly close to the window center.
-//         // This will not affect the metadata, it's just here to (hopefully) improve the thickness estimate.
-//         i64 offset = static_cast<i64>(std::round(shift));
-//         const auto left_offset = offset > 0 ? offset * 2 : 0;
-//         const auto right_offset = offset < 0 ? offset * 2 : 0;
-//         auto new_span = Span<f32>(array.data() + left_offset, array.ssize() - left_offset - right_offset);
-//
-//         return {new_span, shift};
-//     }
-//
-//     auto find_window(const Span<f32>& array, f64 spacing_nm, const Path& debug_directory) -> std::pair<f64, f64> {
-//         std::vector<i32> peaks_x;
-//         std::vector<f32> peaks_y;
-//         peaks_x.reserve(array.size() / 4);
-//         peaks_y.reserve(peaks_x.capacity());
-//
-//         // 1. Find all peaks (x, y).
-//         for (i64 i = 1; i < array.ssize() - 1; ++i) {
-//             const f32 n0 = array[i - 1];
-//             const f32 n1 = array[i];
-//             const f32 n2 = array[i + 1];
-//             const f32 slope_0 = n1 - n0;
-//             const f32 slope_1 = n2 - n1;
-//
-//             if (slope_0 >= 0 && slope_1 < 0) { // peak: positive/zero slope to negative slope.
-//                 peaks_x.emplace_back(static_cast<i32>(i));
-//                 peaks_y.emplace_back(n1);
-//             }
-//         }
-//
-//         const auto span_x = Span<const i32>(peaks_x.data(), peaks_x.size());
-//         const auto span_y = Span<const f32>(peaks_y.data(), peaks_y.size());
-//         const i64 n_peaks = span_y.ssize();
-//         qn::Logger::trace("n_peaks={}", n_peaks);
-//         QN_CHECK(n_peaks > 3, "Something went wrong... A lot more peaks are expected...");
-//
-//         // 2. Select the first and last peaks.
-//         // TODO We could limit this search to +- 100nm around the center and let the dilation do the rest.
-//         const auto initial_peaks = [&]() {
-//             constexpr f32 HIGH_SIGMA = 1.25;
-//             std::pair<i64, i64> output{0, 0};
-//             i64 total{0};
-//             for (i64 i = 0; i < n_peaks; ++i) {
-//                 if (span_y[i] < HIGH_SIGMA)
-//                     continue;
-//                 if (output.first == 0)
-//                     output.first = i;
-//                 output.second = i;
-//                 total += 1;
-//             }
-//             qn::Logger::trace("n_selected_peaks={}, threshold={}, thickness={:.2f}nm",
-//                               total, HIGH_SIGMA, (span_x[output.second] - span_x[output.first]) * spacing_nm);
-//             return output;
-//         }();
-//
-//         // 3. Connectivity-based extension, ie dilation and select above a lower threshold.
-//         //    Try to expand the window to neighboring peaks.
-//         const auto [first, last] = [&]() {
-//             constexpr f32 MEDIUM_SIGMA = 0.5;
-//             constexpr i64 EXTEND_UP_TO = 10;
-//             // FIXME Make sure these are not too far away (check consecutive peaks below threshold?).
-//             //       Here this is intended to stay very close to the big peaks but simply extend at the edges
-//             //       for significant (but weaker) signal in direct contact with the peaks.
-//             std::pair<i64, i64> output = initial_peaks;
-//
-//             i64 left_extended{0};
-//             i64 right_extended{0};
-//             for (i64 i = 1; i < EXTEND_UP_TO + 1; ++i) {
-//                 const auto previous = initial_peaks.first - i;
-//                 if (previous >= 0 and span_y[previous] >= MEDIUM_SIGMA) {
-//                     output.first = previous;
-//                     left_extended += 1;
-//                 }
-//                 const auto next = initial_peaks.second + i;
-//                 if (next < n_peaks and span_y[next] >= MEDIUM_SIGMA) {
-//                     output.second = next;
-//                     right_extended += 1;
-//                 }
-//             }
-//             qn::Logger::trace("extended_left={}, extended_right={}, threshold={}, thickness={:.2f}nm",
-//                               left_extended, right_extended, MEDIUM_SIGMA,
-//                               (span_x[output.second] - span_x[output.first]) * spacing_nm);
-//             return output;
-//         }();
-//
-//         // 4. Go to the zeros of these peaks.
-//         //    The cutoff can be useful in case the peak ends up going further than it should
-//         //    because it is fused with other peaks in the background. So for simplicity, cut
-//         //    everything below a given threshold.
-//         auto find_zero = [&array](i64 start, i64 end, i64 increment) {
-//             constexpr f32 CUTOFF = 0.2f;
-//             for (i64 i = start; i != (end - increment); i += increment) {
-//                 const f32 n0 = array[i - increment];
-//                 const f32 n1 = array[i];
-//                 const f32 n2 = array[i + increment];
-//                 const f32 slope_0 = n1 - n0;
-//                 const f32 slope_1 = n2 - n1;
-//
-//                 if (n1 < CUTOFF or (slope_0 < 0 and slope_1 >= 0))
-//                     return i;
-//             }
-//             return start; // something is likely wrong
-//         };
-//         const i64 start = find_zero(span_x[first], span_x[std::max(i64{0}, first - 1)], -1);
-//         const i64 end = find_zero(span_x[last], span_x[std::min(last + 1, n_peaks - 1)], +1);
-//         qn::Logger::trace("thickness={:.2f}nm", static_cast<f64>(end - start) * spacing_nm);
-//
-//         // Make sure it's not too far off the center.
-//         auto f_start = static_cast<f64>(start);
-//         auto f_end = static_cast<f64>(end);
-//         auto window_radius = (f_end - f_start) / 2;
-//         auto window_center = f_start + window_radius;
-//         auto expected_center = static_cast<f64>(array.size()) / 2;
-//         if (window_center < expected_center * 0.75 or expected_center * 1.25 < window_center) {
-//             qn::Logger::warn("The sample z-window search may have failed. "
-//                              "The window center is off by more than 25% of the expected center...");
-//         }
-//
-// //        // We assume the expected center is the true center. So enforce it by possibly enlarging the window.
-// //        auto radius = std::max(expected_center - f_start, f_end - expected_center); // the window is now symmetric
-//         auto thickness = window_radius * 2;
-//         auto thickness_nm = thickness * spacing_nm;
-//
-//
-// //        qn::Logger::trace("window_center={:.3f}, expected_center={:.3f}, thickness={:.2f}nm after symmetry",
-// //                          window_center, expected_center, thickness_nm);
-//         return {thickness_nm, window_center};
-//     }
+        using remove_default_final = bool;
+        constexpr void final(const f32& sum, const f32& sum_sqd, f64& variance) const {
+            const auto mean = static_cast<f64>(sum) / n_elements_per_image;
+            variance = static_cast<f64>(sum_sqd) / n_elements_per_image - noa::abs_squared(mean);
+        }
+    };
 }
 
 namespace qn {
@@ -437,75 +63,228 @@ namespace qn {
 
         auto stack_loader = StackLoader(stack_filename, {
             .compute_device = parameters.compute_device,
-            .allocator = Allocator::MANAGED,
-            .precise_cutoff = true,
+            .allocator = parameters.allocator,
+            .precise_cutoff = true, // enforce isotropic spacing
             .rescale_target_resolution = parameters.resolution,
             .rescale_min_size = 512,
-            .exposure_filter = false,
+            .rescale_max_size = 1024,
             .bandpass{
                 .highpass_cutoff = 0.02,
                 .highpass_width = 0.02,
-                .lowpass_cutoff = 0.50,
+                .lowpass_cutoff = 0.49,
                 .lowpass_width = 0.01,
             },
+            .bandpass_mirror_padding_factor = 0.5,
             .normalize_and_standardize = true,
             .smooth_edge_percent = 0.03,
-            .zero_pad_to_fast_fft_shape = true,
+            .zero_pad_to_fast_fft_shape = false,
             .zero_pad_to_square_shape = false,
         });
 
-        metadata.sort("tilt");
-        metadata.reset_indices();
+        const f64 stack_spacing_nm = 1e-1 * noa::mean(stack_loader.stack_spacing());
+        const f64 file_spacing_nm = 1e-1 * noa::mean(stack_loader.file_spacing());
         auto rescaled_metadata = metadata;
         rescaled_metadata.rescale_shifts(stack_loader.file_spacing(), stack_loader.stack_spacing());
 
-        const f64 average_spacing_nm = 1e-1 * noa::mean(stack_loader.stack_spacing());
-        const auto max_thickness_pixels = static_cast<i64>(std::ceil(parameters.maximum_thickness_nm / average_spacing_nm));
+        const auto input_images = stack_loader.read_stack(metadata);
+        const auto n_images = input_images.shape()[0];
+        const auto image_shape = input_images.shape().filter(2, 3);
 
-        {
-            auto input_images = stack_loader.read_stack(metadata);
-            reconstruct_tomogram(rescaled_metadata, input_images.view(), parameters.debug_directory);
-            return 1.;
+        // Compute the volume depth.
+        // 1. The backward projection can only reconstruct within a sphere of image_min_size diameter.
+        //    While the specimen is likely much thinner than this, this is our ultimate limit.
+        // 2. The actual limit is 500 nm (technically the algorithm can go above this), but we reconstruct
+        //    at least twice as much to include the background from the backward-projection so that it can
+        //    be detected more easily (see below). This is also necessary in case the specimen is offset in Z.
+        const auto image_min_size = static_cast<f64>(noa::min(image_shape));
+        const auto maximum_specimen_thickness = std::min(500. / stack_spacing_nm, image_min_size);
+        const auto volume_depth = static_cast<i64>(std::round(maximum_specimen_thickness * 3));
+
+        const auto volume_shape = Shape{volume_depth, image_shape[0], image_shape[1]};
+        const auto image_center = (image_shape.vec / 2).as<f64>();
+        const auto volume_center = (volume_shape.vec / 2).as<f64>();
+        const auto options = ArrayOption{.device = input_images.device(), .allocator = Allocator::MANAGED};
+
+        // TODO exclude edges? Like 10% crop.
+
+        // Compute the projection matrices.
+        auto matrices = Array<Mat<f32, 2, 4>>(n_images, options);
+        for (auto&& [slice, matrix]: noa::zip(rescaled_metadata, matrices.span_1d())) {
+            auto angles = noa::deg2rad(slice.angles);
+            matrix = ( // (image->volume).inverse()
+                ng::translate(volume_center) * //  + Vec{0., 0., 40.}
+                ng::linear2affine(ng::rotate_z(+angles[0])) * // TODO .to_affine()
+                ng::linear2affine(ng::rotate_x(-angles[2])) * // TODO .to_affine()
+                ng::linear2affine(ng::rotate_y(-angles[1])) * // TODO .to_affine()
+                ng::linear2affine(ng::rotate_z(-angles[0])) * // TODO .to_affine()
+                ng::translate(-(image_center + slice.shifts).push_front(0))
+            ).inverse().filter_rows(1, 2).as<f32>(); // (y, x)
         }
 
-        // 1. Compute the profile of the tomogram (forward projection at pitch=90deg).
-        //    Compute the variance of the profile along the rows.
-        //    Compute the gradient of this. This is what we use for the window fitting.
-        //    The main advantages of the gradient are that it removes the background
-        //    and still preserves the peak information.
-        const Array variances = compute_profile_(stack_loader, rescaled_metadata, parameters.debug_directory);
-        const Array gradient = compute_abs_gradient(variances.span_1d_contiguous(), max_thickness_pixels, parameters.debug_directory);
+        Logger::trace("Computing the variance each z-slice in the tomogram");
+        auto variances = noa::Array<f64>(volume_depth, options);
+        auto tomogram = noa::Array<f32>(volume_shape.push_front(1), options);
+        noa::reduce_axes_iwise( // (d,h,w) -> (d)
+            volume_shape.as<i32>(), input_images.device(), noa::wrap(f32{0}, f32{0}), variances.flat(1),
+            TomogramVariance{
+                .images = TomogramVariance::interpolator_t(input_images.span().filter(0, 2, 3).as_contiguous(), image_shape),
+                .projection_matrices = matrices.span_1d(),
+                .n_elements_per_image = static_cast<f64>(image_shape.n_elements()),
+                .tomogram = tomogram.span().filter(1, 2, 3).as_contiguous(), // FIXME
+            });
+        variances = variances.reinterpret_as_cpu();
+        noa::normalize(variances, variances, {.mode = noa::Norm::MIN_MAX});
+        save_plot_xy({}, variances.eval(), parameters.output_directory / "thickness_profile.txt", {
+            .title = "Variance of each z-slice of the tomogram",
+            .x_name = "depth (in pixels)",
+            .y_name = "variance",
+            .label = "variance",
+        });
 
-        // // 2. Adjust the z-center of the tomogram to the estimated center-of-mass.
-        // //    This should be fairly robust, and in most cases, it's only a small shift.
-        // auto adjusted_gradient = gradient.span_1d_contiguous();
-        // if (parameters.adjust_com) {
-        //     const auto [span, z_shift] = adjust_to_center_of_mass(adjusted_gradient, average_spacing_nm);
-        //     metadata.add_global_shift({z_shift, 0, 0});
-        //     adjusted_gradient = span;
-        // }
-        //
-        // // 3. Window finder.
-        // const auto [thickness_nm, new_center] = find_window(
-        //     adjusted_gradient, average_spacing_nm, parameters.debug_directory);
-        // if (parameters.adjust_com) {
-        //     const auto current_center = MetadataSlice::center<f64>(adjusted_gradient.ssize());
-        //     auto z_shift = new_center - current_center;
-        //     metadata.add_global_shift({z_shift, 0, 0});
-        //     Logger::trace("current_center={}, new_center={}, z_shift={}", current_center, new_center, z_shift);
-        // }
-        // if (parameters.initial_thickness_nm != std::numeric_limits<f64>::max()) {
-        //     if (thickness_nm < parameters.initial_thickness_nm * 0.5 or
-        //         thickness_nm > parameters.initial_thickness_nm * 1.5) {
-        //         panic("Thickness estimate ({:.2f}nm) is too far off from the user-provided value ({:.2f}nm)",
-        //               thickness_nm, parameters.initial_thickness_nm);
-        //     } else if (thickness_nm < parameters.initial_thickness_nm * 0.75 or
-        //                thickness_nm > parameters.initial_thickness_nm * 1.25) {
-        //         Logger::warn("Thickness estimate ({:.2f}nm) is far from the user-provided value ({:.2f}nm)",
-        //                      thickness_nm, parameters.initial_thickness_nm);
-        //     }
-        // }
+        noa::write(tomogram, parameters.output_directory / "tomogram.mrc"); // FIXME
 
-        return 10.;
+        // Compute the baseline. As we get closer to the sample, the variance should progressively increase.
+        auto baseline = noa::like<f64>(variances);
+        constexpr auto SMOOTHING = GaussianSlider{
+            .peak_coordinate = 0.5,
+            .peak_value = 70'000,
+            .base_width = 0.25,
+            .base_value = 10'000,
+        };
+        asymmetric_least_squares_smoothing(variances.span_1d().as_const(), baseline.span_1d(), {
+            .smoothing = SMOOTHING, .asymmetric_penalty = 0.0001, .relaxation = 0.8
+        });
+        save_plot_xy({}, baseline, parameters.output_directory / "thickness_profile.txt", {.label = "baseline"});
+
+        // Subtract the baseline.
+        for (auto&& [v, b]: noa::zip(variances.span_1d(), baseline.span_1d()))
+            v -= b;
+        noa::normalize(variances, variances, {.mode = noa::Norm::MIN_MAX});
+        save_plot_xy({}, variances, parameters.output_directory / "thickness_profile_bs.txt", {
+            .title = "Baseline-subtracted variance of each z-slice of the tomogram",
+            .x_name = "depth (in pixels)",
+            .y_name = "variance - baseline",
+        });
+
+        // Find the threshold between background noise and signal.
+        const auto threshold = [&] {
+            f64 median = noa::median(variances);
+            f64 sum{}, sum_squares{};
+            i64 count{};
+            for (const auto& e: variances.span_1d()) {
+                if (e < median) {
+                    sum += e;
+                    sum_squares += e * e;
+                    ++count;
+                }
+            }
+            const f64 background_mean = sum / static_cast<f64>(count);
+            const f64 background_variance = sum_squares / static_cast<f64>(count) - (background_mean * background_mean);
+            const f64 background_stddev = std::sqrt(background_variance);
+
+            f64 signal_threshold = std::min(0.5, background_mean + 6 * background_stddev);
+            Logger::trace("signal_threshold={:.4f} (bg_mean={:.4f}, bg_stddev={:.4f}, signal_scale=6.",
+                          signal_threshold, background_mean, background_stddev);
+
+            // Values are within [0,1], so if we reconstructed a large enough z-section and if the baseline subtraction
+            // worked well, the background mean and variance should be close to zero. If not, we may want to add a
+            // recovery loop to increase the smoothing of the baseline. However, I have never seen it fail, so for
+            // now just give a warning.
+            if (background_mean > 0.1 and background_stddev > 0.1) {
+                Logger::warn(
+                    "Thickness background estimate is likely wrong. Please check and/or report this issue!\n"
+                    "As a temporary solution, specify an estimated thickness (using the generated thickness profile, if possible) "
+                    "and rerun the program with the thickness estimate turned off"
+                );
+            }
+            return signal_threshold;
+        }();
+
+        // Find the specimen window.
+        const auto specimen_window = [&] {
+            const i64 smallest_window_size = static_cast<i64>(30 / stack_spacing_nm); // 0.03um
+            const i64 maximum_distance_between_windows = static_cast<i64>(50 / stack_spacing_nm);
+            const i64 biggest_window_size = static_cast<i64>(550 / stack_spacing_nm); // 0.03um
+            const i64 maximum_distance_from_center = static_cast<i64>(100 / stack_spacing_nm); // 0.1um
+
+            // First, collect the regions above the threshold.
+            bool is_within_window{};
+            auto possible_windows = std::vector<Vec<i64, 2>>{};
+            for (i64 i{}, start{}; const auto& e: variances.span_1d()) {
+                if (not is_within_window and e >= threshold) {
+                    is_within_window = true;
+                    start = i;
+                } else if (is_within_window and e < threshold) {
+                    is_within_window = false;
+                    const auto window_size = i - start;
+                    if (window_size >= smallest_window_size)
+                        possible_windows.push_back({start, i});
+                }
+                ++i;
+            }
+            Logger::trace("possible_windows={}", possible_windows);
+            check(not possible_windows.empty(), "No possible windows found. Please report this issue");
+
+            // Then, fuse windows that are close to each other.
+            for (size_t i{}; i < possible_windows.size() - 1; ++i) {
+                const i64 distance = possible_windows[i + 1][0] - possible_windows[i][1];
+                if (distance <= maximum_distance_between_windows) {
+                    possible_windows[i + 1][0] = possible_windows[i][0];
+                    possible_windows[i][0] = -1;
+                }
+            }
+            std::erase_if(possible_windows, [](const auto& window) { return window[0] == -1; });
+            Logger::trace("possible_windows={} (after fuse)", possible_windows);
+
+            // Sanitize based on size and distance from the center.
+            const i64 center = variances.ssize() / 2;
+            i32 n_excluded_windows{};
+            for (auto& window: possible_windows) {
+                const i64 window_size = window[1] - window[0];
+                const i64 window_edge = window[1] < center ? window[1] : window[0] > center ? window[0] : center;
+                const i64 distance_from_center = std::abs(window_edge - center);
+                if (window_size > biggest_window_size or distance_from_center > maximum_distance_from_center) {
+                    window *= -1;
+                    ++n_excluded_windows;
+                }
+            }
+            check(
+                n_excluded_windows < std::ssize(possible_windows),
+                "All windows are either too big or too far away from the center. "
+                "Since we can't really tell what is going on, it is best to stop here"
+            );
+
+            // Get the largest window.
+            auto best_window = Vec<i64, 2>{};
+            for (const auto& window: possible_windows) {
+                const auto window_size = window[1] - window[0];
+                const auto best_size = best_window[1] - best_window[0];
+                if (window_size > best_size)
+                    best_window = window;
+            }
+
+            Logger::trace("best_window={}", best_window);
+            return best_window;
+        }();
+
+        // Center on the specimen window.
+        // TODO For the CTF correction, it may be better to center on the COM.
+        const i64 specimen_window_size = specimen_window[1] - specimen_window[0];
+        const f64 specimen_window_size_nm = static_cast<f64>(specimen_window_size) * stack_spacing_nm;
+        const i64 specimen_window_center = specimen_window[0] + specimen_window_size / 2;
+        const i64 specimen_offset_from_center = variances.ssize() / 2 - specimen_window_center;
+        const f64 specimen_offset_from_center_nm = static_cast<f64>(specimen_offset_from_center) * stack_spacing_nm;
+        Logger::info(
+            "specimen_window_size={} ({:.2f}nm)\n"
+            "specimen_offset_from_center={} ({:.2f}nm)",
+            specimen_window_size, specimen_window_size_nm,
+            specimen_offset_from_center, specimen_offset_from_center_nm
+        );
+
+        // Adjust the shifts to move the specimen to the tomogram center.
+        const f64 z_offset = specimen_offset_from_center_nm / file_spacing_nm;
+        metadata.add_volume_shift({z_offset, 0., 0.});
+
+        return specimen_window_size_nm;
     }
 }

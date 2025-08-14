@@ -12,8 +12,8 @@ namespace qn {
         Allocator allocator;
 
         // Fourier cropping:
-        bool precise_cutoff;
-        f64 rescale_target_resolution;
+        bool precise_cutoff{true};
+        f64 rescale_target_resolution{0};
         i64 rescale_min_size{0};
         i64 rescale_max_size{0};
 
@@ -25,6 +25,7 @@ namespace qn {
             .lowpass_cutoff = 0.45,
             .lowpass_width = 0.05,
         };
+        f64 bandpass_mirror_padding_factor{0};
 
         // Image processing after cropping:
         bool normalize_and_standardize{true};
@@ -57,6 +58,7 @@ namespace qn {
         [[nodiscard]] auto file_slice_shape() const noexcept -> Shape2<i64> { return m_input_slice_shape; }
         [[nodiscard]] auto stack_spacing() const noexcept -> Vec2<f64> { return m_output_spacing; }
         [[nodiscard]] auto slice_shape() const noexcept -> Shape2<i64> { return m_output_slice_shape; }
+        [[nodiscard]] auto n_slices_in_file() const noexcept -> i64 { return m_file_slice_count; }
 
         [[nodiscard]] static auto registered_stack() noexcept -> View<const f32> { return s_input_stack.view(); }
 
@@ -73,19 +75,18 @@ namespace qn {
         Shape2<i64> m_input_slice_shape{};
         Shape2<i64> m_padded_slice_shape{};
         Shape2<i64> m_cropped_slice_shape{};
+        Shape2<i64> m_bandpass_slice_shape{};
         Shape2<i64> m_output_slice_shape{};
 
         Vec2<f64> m_input_spacing{};
         Vec2<f64> m_output_spacing{};
         Vec2<f64> m_rescale_shift{};
-        Vec2<f64> m_cropped_slice_center{};
 
         Array<f32> m_input_slice{}; // empty if no padding
         Array<f32> m_input_slice_io{}; // empty if compute is on the cpu, otherwise, this is cpu array
-        Array<f32> m_input_slice_median{}; // empty if no median filtering
         Array<c32> m_padded_slice_rfft{};
         Array<c32> m_cropped_slice_rfft{};
-        Array<f32> m_output_buffer{}; // empty if output slice is on the compute-device
+        Array<c32> m_bandpass_slice_rfft{};
         std::vector<std::pair<i64, Array<f32>>> m_cache{}; // cache the pre-processed slices
     };
 

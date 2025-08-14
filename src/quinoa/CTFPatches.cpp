@@ -2,6 +2,8 @@
 #include <noa/FFT.hpp>
 
 #include "quinoa/CTF.hpp"
+#include "quinoa/Logger.hpp"
+#include "quinoa/Plot.hpp"
 
 namespace qn::ctf {
     auto Patches::from_stack(
@@ -14,6 +16,8 @@ namespace qn::ctf {
         i64 phi_size,
         noa::Interp polar_interp
     ) -> Patches {
+        auto timer = Logger::info_scope_time("Loading patches");
+
         // The patches are loaded one image at a time. So allocate enough for one image.
         const auto options = ArrayOption{stack_loader.compute_device(), Allocator::ASYNC};
         const auto image = Array<f32>(grid.slice_shape().push_front<2>(1), options);
@@ -57,7 +61,7 @@ namespace qn::ctf {
         Logger::info(
             "Patch maximum frequency range:\n"
             "  resolution_range={::.3f}A (target={::.3f}A\n"
-            "  fftfreq_range={::.5f} (target={::.5f})",
+            "  fftfreq_range={::.5f}cpp (target={::.5f}cpp)",
             fftfreq_to_resolution(spacing, fftfreq_range), resolution_range,
             fftfreq_range, resolution_to_fftfreq(spacing, resolution_range)
         );
@@ -68,24 +72,25 @@ namespace qn::ctf {
             "  padded_size={}",
             patch_size, cropped_size, patch_padded_size
         );
-        Logger::info(
-            "Polar patches:\n"
-            "  allocated={:.2f}GB on {} ({}, dtype={})\n"
-            "  shape=[n_images:{}, n_patches:{}, phi={}, rho={}]",
-            static_cast<f64>(polar_shape.as<size_t>().n_elements() * sizeof(value_type)) * 1e-9,
-            options.device, options.allocator, noa::string::stringify<value_type>(),
-           polar_shape[0], polar_shape[1], polar_shape[2], polar_shape[3]
-        );
 
         // Create the big array with all the patches in polar space.
         // Importantly, use managed memory in case it doesn't fit in the GPU discrete memory.
-        auto all_patches = Patches{};
-        all_patches.m_rho_range = noa::Linspace{fftfreq_range[0], fftfreq_range[1], true};
-        all_patches.m_phi_range = noa::Linspace{0., noa::Constant<f64>::PI, false};
-        all_patches.m_polar = Array<value_type>(polar_shape, {
+        auto output = Patches{};
+        output.m_rho_range = noa::Linspace{fftfreq_range[0], fftfreq_range[1], true};
+        output.m_phi_range = noa::Linspace{0., noa::Constant<f64>::PI, false};
+        output.m_polar = Array<value_type>(polar_shape, {
             .device = options.device,
-            .allocator = Allocator::MANAGED
+            .allocator = Allocator::PITCHED_MANAGED
         });
+        Logger::info(
+            "Polar patches:\n"
+            "  allocated={:.2f}GB on {} ({}, dtype={})\n"
+            "  shape=[n_images={}, n_patches={}, phi={}, rho={}]",
+            static_cast<f64>(polar_shape.set<3>(output.m_polar.strides()[2])
+                .as<size_t>().n_elements() * sizeof(value_type)) * 1e-9,
+            options.device, output.m_polar.allocator(), noa::string::stringify<value_type>(),
+            polar_shape[0], polar_shape[1], polar_shape[2], polar_shape[3]
+        );
 
         // Prepare the subregion origins, ready for extract_subregions.
         const auto patches_origins = grid.compute_subregion_origins().to(options);
@@ -107,8 +112,8 @@ namespace qn::ctf {
             noa::normalize_per_batch(patches_cropped, patches_cropped);
             noa::resize(patches_cropped, patches_padded, {}, zero_padding);
 
-            // Compute the power-spectra of these tiles,
-            // but also make sure to normalize the FFT since we will not be calling c2r.
+            // Compute the power-spectra of these tiles.
+            // Also make sure to normalize the FFT since we will not be calling c2r.
             noa::fft::r2c(patches_padded, patches_padded_rfft, {.norm = nf::Norm::NONE});
             const auto fft_scale = 1 / static_cast<f32>(patches_padded.shape().filter(2, 3).n_elements());
             noa::ewise(patches_padded_rfft, patches_padded_rfft_ps, [=]NOA_HD(const c32& i, f32& o) {
@@ -120,33 +125,16 @@ namespace qn::ctf {
             if (polar_interp == noa::Interp::CUBIC_BSPLINE)
                 noa::cubic_bspline_prefilter(patches_padded_rfft_ps, patches_padded_rfft_ps);
             ng::spectrum2polar<"h2fc">(
-                patches_padded_rfft_ps, patches_padded_shape, all_patches.patches(slice_metadata.index), {
+                patches_padded_rfft_ps, patches_padded_shape, output.patches(slice_metadata.index), {
                     .spectrum_fftfreq = noa::Linspace{0., fftfreq_range[1], true},
-                    .rho_range = all_patches.rho(),
-                    .phi_range = all_patches.phi(),
+                    .rho_range = output.rho(),
+                    .phi_range = output.phi(),
                     .interp = polar_interp,
             });
 
             Logger::trace("tilt={:>+6.2f}", slice_metadata.angles[1]);
         }
-        all_patches.view().eval();
-        return all_patches;
-    }
-
-    void Patches::exclude_views(SpanContiguous<const i64> indices) {
-        auto is_excluded = [&](i64 i) { return stdr::find(indices, i) != indices.end(); };
-
-        i64 p{};
-        for (i64 i{}; i < n_images(); ++i) {
-            if (not is_excluded(i)) {
-                if (i != p)
-                    view().subregion(i).to(view().subregion(p));
-                ++p;
-            }
-        }
-
-        // Reshape only, the extra memory is kept,
-        // which is better than having to reallocate the entire array.
-        m_polar = m_polar.subregion(ni::Slice{0, p});
+        output.view().eval();
+        return output;
     }
 }

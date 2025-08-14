@@ -7,7 +7,55 @@
 #include "quinoa/GridSearch.hpp"
 #include "quinoa/Logger.hpp"
 #include "quinoa/CommonArea.hpp"
-#include "quinoa/Utilities.hpp"
+#include "quinoa/Plot.hpp"
+
+namespace qn {
+    struct ExtractLines {
+    public:
+        static constexpr noa::Interp INTERP = noa::Interp::LANCZOS8;
+        using input_type = SpanContiguous<const c32, 3>;
+        using interpolator_type = noa::InterpolatorSpectrum<2, noa::Remap::H2H, INTERP, input_type>;
+        using value_type = c32;
+        using real_type = f32;
+
+        using coord_type = f64;
+        using index_type = i64;
+        using coord2_type = Vec<coord_type, 2>;
+        using matrix_type = Mat<coord_type, 2, 2>;
+
+    public:
+        ExtractLines(
+            const SpanContiguous<const value_type, 3>& spectra,
+            const SpanContiguous<value_type, 3>& lines,
+            const SpanContiguous<const matrix_type, 1>& line_rotations
+        ) {
+
+        }
+
+    public:
+        interpolator_type spectra; // (b,h,w)
+        SpanContiguous<c32, 3> lines; // (b,i,w)
+        SpanContiguous<const Mat<coord_type, 2, 2>, 1> matrices; // (i)
+        index_type window_radius;
+
+        constexpr auto windowed_sinc(coord_type frequency_offset) const {
+            return static_cast<real_type>(frequency_offset);
+        }
+
+        constexpr void operator()(i64 b, i64 i, i64 w, i64 u) const {
+            // Get the sinc weight.
+            const auto frequency_offset = static_cast<coord_type>(w - window_radius);
+            const auto sinc_weight = windowed_sinc(frequency_offset);
+
+            // Get the line.
+            const auto frequency_2d = matrices[i] * coord2_type::from_values(frequency_offset, u);
+            const auto value = spectra.interpolate_spectrum_at(frequency_2d, b);
+
+            //
+            noa::guts::atomic_add(lines, value * sinc_weight, b, i, u);
+        }
+    };
+}
 
 namespace qn {
     void RotationOffset::search(
@@ -84,7 +132,7 @@ namespace qn {
             );
         }
         const auto stack_padded_rfft = m_stack_padded_rfft.view();
-        const auto stack_padded = noa::fft::alias_to_real(stack_padded_rfft, shape_padded);
+        const auto stack_padded = nf::alias_to_real(stack_padded_rfft, shape_padded);
         const auto stack_padded_filled = stack_padded.subregion(
             ni::Ellipsis{}, 0,
             ni::Slice{border_left[0], -border_right[0]},
@@ -95,7 +143,7 @@ namespace qn {
         const auto inverse_matrices = Array<Mat<f32, 2, 3>>(shape[0], options_managed);
         const auto shifts = Array<Vec<f32, 2>>(shape[0], options_managed);
         const auto polar_rfft = Array<c32>(shape_polar.rfft(), options_managed);
-        const auto polar = noa::fft::alias_to_real(polar_rfft.view(), shape_polar);
+        const auto polar = nf::alias_to_real(polar_rfft.view(), shape_polar);
 
         std::vector<f64> nccs{};
         f64 best_ncc{};
@@ -119,7 +167,7 @@ namespace qn {
             area.mask(stack, stack_padded_filled, inverse_matrices.view(), 0.1); // TODO check
 
             // Get the spectra.
-            noa::fft::r2c(stack_padded, stack_padded_rfft);
+            nf::r2c(stack_padded, stack_padded_rfft);
 
             // Move the real-space signal to the rotation center.
             for (auto span = shifts.span_1d_contiguous(); auto& slice: metadata)
@@ -142,8 +190,8 @@ namespace qn {
             const auto lines_rfft = polar_rfft.view().reinterpret_as_cpu().reshape(shape_lines.rfft());
             ns::bandpass<"h2h">(lines_rfft, lines_rfft, shape_lines, options.bandpass);
             ns::phase_shift_1d<"h2h">(lines_rfft, lines_rfft, shape_lines, center_padded.filter(1));
-            auto lines = noa::fft::alias_to_real(lines_rfft, shape_lines);
-            noa::fft::c2r(lines_rfft, lines);
+            auto lines = nf::alias_to_real(lines_rfft, shape_lines);
+            nf::c2r(lines_rfft, lines);
 
             auto normalized_cross_correlate = [](auto lhs, auto rhs) -> f64 {
                 f64 ncc{}, lhs_ncc{}, rhs_ncc{};

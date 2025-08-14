@@ -4,8 +4,46 @@
 #include <noa/Signal.hpp>
 #include <noa/Utils.hpp>
 
-#include "quinoa/Stack.hpp"
 #include "quinoa/PairwiseShift.hpp"
+#include "quinoa/Plot.hpp"
+
+namespace {
+    using namespace qn;
+
+    auto relative2global_shifts_(
+        const std::vector<Vec<f64, 2>>& relative_shifts,
+        const MetadataStack& metadata,
+        i64 index_of_global_reference
+    ) -> Pair<std::vector<Vec<f64, 2>>, Vec<f64, 2>> {
+        // Relative shifts (target->reference) to global shifts (target->volume).
+        const auto count = std::size(relative_shifts);
+        const auto pivot = index_of_global_reference;
+        const auto r_pivot = std::ssize(relative_shifts) - 1 - pivot;
+        auto global_shifts = std::vector<Vec<f64, 2>>(relative_shifts.size());
+        std::inclusive_scan(relative_shifts.begin() + pivot, relative_shifts.end(), global_shifts.begin() + pivot);
+        std::inclusive_scan(relative_shifts.rbegin() + r_pivot, relative_shifts.rend(), global_shifts.rbegin() + r_pivot);
+
+        // Center the shifts.
+        auto mean = Vec<f64, 2>{};
+        for (auto& shift: global_shifts)
+            mean += shift;
+        mean /= static_cast<f64>(count);
+        for (auto& shift: global_shifts)
+            shift -= mean;
+
+        // Transform the shifts from volume-space back to image-space.
+        // This effectively shrinks the shifts to account for the tilt/pitch of
+        // the images and applies the rotation of the images.
+        for (size_t i{}; i < count; ++i) {
+            const auto angles = noa::deg2rad(metadata[i].angles);
+            const auto volume2image =
+                ng::rotate(angles[0]) *
+                ng::scale(noa::cos(angles.filter(2, 1)));
+            global_shifts[i] = volume2image * global_shifts[i];
+        }
+        return {global_shifts, mean};
+    }
+}
 
 namespace qn {
     PairwiseShift::PairwiseShift(
@@ -19,6 +57,7 @@ namespace qn {
         const auto options = ArrayOption{compute_device, allocator};
         m_buffer_rfft = Array<c32>({3, 1, shape[2], shape[3] / 2 + 1}, options);
         m_xmap = Array<f32>({1, 1, shape[2], shape[3]}, options);
+        m_xmap_centered = Array<f32>({1, 1, 64, 64}, {.device = compute_device, .allocator = Allocator::MANAGED});
 
         const auto n_bytes = m_xmap.size() * sizeof(f32) + m_buffer_rfft.size() * sizeof(c32);
         Logger::trace("PairwiseShift(): allocated {:.2f}MB on {} ({})",
@@ -90,7 +129,7 @@ namespace qn {
             // This is the main drawback of this method. We need to compute the global shifts from the relative
             // shifts, so the high tilt slices end up accumulating the errors of the lower tilts.
             const auto [global_shifts, i_average_shift] = relative2global_shifts_(
-                slice_to_slice_shifts, metadata, index_lowest_tilt, parameters.cosine_stretch);
+                slice_to_slice_shifts, metadata, index_lowest_tilt);
 
             // Logging.
             if (i == 0)
@@ -129,28 +168,28 @@ namespace qn {
         const Vec2<f64> slice_center = (m_xmap.shape().vec.filter(2, 3) / 2).as<f64>();
 
         // First, compute the cosine stretching to estimate the tilt (and technically pitch) difference.
-        // These angles are flipped, since the cos-scaling is perpendicular to the axis of rotation.
-        // So since the tilt axis is along Y, its stretching is along X.
+        // These angles are flipped, since the cos-scaling is perpendicular to its axis of rotation.
+        // For the tilt, since the tilt-axis is along Y, the corresponding stretching is along X.
         Vec2<f64> cos_factor{1, 1};
         if (parameters.cosine_stretch)
             cos_factor = noa::cos(reference_angles.filter(2, 1)) / noa::cos(target_angles.filter(2, 1));
 
         // Cancel the difference (if any) in rotation and shift as well.
-        const Mat33<f64> fwd_stretch_target_to_reference_d =
+        const Mat33<f64> target2reference =
             ng::translate(slice_center + reference_slice.shifts) *
             ng::linear2affine(ng::rotate(reference_angles[0])) *
             ng::linear2affine(ng::scale(cos_factor)) *
             ng::linear2affine(ng::rotate(-target_angles[0])) *
             ng::translate(-slice_center - target_slice.shifts);
-        const auto fwd_stretch_target_to_reference = fwd_stretch_target_to_reference_d.as<f32>();
-        const auto inv_stretch_target_to_reference = fwd_stretch_target_to_reference_d.inverse().as<f32>();
+        const auto fwd_target2reference = target2reference.as<f32>();
+        const auto inv_target2reference = target2reference.inverse().as<f32>();
 
         // Get the views from the buffer.
         const auto buffer_shape = m_xmap.shape().set<0>(3);
         const auto buffer_rfft = m_buffer_rfft.view();
         const auto buffer = noa::fft::alias_to_real(buffer_rfft, buffer_shape);
 
-        const auto target_stretched = buffer.subregion(0);
+        const auto transformed_target = buffer.subregion(0);
         const auto reference = buffer.subregion(1);
         const auto target = buffer.subregion(2);
 
@@ -159,7 +198,7 @@ namespace qn {
         // alignment to a specific region, i.e., the center of the image.
         const auto indices = std::array{reference_slice.index, target_slice.index};
         if (parameters.area_match) {
-            // Copy if stack isn't on the compute-device.
+            // Copy if the stack isn't on the compute-device.
             View<f32> input_reference = stack.subregion(indices[0]);
             View<f32> input_target = stack.subregion(indices[1]);
             if (stack.device() != buffer.device()) {
@@ -173,7 +212,6 @@ namespace qn {
             // next, and where cosine stretching isn't a good approximation of what is happening in 3d space.
             m_common_area.mask(input_reference, reference, reference_slice, false, parameters.smooth_edge_percent);
             m_common_area.mask(input_target, target, target_slice, false, parameters.smooth_edge_percent);
-
         } else {
             // The area match can be very restrictive in the high tilts. When the shifts are not known and
             // large shifts are present, it is best to turn off the area match and enforce a common FOV only between
@@ -188,124 +226,83 @@ namespace qn {
                 .center = slice_center,
                 .radius = slice_center - smooth_edge_size,
                 .smoothness = smooth_edge_size,
-            };
-            ng::draw_shape(reference_and_target, reference_and_target, mask, fwd_stretch_target_to_reference);
-            ng::draw_shape(reference_and_target, reference_and_target, mask, inv_stretch_target_to_reference);
+            }.draw<f32>();
+            ng::draw(reference_and_target, reference_and_target, mask, fwd_target2reference);
+            ng::draw(reference_and_target, reference_and_target, mask, inv_target2reference);
         }
 
         // After this point, the target is stretched and should "overlap" with the reference.
-        ng::transform_2d(
-            target, target_stretched,
-            inv_stretch_target_to_reference,
-            {.interp = parameters.interp}
-        );
+        ng::transform_2d(target, transformed_target, inv_target2reference, {.interp = parameters.interp});
 
         // Get the views from the buffers.
-        const auto target_stretched_and_reference_rfft = buffer_rfft.subregion(ni::Slice{0, 2});
-        const auto target_stretched_and_reference = buffer.subregion(ni::Slice{0, 2});
+        const auto transformed_target_and_reference_rfft = buffer_rfft.subregion(ni::Slice{0, 2});
+        const auto transformed_target_and_reference = buffer.subregion(ni::Slice{0, 2});
         const auto xmap = m_xmap.view();
 
         if (Logger::is_debug()) {
             const auto target_reference_filename =
-                parameters.output_directory / fmt::format("target_stretched_and_reference_{:0>2}.mrc", indices[0]);
-            noa::write(target_stretched_and_reference, target_reference_filename);
+                parameters.output_directory / fmt::format("transformed_target_and_reference_{:0>2}.mrc", indices[1]);
+            noa::write(transformed_target_and_reference, target_reference_filename, {.dtype = noa::io::Encoding::F16});
             Logger::debug("{} saved", target_reference_filename);
         }
 
-        // (Conventional) cross-correlation. There's no need to normalize here, we just need the shift.
-        // TODO Technically we should zero-pad here to cancel the circular property of the DFT (only the zero lag
-        //      is unaffected by it). However, while we do expect significant lags, we run this multiple times and
-        //      do not care about the peak value, so zero padding shouldn't affect the final result.
-        noa::fft::r2c(target_stretched_and_reference, target_stretched_and_reference_rfft);
+        // (Conventional) cross-correlation.
+        // Technically, we should zero-pad here to cancel the circular property of the DFT (only the zero-lag is
+        // unaffected by it). However, while we do expect significant lags, since we don't care about the actual peak
+        // value, as long as we can find the highest peak, it is fine.
+        noa::fft::r2c(transformed_target_and_reference, transformed_target_and_reference_rfft);
         ns::bandpass<"h2h">(
-            target_stretched_and_reference_rfft,
-            target_stretched_and_reference_rfft,
-            target_stretched_and_reference.shape(),
+            transformed_target_and_reference_rfft,
+            transformed_target_and_reference_rfft,
+            transformed_target_and_reference.shape(),
             parameters.bandpass
-        ); // TODO Use ns::filter_spectrum to apply sampling functions (exposure, mtf) as well?
-        ns::cross_correlation_map<"h2f">(
-            target_stretched_and_reference_rfft.subregion(0),
-            target_stretched_and_reference_rfft.subregion(1),
+        );
+        ns::cross_correlation_map<"h2fc">(
+            transformed_target_and_reference_rfft.subregion(0),
+            transformed_target_and_reference_rfft.subregion(1),
             xmap, {.mode = ns::Correlation::CONVENTIONAL}
         );
 
-        if (not parameters.debug_directory.empty()) {
-            const auto xmap_filename = parameters.debug_directory / fmt::format("xmap_{:0>2}.mrc", indices[0]);
-            noa::fft::remap(noa::Remap::F2FC, xmap, target, xmap.shape());
-            noa::write(target, xmap_filename);
+        if (Logger::is_debug()) {
+            auto xmap_filename = parameters.output_directory / fmt::format("xmap_{:0>2}.mrc", indices[1]);
+            noa::write(xmap, xmap_filename, {.dtype = noa::io::Encoding::F16});
+            Logger::debug("{} saved", xmap_filename);
+
+            xmap_filename = parameters.output_directory / fmt::format("xmap_centered_{:0>2}.mrc", indices[1]);
+            noa::write(m_xmap_centered.view(), xmap_filename, {.dtype = noa::io::Encoding::F16});
             Logger::debug("{} saved", xmap_filename);
         }
 
-        // Computes the YX shift of the target. To shift-align the stretched target onto the reference,
-        // we would then need to subtract this shift to the stretched target.
-        const auto [peak_coordinate, peak_value] = ns::cross_correlation_peak_2d<"f2f">(xmap, {
-            .maximum_lag =
-                (parameters.max_shift_percent >= 0.99 ? -1 : parameters.max_shift_percent) *
-                xmap.shape().vec.filter(2, 3).as<f64>()
+        // Find the best peak and compute the shift of the transformed target.
+        const auto shift_transformed_target = find_shift<"fc2fc">(xmap, m_xmap_centered.view(), {
+            .distortion_angle_deg = reference_slice.angles[0],
+            .max_shift_percent = parameters.max_shift_percent,
         });
 
-        const auto shift_reference = (peak_coordinate - slice_center).as<f64>();
-        if (not parameters.cosine_stretch)
-            return shift_reference;
+        // Enforce a maximum-lag by masking the cross-correlation map and argmax.
+        // Due to the difference in tilt, the cross-correlation map can be distorted orthogonal to the tilt-axis.
+        // To improve the accuracy of the subpixel registration, correct the tilt-axis to have the distortion along x.
+        // Since the actual peak is close to argmax, focus on (and only render) a small subregion around argmax.
 
-        // We could destretch the shift to bring it back to the original target. However, we'll need
-        // to compute the global shifts later on, as well as centering the shifts. This implies
-        // to accumulate the shifts of the lower views while accounting for their own scaling.
-        // Instead, it is simpler to scale all the slice-to-slice shifts to the same reference frame,
-        // process everything there, and then go back to whatever higher tilt reference frame at
-        // the end. Here, this global reference frame is the planar specimen (no tilt, no pitch).
-        const auto fwd_stretch_reference_to_0deg = Mat22<f64>{
-            ng::rotate(reference_angles[0]) *
-            ng::scale(1 / noa::cos(reference_angles.filter(2, 1))) * // 1 = cos(0deg)
-            ng::rotate(-reference_angles[0])
-        };
-        const auto shift_0deg = fwd_stretch_reference_to_0deg * shift_reference;
-        return shift_0deg;
-    }
+        // Get the peak and rotate back to the original xmap reference-frame.
+        // The resulting shift is by how much the transformed target is away from the reference,
+        // so to align it onto the reference, we would beed to subtract this shift from it.
 
-    auto PairwiseShift::relative2global_shifts_(
-        const std::vector<Vec<f64, 2>>& relative_shifts,
-        const MetadataStack& metadata,
-        i64 index_lowest_tilt,
-        bool cosine_stretch
-    ) -> Pair<std::vector<Vec<f64, 2>>, Vec<f64, 2>> {
-        // Compute the global shifts and the mean.
-        const size_t count = relative_shifts.size();
-        Vec<f64, 2> mean{};
-        auto scan_op = [mean_scale = 1 / static_cast<f64>(count), &mean](auto& sum, auto& current) {
-            const auto out = sum + current;
-            mean += out * mean_scale;
-            return out;
-        };
 
-        // Inclusive scan.
-        // FIXME
-        auto global_shifts = std::vector<Vec<f64, 2>>(count);
-        auto sum = Vec<f64, 2>{};
-        for (i64 i = index_lowest_tilt + 1; i < static_cast<i64>(count); ++i)
-            global_shifts.data()[i] = sum = scan_op(sum, relative_shifts.data()[i]);
-        sum = 0;
-        for (i64 i = index_lowest_tilt - 1; i >= 0; --i)
-            global_shifts.data()[i] = sum = scan_op(sum, relative_shifts.data()[i]);
 
-        // Center the shifts.
-        for (auto& shift: global_shifts)
-            shift -= mean;
+        // We could get the shift of the actual target (rather than the transformed one, which is stretched).
+        // However, we'll need to compute the global shifts later on, and we'll need to center the shifts.
+        // These operations require accumulating the shifts of the lower views up to the global reference.
+        // To do so, the simplest is to scale all these slice-to-slice shifts that we just computed to the same
+        // reference frame, process everything there, and then go back to each image's reference-frame at the end.
+        // Here, this global reference frame is the volume space, with no rotation, no tilt, no pitch.
 
-        if (not cosine_stretch)
-            return {global_shifts, mean};
-
-        // Center the global shifts and scale them back to the original reference frame of their respective slice,
-        // i.e. shrink the shifts to account for the slice's tilt and pitch.
-        for (size_t i{}; i < count; ++i) {
-            const auto angles = noa::deg2rad(metadata[i].angles);
-            const auto fwd_shrink_matrix = Mat22<f64>{
-                ng::rotate(angles[0]) *
-                ng::scale(noa::cos(angles.filter(2, 1))) *
-                ng::rotate(-angles[0])
-            };
-            global_shifts[i] = fwd_shrink_matrix * global_shifts[i];
-        }
-        return {global_shifts, mean};
+        // Note that if the cosine-stretching was turned off, we need to stretch from the target angles to 0,
+        // not from the reference. However, the rotation is always from the reference to 0.
+        const auto current_angles = parameters.cosine_stretch ? reference_angles : target_angles;
+        const auto reference2volume =
+            ng::scale(/*cos(0)=*/ 1 / noa::cos(current_angles.filter(2, 1))) *
+            ng::rotate(-reference_angles[0]);
+        return reference2volume * shift_transformed_target;
     }
 }
