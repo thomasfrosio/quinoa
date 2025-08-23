@@ -8,13 +8,14 @@
 namespace qn::ctf {
     class Grid {
     public:
+        Grid() = default;
         Grid(const Shape<i64, 2>& slice_shape, i64 patch_size, i64 patch_step) :
             m_slice_shape(slice_shape),
             m_patch_size(patch_size),
             m_patch_step(patch_step)
         {
-            const std::vector origins_along_y = patch_grid_1d_(m_slice_shape[0], m_patch_size, m_patch_step);
-            const std::vector origins_along_x = patch_grid_1d_(m_slice_shape[1], m_patch_size, m_patch_step);
+            const std::vector origins_along_y = patch_grid_1d_2(m_slice_shape[0], m_patch_size, m_patch_step);
+            const std::vector origins_along_x = patch_grid_1d_2(m_slice_shape[1], m_patch_size, m_patch_step);
 
             m_origins.reserve(origins_along_y.size() * origins_along_x.size());
             for (i64 y: origins_along_y)
@@ -40,11 +41,22 @@ namespace qn::ctf {
         }
 
         /// Converts the patch origins to the subregion origins, used for extraction.
-        template<nt::sinteger I = i32>
-        [[nodiscard]] auto compute_subregion_origins(i64 batch_index = 0) const -> Array<Vec<I, 4>> {
-            auto subregion_origins = Array<Vec<I, 4>>(std::ssize(m_origins));
-            for (auto&& [origin, subregion_origin]: noa::zip(m_origins, subregion_origins.span_1d_contiguous()))
-                subregion_origin = Vec<I, 4>::from_values(batch_index, 0, origin[0], origin[1]);
+        template<nt::sinteger I = i32, size_t N = 4>
+        [[nodiscard]] auto compute_subregion_origins(
+            i64 batch_index = 0,
+            const Vec<i64, 2>& origin_offset = {}
+        ) const -> Array<Vec<I, N>> {
+            check(N == 4 or batch_index == 0);
+            auto subregion_origins = Array<Vec<I, N>>(std::ssize(m_origins));
+            for (auto&& [origin, subregion_origin]: noa::zip(m_origins, subregion_origins.span_1d_contiguous())) {
+                auto iorigin = (origin_offset + origin).template as<I>();
+                if constexpr (N == 4)
+                    subregion_origin = Vec<I, N>::from_values(batch_index, 0, iorigin[0], iorigin[1]);
+                else if constexpr (N == 2)
+                    subregion_origin = iorigin;
+                else
+                    static_assert(nt::always_false_t<I>);
+            }
             return subregion_origins;
         }
 
@@ -73,6 +85,26 @@ namespace qn::ctf {
             std::vector<i64> patch_origin;
             for (i64 i{}; i < max; i += patch_step)
                 patch_origin.push_back(i);
+
+            if (patch_origin.empty())
+                return patch_origin;
+
+            // Center:
+            const i64 end = patch_origin.back() + patch_size;
+            const i64 offset = (grid_size - end) / 2;
+            for (auto& origin: patch_origin)
+                origin += offset;
+
+            return patch_origin;
+        }
+
+        static auto patch_grid_1d_2(i64 grid_size, i64 patch_size, i64 patch_step) -> std::vector<i64> {
+            // Arange:
+            const auto n_patches = noa::divide_up(grid_size, patch_step);
+            std::vector<i64> patch_origin;
+            patch_origin.reserve(static_cast<size_t>(n_patches));
+            for (i64 i{}; i < n_patches; ++i)
+                patch_origin.push_back(i * patch_step);
 
             if (patch_origin.empty())
                 return patch_origin;

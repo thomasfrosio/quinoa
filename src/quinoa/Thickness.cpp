@@ -20,7 +20,7 @@ namespace {
         interpolator_t images{}; // (n,h,w)
         matrices_span_t projection_matrices{}; // (n)
         f64 n_elements_per_image{};
-        SpanContiguous<f32, 3> tomogram{};
+        // SpanContiguous<f32, 3> tomogram{};
 
     public:
         [[nodiscard]] constexpr auto backproject(const Vec<i32, 3>& indices) const -> f32 {
@@ -30,7 +30,7 @@ namespace {
                 const auto image_coordinates = projection_matrices[i] * volume_coordinates;
                 value += images.interpolate_at(image_coordinates, i);
             }
-            tomogram(indices) = value;
+            // tomogram(indices) = value;
             return value;
         }
 
@@ -130,7 +130,7 @@ namespace qn {
                 .images = TomogramVariance::interpolator_t(input_images.span().filter(0, 2, 3).as_contiguous(), image_shape),
                 .projection_matrices = matrices.span_1d(),
                 .n_elements_per_image = static_cast<f64>(image_shape.n_elements()),
-                .tomogram = tomogram.span().filter(1, 2, 3).as_contiguous(), // FIXME
+                // .tomogram = tomogram.span().filter(1, 2, 3).as_contiguous(), // FIXME
             });
         variances = variances.reinterpret_as_cpu();
         noa::normalize(variances, variances, {.mode = noa::Norm::MIN_MAX});
@@ -141,7 +141,7 @@ namespace qn {
             .label = "variance",
         });
 
-        noa::write(tomogram, parameters.output_directory / "tomogram.mrc"); // FIXME
+        // noa::write(tomogram, parameters.output_directory / "tomogram.mrc"); // FIXME
 
         // Compute the baseline. As we get closer to the sample, the variance should progressively increase.
         auto baseline = noa::like<f64>(variances);
@@ -272,7 +272,7 @@ namespace qn {
         const i64 specimen_window_size = specimen_window[1] - specimen_window[0];
         const f64 specimen_window_size_nm = static_cast<f64>(specimen_window_size) * stack_spacing_nm;
         const i64 specimen_window_center = specimen_window[0] + specimen_window_size / 2;
-        const i64 specimen_offset_from_center = variances.ssize() / 2 - specimen_window_center;
+        const i64 specimen_offset_from_center = variances.ssize() / 2 - specimen_window_center; // FIXME
         const f64 specimen_offset_from_center_nm = static_cast<f64>(specimen_offset_from_center) * stack_spacing_nm;
         Logger::info(
             "specimen_window_size={} ({:.2f}nm)\n"
@@ -283,7 +283,7 @@ namespace qn {
 
         // Adjust the shifts to move the specimen to the tomogram center.
         const f64 z_offset = specimen_offset_from_center_nm / file_spacing_nm;
-        metadata.add_volume_shift({z_offset, 0., 0.});
+        metadata.add_volume_shift({-z_offset, 0., 0.});
 
         return specimen_window_size_nm;
     }

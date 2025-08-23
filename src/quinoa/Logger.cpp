@@ -56,17 +56,18 @@ namespace qn {
 
     Logger::ScopeTimer::~ScopeTimer() {
         std::chrono::duration elapsed = timer.elapsed();
+        const char* end = newline ? "\n" : "";
         if (elapsed > std::chrono::minutes(1)) {
             auto minutes = stdc::floor<stdc::minutes>(elapsed);
             auto seconds = stdc::duration_cast<stdc::seconds>(elapsed - minutes);
-            s_logger.log(level, "{}... done. Took {} {}.\n", name, minutes, seconds);
+            s_logger.log(level, "{}... done. Took {} {}.{}", name, minutes, seconds, end);
         } else if (elapsed > std::chrono::seconds(1)) {
             auto seconds = stdc::floor<stdc::seconds>(elapsed);
             auto milliseconds = stdc::duration_cast<stdc::milliseconds>(elapsed - seconds);
-            s_logger.log(level, "{}... done. Took {} {}.\n", name, seconds, milliseconds);
+            s_logger.log(level, "{}... done. Took {} {}.{}", name, seconds, milliseconds, end);
         } else {
             auto milliseconds = stdc::round<stdc::milliseconds>(elapsed);
-            s_logger.log(level, "{}... done. Took {}.\n", name, milliseconds);
+            s_logger.log(level, "{}... done. Took {}.{}", name, milliseconds, end);
         }
     }
 }

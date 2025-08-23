@@ -65,6 +65,7 @@ namespace qn {
             noa::Timer timer{};
             std::string name{};
             spdlog::level::level_enum level{};
+            bool newline{true};
 
             explicit ScopeTimer(
                 std::string_view name_,
@@ -73,6 +74,11 @@ namespace qn {
             {
                 s_logger.log(level, "{}...", name);
                 timer.start();
+            }
+
+            auto set_newline(bool add_newline) -> ScopeTimer& {
+                newline = add_newline;
+                return *this;
             }
 
             ~ScopeTimer();

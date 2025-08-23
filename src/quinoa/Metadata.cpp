@@ -301,6 +301,7 @@ namespace qn {
             });
         return Vec{iter_min->angles[1], iter_max->angles[1]};
     }
+
     auto MetadataStack::time_range() const -> Vec<i64, 2> {
         const auto [iter_min, iter_max] = stdr::minmax_element(
             m_slices, [](const MetadataSlice& lhs, const MetadataSlice& rhs) {
@@ -309,6 +310,17 @@ namespace qn {
         return Vec{
             iter_min->time,
             iter_max->time
+        };
+    }
+
+    auto MetadataStack::defocus_range() const -> Vec<f64, 2> {
+        const auto [iter_min, iter_max] = stdr::minmax_element(
+            m_slices, [](const MetadataSlice& lhs, const MetadataSlice& rhs) {
+                return lhs.defocus.value < rhs.defocus.value;
+            });
+        return Vec{
+            iter_min->defocus.value,
+            iter_max->defocus.value
         };
     }
 }

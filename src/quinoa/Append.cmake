@@ -24,9 +24,6 @@ set(QUINOA_HEADERS
     src/quinoa/CTFGrid.hpp
     src/quinoa/CTFPatches.hpp
     src/quinoa/CTFSimulate.hpp
-
-#    src/quinoa/Tests.hpp
-    src/quinoa/FiguresBCI.hpp
 )
 
 set(QUINOA_SOURCES_CXX
@@ -39,7 +36,6 @@ set(QUINOA_SOURCES_CXX
 
 set(QUINOA_SOURCES_UNIFIED
     src/quinoa/Entry.cpp
-#    src/quinoa/Utilities.cpp
     src/quinoa/Plot.cpp
     src/quinoa/Stack.cpp
 
@@ -56,5 +52,4 @@ set(QUINOA_SOURCES_UNIFIED
     src/quinoa/Thickness.cpp
 #    src/quinoa/ProjectionMatching.cpp
     src/quinoa/Reconstruction.cpp
-    src/quinoa/Test.cpp
 )

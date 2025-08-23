@@ -88,6 +88,8 @@ namespace qn::ctf {
             const Vec<f64, 2>& fftfreq_range,
             f64 relative_threshold = 0.9
         ) const -> bool {
+            (void)fftfreq_range;
+            (void)relative_threshold;
             return false; // FIXME
         }
     };

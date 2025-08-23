@@ -10,51 +10,51 @@
 #include "quinoa/Plot.hpp"
 
 namespace qn {
-    struct ExtractLines {
-    public:
-        static constexpr noa::Interp INTERP = noa::Interp::LANCZOS8;
-        using input_type = SpanContiguous<const c32, 3>;
-        using interpolator_type = noa::InterpolatorSpectrum<2, noa::Remap::H2H, INTERP, input_type>;
-        using value_type = c32;
-        using real_type = f32;
-
-        using coord_type = f64;
-        using index_type = i64;
-        using coord2_type = Vec<coord_type, 2>;
-        using matrix_type = Mat<coord_type, 2, 2>;
-
-    public:
-        ExtractLines(
-            const SpanContiguous<const value_type, 3>& spectra,
-            const SpanContiguous<value_type, 3>& lines,
-            const SpanContiguous<const matrix_type, 1>& line_rotations
-        ) {
-
-        }
-
-    public:
-        interpolator_type spectra; // (b,h,w)
-        SpanContiguous<c32, 3> lines; // (b,i,w)
-        SpanContiguous<const Mat<coord_type, 2, 2>, 1> matrices; // (i)
-        index_type window_radius;
-
-        constexpr auto windowed_sinc(coord_type frequency_offset) const {
-            return static_cast<real_type>(frequency_offset);
-        }
-
-        constexpr void operator()(i64 b, i64 i, i64 w, i64 u) const {
-            // Get the sinc weight.
-            const auto frequency_offset = static_cast<coord_type>(w - window_radius);
-            const auto sinc_weight = windowed_sinc(frequency_offset);
-
-            // Get the line.
-            const auto frequency_2d = matrices[i] * coord2_type::from_values(frequency_offset, u);
-            const auto value = spectra.interpolate_spectrum_at(frequency_2d, b);
-
-            //
-            noa::guts::atomic_add(lines, value * sinc_weight, b, i, u);
-        }
-    };
+    // struct ExtractLines {
+    // public:
+    //     static constexpr noa::Interp INTERP = noa::Interp::LANCZOS8;
+    //     using input_type = SpanContiguous<const c32, 3>;
+    //     using interpolator_type = noa::InterpolatorSpectrum<2, noa::Remap::H2H, INTERP, input_type>;
+    //     using value_type = c32;
+    //     using real_type = f32;
+    //
+    //     using coord_type = f64;
+    //     using index_type = i64;
+    //     using coord2_type = Vec<coord_type, 2>;
+    //     using matrix_type = Mat<coord_type, 2, 2>;
+    //
+    // public:
+    //     ExtractLines(
+    //         const SpanContiguous<const value_type, 3>& spectra,
+    //         const SpanContiguous<value_type, 3>& lines,
+    //         const SpanContiguous<const matrix_type, 1>& line_rotations
+    //     ) {
+    //
+    //     }
+    //
+    // public:
+    //     interpolator_type spectra; // (b,h,w)
+    //     SpanContiguous<c32, 3> lines; // (b,i,w)
+    //     SpanContiguous<const Mat<coord_type, 2, 2>, 1> matrices; // (i)
+    //     index_type window_radius;
+    //
+    //     constexpr auto windowed_sinc(coord_type frequency_offset) const {
+    //         return static_cast<real_type>(frequency_offset);
+    //     }
+    //
+    //     constexpr void operator()(i64 b, i64 i, i64 w, i64 u) const {
+    //         // Get the sinc weight.
+    //         const auto frequency_offset = static_cast<coord_type>(w - window_radius);
+    //         const auto sinc_weight = windowed_sinc(frequency_offset);
+    //
+    //         // Get the line.
+    //         const auto frequency_2d = matrices[i] * coord2_type::from_values(frequency_offset, u);
+    //         const auto value = spectra.interpolate_spectrum_at(frequency_2d, b);
+    //
+    //         //
+    //         noa::guts::atomic_add(lines, value * sinc_weight, b, i, u);
+    //     }
+    // };
 }
 
 namespace qn {

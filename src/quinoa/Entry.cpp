@@ -12,14 +12,8 @@
 #include "quinoa/Thickness.hpp"
 #include "quinoa/Reconstruction.hpp"
 
-#include "quinoa/Tests.hpp"
-
-
 auto main(int argc, char* argv[]) -> int {
     using namespace qn;
-
-    // test_stack_load();
-    // return EXIT_SUCCESS;
 
     try {
         // Initialize the logger before doing anything else.
@@ -141,7 +135,7 @@ auto main(int argc, char* argv[]) -> int {
             // 3. Refine alignment.
             //  - The sample thickness is estimated (which requires a horizontal specimen).
             if (settings.alignment.refine_run) {
-                estimate_sample_thickness(
+                settings.experiment.thickness = estimate_sample_thickness(
                     settings.files.stack_file,
                     metadata, // updated: .shifts
                     {
@@ -179,7 +173,7 @@ auto main(int argc, char* argv[]) -> int {
                 },
                 .bandpass_mirror_padding_factor = 0.5,
                 .normalize_and_standardize = true,
-                .smooth_edge_percent = 0.0,
+                .smooth_edge_percent = 0.02,
                 .zero_pad_to_fast_fft_shape = false,
                 .zero_pad_to_square_shape = false,
             });
@@ -203,7 +197,12 @@ auto main(int argc, char* argv[]) -> int {
                     .scale = 1.,
                 });
 
-                auto tomogram = tomogram_reconstruction(stack.view(), stack_spacing, postprocessing_metadata, ctf, {
+                tomogram_reconstruction(stack.view(), postprocessing_metadata, ctf, {
+                    .sample_thickness_nm = settings.experiment.thickness,
+                    .z_padding_percent = 0.1,
+                    .correct_ctf = true,
+                    .defocus_step_nm = 15.,
+                    .interp = noa::Interp::LINEAR,
                     .output_directory = settings.files.output_directory,
                 });
                 // const auto filename = settings.files.output_directory / fmt::format("{}_tomogram.mrc", basename);

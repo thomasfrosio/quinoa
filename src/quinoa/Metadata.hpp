@@ -214,6 +214,7 @@ namespace qn {
 
         [[nodiscard]] auto tilt_range() const -> Vec<f64, 2>;
         [[nodiscard]] auto time_range() const -> Vec<i64, 2>;
+        [[nodiscard]] auto defocus_range() const -> Vec<f64, 2>;
 
     private:
         std::vector<MetadataSlice> m_slices;

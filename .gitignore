@@ -3,5 +3,3 @@ cmake-build-*/
 noa/
 tests/
 
-/cmake-build-debug-remote/
-/cmake-build-release-remote/

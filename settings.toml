@@ -18,17 +18,18 @@
 #output_directory = '~/Tmp/quinoa/10304/001/tilt6'
 #frames_directory = '~/Datasets/10304'
 
-mdoc_file = '~/Datasets/Yakun/tilt9906.mdoc'
-stack_file = '~/Datasets/Yakun/tilt9906.mrc'
-output_directory = '~/Tmp/quinoa/Yakun/tilt9906/thickness_01'
-frames_directory = '~/Datasets/Yakun'
-csv_file = '~/Tmp/quinoa/Yakun/tilt9906/thickness_01/tilt9906_aligned.csv'
+#mdoc_file = '~/Datasets/Yakun/tilt9906.mdoc'
+#stack_file = '~/Datasets/Yakun/tilt9906.mrc'
+#output_directory = '~/Tmp/quinoa/Yakun/tilt9906/thickness_01'
+#frames_directory = '~/Datasets/Yakun'
+#csv_file = '~/Tmp/quinoa/Yakun/tilt9906/thickness_01/tilt9906_aligned.csv'
 
 ## Remote
-#mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun/tilt9906.mdoc'
-#stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun/tilt9906.mrc'
-#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/yakun/tilt9906/thickness_001'
-#frames_directory = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun'
+mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun/tilt9906.mdoc'
+stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun/tilt9906.mrc'
+output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/yakun/tilt9906/recons01'
+frames_directory = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun'
+csv_file = '/dls/ebic/data/staff-scratch/thomas2/tmp/yakun/tilt9906/recons01/tilt9906_aligned.csv'
 
 #output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/10304/002/tilt1'
 #frames_directory = '/dls/ebic/data/staff-scratch/thomas2/datasets/10304'
@@ -67,7 +68,7 @@ voltage = 300
 amplitude = 0.07
 cs = 2.7
 phase_shift = 0
-thickness = 100
+thickness = 400
 
 [preprocessing]
 run = false
@@ -89,11 +90,11 @@ fit_astigmatism = true
 fit_thickness = false
 
 [alignment.refine]
-run = true
+run = false
 fit_thickness = true
 
 [postprocessing]
-run = false
+run = true
 resolution = 18
 save_aligned_stack = false
 reconstruct.run = true

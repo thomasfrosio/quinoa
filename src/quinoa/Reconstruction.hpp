@@ -5,15 +5,27 @@
 #include "quinoa/Metadata.hpp"
 
 namespace qn {
-    enum class ReconstructionMode { FOURIER, REAL };
-    enum class ReconstructionWeighting { FOURIER, RADIAL, SIRT };
+    struct ReconstructionRadial {
+
+    };
+    struct ReconstructionLikeSIRT {
+
+    };
+    struct ReconstructionWiener {
+
+    };
+    struct ReconstructionPhaseFlip {
+
+    };
 
     struct TomogramReconstructionParameters{
         f64 sample_thickness_nm;
-        std::string mode;
-        std::string weighting;
         f64 z_padding_percent;
-        i64 cube_size;
+
+        bool correct_ctf;
+        f64 defocus_step_nm;
+
+        noa::Interp interp;
         Path output_directory;
     };
 
@@ -23,7 +35,6 @@ namespace qn {
     /// effects from the rotation and interpolation in Fourier space.
     auto tomogram_reconstruction(
         const View<f32>& stack,
-        const Vec<f64, 2>& stack_spacing,
         const MetadataStack& metadata,
         const ns::CTFIsotropic<f64>& ctf,
         const TomogramReconstructionParameters& parameters
