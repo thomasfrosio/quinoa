@@ -181,7 +181,8 @@ namespace {
        f64 z_step_nm,
        f64 z_offset_nm
    ) {
-        auto t = Logger::trace_scope_time("Computing corrected stack");
+        // auto t = Logger::trace_scope_time("Computing corrected stack");
+        // t.set_newline(false);
 
         const auto spacing_nm = ctf.pixel_size() * 1e-1;
         const auto image_shape = output_images.shape().filter(2, 3);
@@ -189,10 +190,11 @@ namespace {
             ni::Ellipsis{}, ni::Slice{0, image_shape[0]}, ni::Slice{0, image_shape[1]}
         );
 
-        auto& stream = Stream::current(padded_images_rfft.device());
+        // auto& stream = Stream::current(padded_images_rfft.device());
         // noa::Event start0, stop0;
         // start0.record(stream);
 
+        i32 ii{};
         for (auto& slice: metadata) {
             // Recompute how many strips are needed for this image.
             const auto strips = divide_image_in_z_strips(image_shape, slice.angles, spacing_nm, z_step_nm);
@@ -213,7 +215,7 @@ namespace {
             auto ictf = ns::CTFAnisotropic(ctf);
             ictf.set_defocus(slice.defocus); // set the astigmatism
 
-            noa::Event start1, stop1;
+            // noa::Event start1, stop1;
             // start1.record(stream);
             ns::filter_spectrum_2d<"h2h">(
                 padded_image_rfft, padded_images_strip_rfft, padded_images_strip.shape(),
@@ -222,17 +224,41 @@ namespace {
                     .defocus_start_um = static_cast<f32>(slice.defocus.value - z_start_nm * 1e-3),
                     .defocus_step_um = static_cast<f32>(z_step_nm * 1e-3),
                 });
+            // padded_images_strip_buffer.eval();
             // stop1.record(stream);
             // stop1.synchronize();
             // Logger::trace("filter took {}", noa::Event::elapsed(start1, stop1));
 
-            start1.record(stream);
+            // start1.record(stream);
             // nf::c2r(padded_images_strip_rfft, padded_images_strip);
-            // TODO Try grouping every by halft and see if it's better than running everything all the time
+            // TODO Try grouping every by half and see if it's better than running everything all the time
             // TODO Why does syncing make it faster?
-            nf::c2r(padded_images_strip_buffer_rfft, padded_images_strip_buffer, {.norm = noa::fft::Norm::FORWARD});
-            stop1.record(stream);
-            stop1.synchronize();
+            {
+                i64 q1 = padded_images_strip_buffer_rfft.shape()[0] / 4;
+                i64 q2 = q1 * 2;
+                i64 q3 = q1 * 3;
+                if (n_strips < q1) {
+                    nf::c2r(padded_images_strip_buffer_rfft.subregion(ni::Slice{0, q1}), padded_images_strip_buffer.subregion(ni::Slice{0, q1}), {.norm = noa::fft::Norm::FORWARD});
+                } else if (n_strips < q2) {
+                    nf::c2r(padded_images_strip_buffer_rfft.subregion(ni::Slice{0, q2}), padded_images_strip_buffer.subregion(ni::Slice{0, q2}), {.norm = noa::fft::Norm::FORWARD});
+                } else if (n_strips < q3) {
+                    nf::c2r(padded_images_strip_buffer_rfft.subregion(ni::Slice{0, q3}), padded_images_strip_buffer.subregion(ni::Slice{0, q3}), {.norm = noa::fft::Norm::FORWARD});
+                } else {
+                    nf::c2r(padded_images_strip_buffer_rfft, padded_images_strip_buffer, {.norm = noa::fft::Norm::FORWARD});
+                }
+                // Session::fft_clear_cache();
+                // Session::fft_set_cache_limit(100);
+                // Session::fft_record_workspace();
+                // nf::c2r(..., {.plan_only=true});
+                // Session::fft_allocate_workspace();
+            }
+            // nf::c2r(padded_images_strip_buffer_rfft, padded_images_strip_buffer, {.norm = noa::fft::Norm::FORWARD});
+            // if (ii == 0) {
+                padded_images_strip_buffer.eval();
+                // ii = 1;
+            // }
+            // stop1.record(stream);
+            // stop1.synchronize();
             // Logger::trace("fft took {}, n={}", noa::Event::elapsed(start1, stop1), n_strips);
 
             // Recompose the filtered strips into a single image.
@@ -253,6 +279,7 @@ namespace {
                 .z_offset_start_nm = static_cast<f32>(z_offset_start_nm),
                 .z_step_nm = static_cast<f32>(z_step_nm),
             });
+            // padded_images_strip_buffer.eval();
             // stop1.record(stream);
             // stop1.synchronize();
             // Logger::trace("recompose took {}", noa::Event::elapsed(start1, stop1));
@@ -282,10 +309,9 @@ namespace {
             auto volume_coordinates = indices.as<f32>().push_back(1);
             volume_coordinates[0] += z_offset;
 
-            // TODO Add volume deformations with the addition of a SplineGrid updating volume_coordinates.
-
             f32 value{};
             for (i64 i{}; i < projection_matrices.ssize(); ++i) {
+                // TODO Add volume deformations with the addition of a SplineGrid updating volume_coordinates.
                 const auto image_coordinates = projection_matrices[i] * volume_coordinates;
                 value += images.interpolate_at(image_coordinates, i);
             }
@@ -301,12 +327,6 @@ namespace {
         i64 z_offset,
         noa::Interp interpolation_method
     ) {
-        auto t = Logger::trace_scope_time("Backprojecting");
-
-        // auto& stream = Stream::current(input_images.device());
-        // noa::Event start0, stop0;
-        // start0.record(stream);
-
         if (interpolation_method == noa::Interp::CUBIC_BSPLINE)
             noa::cubic_bspline_prefilter(input_images, input_images);
 
@@ -334,10 +354,6 @@ namespace {
                     .z_offset = static_cast<f32>(z_offset),
                 });
         }
-
-        // stop0.record(stream);
-        // stop0.synchronize();
-        // Logger::trace("backproject took {}", noa::Event::elapsed(start0, stop0));
     }
 }
 
@@ -350,7 +366,7 @@ namespace qn {
     ) -> Array<f32> {
         auto timer = Logger::info_scope_time("Reconstructing tomogram");
 
-        // For simplicity, make the defocus resolution an odd integer multiple of the pixel size.
+        // For simplicity, make the defocus resolution (in pixels) an odd integer multiple of the pixel size.
         const f64 spacing_nm = ctf.pixel_size() * 1e-1;
         auto z_step = static_cast<i64>(std::floor(parameters.defocus_step_nm / spacing_nm));
         z_step += noa::is_even(z_step);
@@ -454,9 +470,7 @@ namespace qn {
             backward_project(corrected_stack.view(), matrices.view(), z_section.view(), z, parameters.interp);
 
             // Copy the section into the volume.
-            // TODO Use different stream
             z_section.to(volume.view().subregion(0, ni::Slice{z, z + z_step}));
-            // TODO noa::copy(z_section, volume.view().subregion(0, ni::Slice{z, z + z_step}), {.sync_gpu_to_cpu = false});
         }
 
         noa::write(volume, Vec<f64, 3>::from_value(spacing_nm * 10), parameters.output_directory / "tomogram.mrc", {.dtype = noa::io::Encoding::F16});
