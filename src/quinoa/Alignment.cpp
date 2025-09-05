@@ -185,7 +185,7 @@ namespace qn {
             .bandpass{
                 .highpass_cutoff = 0.02,
                 .highpass_width = 0.02,
-                .lowpass_cutoff = 0.45,
+                .lowpass_cutoff = 0.5,
                 .lowpass_width = 0.05,
             },
 
@@ -290,10 +290,11 @@ namespace qn {
             stack_loader, metadata, grid, parameters.resolution_range,
             patch_size, patch_size_padded, patch_size
         );
+        stack_loader = StackLoader{}; // erase buffers
 
         // Run the coarse CTF alignment.
         // This is a simple alignment of the patches near the tilt-axis to get initial per-image
-        // estimates of the defocus and to check that the defocus ramp matches the tilt geometry.
+        // estimates of the defocus and to check that the per-image defocus gradient matches the tilt geometry.
         ctf::coarse_fit(
             grid, patches, ctf, metadata, { // ctf.defocus|phase_shift and metadata.defocus|phase_shift are updated
                 .initial_fitting_range = fitting_range,
@@ -303,9 +304,35 @@ namespace qn {
                 .output_directory = parameters.output_directory,
             });
 
-        // Final CTF alignment.
-        // This fits the stage angles (mostly tilt and pitch), refines the per-tilt defocus and
-        // the tilt-resolved astigmatism and time-resolve phase-shift.
+        // Find the specimen thickness by fitting the variance withing the tomogram.
+        // While we technically could fit the thickness from the spectrum like in CTFFIND5, using the tomogram
+        // seems more reliable. The thickness value we get here can then be plugged into the CTF model for the
+        // final refine fit.
+        f64 specimen_thickness_nm{};
+        if (parameters.fit_thickness) {
+            // In order to fit the thickness from the tomogram, we first need to find the stage angles.
+            // Since we don't need to be very accurate here, turning off the astigmatism for significantly
+            // faster compute time should be fine.
+            ctf::refine_fit(
+                metadata, grid, patches, ctf, {
+                    .fit_rotation = parameters.fit_rotation,
+                    .fit_tilt = parameters.fit_tilt,
+                    .fit_pitch = parameters.fit_pitch,
+                    .fit_phase_shift = parameters.fit_phase_shift,
+                    .fit_astigmatism = false,
+                    .output_directory = parameters.output_directory,
+                });
+            specimen_thickness_nm = estimate_sample_thickness(
+                stack_filename, metadata, /* updated: .shifts */ {
+                    .resolution = 24,
+                    .compute_device = parameters.compute_device,
+                    .allocator = Allocator::DEFAULT,
+                    .output_directory = parameters.output_directory
+                });
+        }
+
+        // Final CTF alignment where the tilt-resolved astigmatism can be fitted.
+        // Fitting the astigmatism is the slowest step of the CTF alignment, by far.
         ctf::refine_fit(
             metadata, grid, patches, ctf, {
                 .fit_rotation = parameters.fit_rotation,
@@ -313,10 +340,9 @@ namespace qn {
                 .fit_pitch = parameters.fit_pitch,
                 .fit_phase_shift = parameters.fit_phase_shift,
                 .fit_astigmatism = parameters.fit_astigmatism,
+                .thickness = specimen_thickness_nm * 1e-3, // um
                 .output_directory = parameters.output_directory,
             });
-
-        // FIXME fit thickness using tomogram, then restart refine with the provided specimen thickness?
 
         return ctf;
     }

@@ -569,7 +569,7 @@ namespace {
                 span[i] = m_parameters_buffer[i];
         }
 
-        auto cost() -> f64 {
+        auto zncc_per_image() -> f64 {
             // Batch the arrays for noa.
             auto width = m_spectra.shape().width();
             auto spectra_batched = m_spectra.view().reshape({-1, 1, 1, width}); // (c,n*p,1,w) -> (c*n*p,1,1,w)
@@ -588,93 +588,35 @@ namespace {
                     m_are_rotational_averages_ready = true;
             }
 
-            // We can fit based on the NCC of each patch, or of each image.
-            // I'm still not sure which is best. I'm leaning towards per image just because it's simpler.
-            // Both seem to give similar results on the datasets I've tried.
-            constexpr bool FIT_PER_PATCH = false;
-            if constexpr (FIT_PER_PATCH) {
-                // Wait for the compute device. Everything below is done on the CPU.
-                m_spectra.eval();
+            // Compute the average spectrum of each image.
+            ng::fuse_spectra( // (c*n*p,1,1,s) -> (c*n,1,1,s)
+                spectra_batched, m_patches.rho(), m_ctfs_isotropic.view().flat(),
+                spectra_average_batched, m_patches.rho(), m_ctfs.view().flat(),
+                spectra_average_smooth_batched
+            );
 
-                const auto n_threads = static_cast<i32>((m_c + 1) / 2);
-                parallel_for(n_threads, m_c, [this](i32, i64 c) {
-                    // Get the channel.
-                    const auto spectrum_np = m_spectra.span().subregion(c).filter(1, 3).as_contiguous(); // (c,n*p,1,w) -> (n*p,w)
-                    const auto ctf_np = m_ctfs_isotropic.span().subregion(c).as_1d(); // (c,1,1,n*p) -> (n*p)
-                    const auto ncc_n = m_nccs.span().subregion(c).as_1d(); // (c,1,1,n) -> (n)
-                    const auto n_patches = m_patches.n_patches_per_image();
+            // Wait for the compute device. Everything below is done on the CPU.
+            m_spectra.eval();
 
-                    for (i64 i = 0; i < m_patches.n_images(); ++i) {
-                        const auto chunk = m_patches.chunk(i);
-                        const auto spectrum_p = spectrum_np.subregion(chunk);
-                        const auto ctf_p = ctf_np.subregion(chunk);
+            for (i64 c{}; c < m_c; ++c) {
+                // Get the channel.
+                const auto spectrum_n = m_spectra_average.span().subregion(c).filter(1, 3).as_contiguous(); // (c,n,1,w) -> (n,w)
+                const auto ctf_n = m_ctfs.span().subregion(c).as_1d(); // (c,1,1,w) -> (n)
+                const auto ncc_n = m_nccs.span().subregion(c).as_1d(); // (c,1,1,w) -> (n)
 
-                        f64 ncc{};
-                        if (m_thickness > 1e-6) {
-                            // Use a thickness-aware CTF model.
-                            const auto thickness = m_thickness_c[static_cast<size_t>(c)];
-                            const auto thickness_modulation = ThicknessModulation{
-                                .wavelength = ctf_p[0].wavelength(),
-                                .spacing = ctf_p[0].pixel_size(),
-                                .thickness = effective_thickness(thickness, m_metadata[i].angles) * 1e4,
-                            };
-
-                            // Since we loop through the patches, sample the thickness modulation curve once beforehand.
-                            auto thickness_modulation_curve = m_thickness_modulation.subregion(c).span_1d();
-                            auto fftfreq_step = m_patches.rho_step();
-                            for (i64 ii{}; ii < thickness_modulation_curve.ssize(); ++ii) {
-                                auto fftfreq = static_cast<f64>(ii) * fftfreq_step + m_patches.rho().start;
-                                thickness_modulation_curve[ii] = thickness_modulation.sample_at(fftfreq);
-                            }
-                            for (i64 j{}; j < n_patches; ++j) {
-                                ncc += zero_normalized_cross_correlation(
-                                    spectrum_p[j], ctf_p[j], m_patches.rho_vec(), m_fitting_ranges[i],
-                                    m_baseline[i], thickness_modulation_curve
-                                );
-                            }
-                        } else {
-                            // Use the classic CTF model.
-                            for (i64 j{}; j < n_patches; ++j) {
-                                ncc += zero_normalized_cross_correlation(
-                                    spectrum_p[j], ctf_p[j], m_patches.rho_vec(), m_fitting_ranges[i], m_baseline[i]
-                                );
-                            }
-                        }
-                        ncc /= static_cast<f64>(n_patches);
-                        ncc_n[i] = ncc;
-                    }
-                });
-            } else {
-                // Compute the average spectrum of each image.
-                ng::fuse_spectra( // (c*n*p,1,1,s) -> (c*n,1,1,s)
-                    spectra_batched, m_patches.rho(), m_ctfs_isotropic.view().flat(),
-                    spectra_average_batched, m_patches.rho(), m_ctfs.view().flat(),
-                    spectra_average_smooth_batched
-                );
-
-                // Wait for the compute device. Everything below is done on the CPU.
-                m_spectra.eval();
-
-                for (i64 c{}; c < m_c; ++c) {
-                    // Get the channel.
-                    const auto spectrum_n = m_spectra_average.span().subregion(c).filter(1, 3).as_contiguous(); // (c,n,1,w) -> (n,w)
-                    const auto ctf_n = m_ctfs.span().subregion(c).as_1d(); // (c,1,1,w) -> (n)
-                    const auto ncc_n = m_nccs.span().subregion(c).as_1d(); // (c,1,1,w) -> (n)
-
-                    for (i64 i{}; i < m_patches.n_images(); ++i) {
-                        // Use the thickness-aware CTF model.
-                        // If the thickness is 0, the thickness modulation is a constant 1.
-                        const auto thickness = m_thickness_c[static_cast<size_t>(c)];
-                        const auto thickness_modulation = ThicknessModulation{
-                            .wavelength = ctf_n[i].wavelength(),
-                            .spacing = ctf_n[i].pixel_size(),
-                            .thickness = effective_thickness(thickness, m_metadata[i].angles) * 1e4,
-                        };
-                        ncc_n[i] = zero_normalized_cross_correlation(
-                            spectrum_n[i], ctf_n[i], m_patches.rho_vec(), m_fitting_ranges[i],
-                            m_baseline[i], thickness_modulation
-                        );
-                    }
+                for (i64 i{}; i < m_patches.n_images(); ++i) {
+                    // Use the thickness-aware CTF model.
+                    // If the thickness is 0, the thickness modulation is a constant 1.
+                    const auto thickness = m_thickness_c[static_cast<size_t>(c)];
+                    const auto thickness_modulation = ThicknessModulation{
+                        .wavelength = ctf_n[i].wavelength(),
+                        .spacing = ctf_n[i].pixel_size(),
+                        .thickness = effective_thickness(thickness, m_metadata[i].angles) * 1e4,
+                    };
+                    ncc_n[i] = zero_normalized_cross_correlation(
+                        spectrum_n[i], ctf_n[i], m_patches.rho_vec(), m_fitting_ranges[i],
+                        m_baseline[static_cast<size_t>(i)], thickness_modulation
+                    );
                 }
             }
 
@@ -683,6 +625,91 @@ namespace {
             for (f64& ncc: m_nccs.span().subregion(0).as_1d())
                 sum += ncc;
             return sum / static_cast<f64>(m_patches.n_images());
+        }
+
+        auto zncc_per_patch() -> f64 {
+            // Batch the arrays for noa.
+            auto width = m_spectra.shape().width();
+            auto spectra_batched = m_spectra.view().reshape({-1, 1, 1, width}); // (c,n*p,1,w) -> (c*n*p,1,1,w)
+
+            // Compute the rotational average of the power-spectra, accounting for the astigmatism.
+            if (not m_are_rotational_averages_ready) {
+                auto polar_shape = m_patches.view_batched().shape(); // (n*p,1,h,w)
+                polar_shape[0] = spectra_batched.shape()[0]; // (n*p,1,1,w) -> (c*n*p,1,h,w)
+                noa::reduce_axes_iwise( // (c*n*p,1,h,w) -> (c*n*p,1,1,w)
+                    polar_shape.filter(0, 2, 3), m_patches.view().device(),
+                    noa::wrap(f32{0}, f32{0}), spectra_batched.permute({1, 0, 2, 3}), m_astig_reduce
+                );
+                if (not m_parameters[ASTIGMATISM_VALUE].is_fitted())
+                    m_are_rotational_averages_ready = true;
+            }
+
+            m_spectra.eval();
+
+            const auto n_threads = static_cast<i32>((m_c + 1) / 2);
+            parallel_for(n_threads, m_c, [this](i32, i64 c) {
+                // Get the channel.
+                const auto spectrum_np = m_spectra.span().subregion(c).filter(1, 3).as_contiguous();
+                // (c,n*p,1,w) -> (n*p,w)
+                const auto ctf_np = m_ctfs_isotropic.span().subregion(c).as_1d(); // (c,1,1,n*p) -> (n*p)
+                const auto ncc_n = m_nccs.span().subregion(c).as_1d(); // (c,1,1,n) -> (n)
+                const auto n_patches = m_patches.n_patches_per_image();
+
+                for (i64 i = 0; i < m_patches.n_images(); ++i) {
+                    const auto chunk = m_patches.chunk(i);
+                    const auto spectrum_p = spectrum_np.subregion(chunk);
+                    const auto ctf_p = ctf_np.subregion(chunk);
+
+                    f64 ncc{};
+                    if (m_thickness > 1e-6) {
+                        // Use a thickness-aware CTF model.
+                        const auto thickness = m_thickness_c[static_cast<size_t>(c)];
+                        const auto thickness_modulation = ThicknessModulation{
+                            .wavelength = ctf_p[0].wavelength(),
+                            .spacing = ctf_p[0].pixel_size(),
+                            .thickness = effective_thickness(thickness, m_metadata[i].angles) * 1e4,
+                        };
+
+                        // Since we loop through the patches, sample the thickness modulation curve once beforehand.
+                        auto thickness_modulation_curve = m_thickness_modulation.subregion(c).span_1d();
+                        auto fftfreq_step = m_patches.rho_step();
+                        for (i64 ii{}; ii < thickness_modulation_curve.ssize(); ++ii) {
+                            auto fftfreq = static_cast<f64>(ii) * fftfreq_step + m_patches.rho().start;
+                            thickness_modulation_curve[ii] = thickness_modulation.sample_at(fftfreq);
+                        }
+                        for (i64 j{}; j < n_patches; ++j) {
+                            ncc += zero_normalized_cross_correlation(
+                                spectrum_p[j], ctf_p[j], m_patches.rho_vec(), m_fitting_ranges[i],
+                                m_baseline[static_cast<size_t>(i)], thickness_modulation_curve
+                            );
+                        }
+                    } else {
+                        // Use the classic CTF model.
+                        for (i64 j{}; j < n_patches; ++j) {
+                            ncc += zero_normalized_cross_correlation(
+                                spectrum_p[j], ctf_p[j], m_patches.rho_vec(), m_fitting_ranges[i],
+                                m_baseline[static_cast<size_t>(i)]
+                            );
+                        }
+                    }
+                    ncc /= static_cast<f64>(n_patches);
+                    ncc_n[i] = ncc;
+                }
+            });
+
+            // The first channel is the cost.
+            f64 sum{};
+            for (f64& ncc: m_nccs.span().subregion(0).as_1d())
+                sum += ncc;
+            return sum / static_cast<f64>(m_patches.n_images());
+        }
+
+        auto cost() -> f64 {
+            // We can fit based on the NCC of each patch, or of each image.
+            // I'm still not sure which is best. I'm leaning towards per image just because it's simpler.
+            // Both seem to give similar results on the datasets I've tried, but per-patch seems to be
+            // a bit more sensitive.
+            return zncc_per_patch();
         }
 
         template<nt::any_of<SpanContiguous<f64, 2>, Empty> T = Empty>
@@ -740,22 +767,13 @@ namespace {
 
         static auto function_to_maximise(u32, const f64* parameters, f64* gradients, void* buffer) -> f64 {
             // auto t = Logger::trace_scope_time("maximise"); // FIXME
-
+            check(gradients);
             auto& self = *static_cast<Fitter*>(buffer);
 
             // The optimizer may pass its own array, so update our parameters.
             auto& params = self.parameters();
             if (parameters != params.data())
                 std::copy_n(parameters, params.size(), params.data());
-
-            // In case the optimizer only needs the cost.
-            if (not gradients) {
-                // panic(); // FIXME
-                self.update_ctfs(0);
-                auto cost = self.cost();
-                Logger::trace("cost={:.4f}, thickness={:.4f}", cost, params.thickness());
-                return cost;
-            }
 
             // Memoization. Sometimes the linear search within L-BFGS is stuck,
             // so detect for these cases to not have to recompute the gradients each time.
@@ -830,15 +848,14 @@ namespace {
             const auto spectrum_n = spectra_average_batched.reinterpret_as_cpu().span().filter(0, 3).as_contiguous();
             const auto ctf_n = m_ctfs.span().subregion(0).as_1d();
 
-            // Fit the background of each image and tune based on the local NCC between the background-subtracted
-            // spectrum and the simulated CTF. Note that these baselines will be needed for the optimization.
+            // Prepare the baselines and fitting range for the fitting.
             for (i64 i{}; i < m_patches.n_images(); ++i) {
-                m_fitting_ranges[i] = m_baseline[i].fit_and_tune_fitting_range(
+                m_fitting_ranges[i] = m_baseline[static_cast<size_t>(i)].fit_and_tune_fitting_range(
                     spectrum_n[i], m_patches.rho_vec(), ctf_n[i], {
                         .threshold = 1.2,
                         .keep_first_nth_peaks = 2,
 
-                        // In case of strong astigmatism, the initial spectrum may have only a few Thon-rings.
+                        // In the case of strong astigmatism, the initial spectrum may have only a few Thon-rings.
                         // By looking ahead, we give the optimizer more opportunities to improve the spectrum.
                         .n_extra_peaks_to_append = 2,
                         .n_recoveries_allowed = 1,
@@ -881,14 +898,14 @@ namespace {
             const auto fftfreq_step = m_patches.rho_step();
             auto baseline = Baseline{};
             for (i64 i{}; i < m_patches.n_images(); ++i) {
-                // Recompute the fitting range, but without extra peaks or recovery.
+                // Recompute the fitting range, but without extra peaks.
                 const auto thickness = effective_thickness(m_thickness_c[0], m_metadata[i].angles);
                 auto fitting_range = baseline.fit_and_tune_fitting_range(
                     spectrum_n[i], m_patches.rho_vec(), ctf_n[i], {
                         .threshold = 1.5,
                         .keep_first_nth_peaks = 2,
                         .n_extra_peaks_to_append = 0,
-                        .n_recoveries_allowed = 0,
+                        .n_recoveries_allowed = 1,
                         .thickness_um = thickness,
                     });
 
@@ -1116,6 +1133,7 @@ namespace qn::ctf {
         };
 
         // Refine the stage-angles, the per-image defocus, and optionally fit the time-resolved phase-shift.
+        // This is very cheap to compute since the rotational average needs to be computed only once.
         run_optimization(NLOPT_LD_LBFGS, 30, "1", {
             .rotation = options.fit_rotation ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
             .tilt =  options.fit_tilt ? deg2rad(Vec{-30., 30.}) : Vec{0., 0.},
@@ -1128,11 +1146,13 @@ namespace qn::ctf {
             return;
 
         // Fit the astigmatism.
+        // For the first pass, use a global optimizer to reduce the risk to be stuck in a local minimum in the
+        // astigmatism range.
         Logger::trace("Enable astigmatism with tilt-resolution={}", astigmatism_value.size());
         run_optimization(NLOPT_GD_STOGO, 50, "2", {
-            .rotation =  options.fit_rotation ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
-            .tilt =  options.fit_tilt ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
-            .pitch = options.fit_pitch ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
+            // .rotation =  options.fit_rotation ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
+            // .tilt =  options.fit_tilt ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
+            // .pitch = options.fit_pitch ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
             .phase_shift = options.fit_phase_shift ? noa::deg2rad(Vec{-20., 20.}) : Vec{0., 0.},
             .defocus = Vec{-0.3, 0.3},
             .astigmatism_value = {-0.7, 0.7},
@@ -1149,29 +1169,28 @@ namespace qn::ctf {
         });
 
         // Increase the tilt-resolution of the astigmatism.
-        // auto astigmatism_buffer2 = noa::zeros<f64>({2, 1, 1, patches.n_images() / 2 + 1});
-        // auto astigmatism_value2 = SplineGridCubic<f64, 1>(astigmatism_buffer2.span().subregion(0).as_1d());
-        // auto astigmatism_angle2 = SplineGridCubic<f64, 1>(astigmatism_buffer2.span().subregion(1).as_1d());
-        // auto tilt_range = metadata.tilt_range();
-        // auto metadata_sorted = metadata;
-        // metadata_sorted.sort("tilt");
-        // for (auto&& [s, v, a]: noa::zip(metadata_sorted, astigmatism_value2.span, astigmatism_angle2.span)) {
-        //     auto tilt = (s.angles[1] - tilt_range[0]) / (tilt_range[1] - tilt_range[0]);
-        //     v = astigmatism_value.interpolate_at(tilt);
-        //     a = astigmatism_angle.interpolate_at(tilt);
-        // }
-        // astigmatism_value = astigmatism_value2;
-        // astigmatism_angle = astigmatism_angle2;
-        //
-        // // Fit an average astigmatism.
-        // run_optimization(NLOPT_LD_LBFGS, 30, "4", {
-        //     .tilt =  options.fit_tilt ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
-        //     .pitch = options.fit_pitch ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
-        //     .phase_shift = options.fit_phase_shift ? noa::deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
-        //     .defocus = Vec{-0.1, 0.1},
-        //     .astigmatism_value = {-0.1, 0.1},
-        //     .astigmatism_angle = {-noa::deg2rad(25.), noa::deg2rad(25.)},
-        // });
-        // panic();
+        auto astigmatism_buffer2 = noa::zeros<f64>({2, 1, 1, patches.n_images() / 2 + 1});
+        auto astigmatism_value2 = SplineGridCubic<f64, 1>(astigmatism_buffer2.span().subregion(0).as_1d());
+        auto astigmatism_angle2 = SplineGridCubic<f64, 1>(astigmatism_buffer2.span().subregion(1).as_1d());
+        auto tilt_range = metadata.tilt_range();
+        auto metadata_sorted = metadata;
+        metadata_sorted.sort("tilt");
+        for (auto&& [s, v, a]: noa::zip(metadata_sorted, astigmatism_value2.span, astigmatism_angle2.span)) {
+            auto tilt = (s.angles[1] - tilt_range[0]) / (tilt_range[1] - tilt_range[0]);
+            v = astigmatism_value.interpolate_at(tilt);
+            a = astigmatism_angle.interpolate_at(tilt);
+        }
+        astigmatism_value = astigmatism_value2;
+        astigmatism_angle = astigmatism_angle2;
+
+        // Fit an average astigmatism.
+        run_optimization(NLOPT_LD_LBFGS, 30, "4", {
+            .tilt =  options.fit_tilt ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
+            .pitch = options.fit_pitch ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
+            .phase_shift = options.fit_phase_shift ? noa::deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
+            .defocus = Vec{-0.1, 0.1},
+            .astigmatism_value = {-0.1, 0.1},
+            .astigmatism_angle = {-noa::deg2rad(45.), noa::deg2rad(45.)},
+        });
     }
 }

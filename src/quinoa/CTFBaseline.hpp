@@ -41,7 +41,7 @@ namespace qn::ctf {
     class Baseline {
     public:
         /// Get the best fitting-range for the baseline fit.
-        static auto best_fitting_range(
+        static auto best_baseline_fitting_range(
             SpanContiguous<const f32> spectrum,
             const Vec<f64, 2>& fftfreq_range,
             const ns::CTFIsotropic<f64>& ctf
@@ -58,7 +58,7 @@ namespace qn::ctf {
         /// Fits a smooth baseline through the spectrum.
         /// Uses the CTF to find the best fitting range.
         void fit(SpanContiguous<const f32> spectrum, const Vec<f64, 2>& fftfreq_range, const ns::CTFIsotropic<f64>& ctf) {
-            auto fitting_range = best_fitting_range(spectrum, fftfreq_range, ctf);
+            auto fitting_range = best_baseline_fitting_range(spectrum, fftfreq_range, ctf);
             fit(spectrum, fftfreq_range, fitting_range);
         }
 
@@ -76,8 +76,8 @@ namespace qn::ctf {
             const BaselineTuningOptions& options = {}
         ) const -> Vec<f64, 2>;
 
-        /// Fits and tune the fitting range.
-        [[nodiscard]] auto fit_and_tune_fitting_range(
+        /// Fits the baseline and tune the fitting range, iteratively.
+        auto fit_and_tune_fitting_range(
             SpanContiguous<const f32> spectrum,
             const Vec<f64, 2>& fftfreq_range,
             const ns::CTFIsotropic<f64>& ctf,
@@ -115,6 +115,8 @@ namespace qn::ctf {
         [[nodiscard]] auto sample_at(f64 fftfreq) const -> f64 {
             const i64 n = m_a.ssize();
             const i64 last_index = n - 1;
+            if (n == 0)
+                return 0;
 
             // Denormalize fftfreq back to frequencies.
             const f64 frequency = (fftfreq - m_fftfreq_start) / m_fftfreq_step;
@@ -138,12 +140,11 @@ namespace qn::ctf {
                 // when the fitting is done with slightly different fitting ranges.
                 n_allocated = n_to_allocate + 20 * 4;
                 m_buffer = std::make_unique<f64[]>(static_cast<size_t>(n_allocated));
-
-                m_a = SpanContiguous(m_buffer.get() + n * 0, n);
-                m_b = SpanContiguous(m_buffer.get() + n * 1, n);
-                m_c = SpanContiguous(m_buffer.get() + n * 2, n);
-                m_d = SpanContiguous(m_buffer.get() + n * 3, n);
             }
+            m_a = SpanContiguous(m_buffer.get() + n * 0, n);
+            m_b = SpanContiguous(m_buffer.get() + n * 1, n);
+            m_c = SpanContiguous(m_buffer.get() + n * 2, n);
+            m_d = SpanContiguous(m_buffer.get() + n * 3, n);
         }
 
     private:
@@ -160,5 +161,6 @@ namespace qn::ctf {
 
         f64 m_fftfreq_start{};
         f64 m_fftfreq_step{};
+        f64 m_fftfreq_stop{0.5};
     };
 }

@@ -114,12 +114,14 @@ auto main(int argc, char* argv[]) -> int {
                         .cs = settings.experiment.cs,
                         .amplitude = settings.experiment.amplitude,
                         .phase_shift = settings.experiment.phase_shift,
+                        .thickness = settings.experiment.thickness,
 
                         .patch_size_ang = 680,
                         .n_images_in_initial_average = 3,
                         .resolution_range = {30, 4.}, // FIXME 4.5
                         .fit_phase_shift = settings.alignment.ctf_fit_phase_shift,
                         .fit_astigmatism = settings.alignment.ctf_fit_astigmatism,
+                        .fit_thickness = settings.alignment.ctf_fit_thickness,
 
                         // Coarse:
                         .has_user_rotation = has_user_rotation,
@@ -205,9 +207,6 @@ auto main(int argc, char* argv[]) -> int {
                     .interp = noa::Interp::LINEAR,
                     .output_directory = settings.files.output_directory,
                 });
-                // const auto filename = settings.files.output_directory / fmt::format("{}_tomogram.mrc", basename);
-                // noa::write(tomogram, filename);
-                // Logger::info("{} saved", filename);
             }
         }
     } catch (...) {

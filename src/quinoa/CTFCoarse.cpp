@@ -112,6 +112,18 @@ namespace {
         return best_ncc;
     }
 
+    struct RefineGridSearchOptions {
+        f64 smallest_defocus{0.5};
+        f64 initial_defocus_range{0.75};
+        f64 initial_phase_shift_range{};
+        BaselineTuningOptions tuning_options{
+            .keep_first_nth_peaks = 3,
+            .n_extra_peaks_to_append = 1,
+            .n_recoveries_allowed = 1,
+            .maximum_n_consecutive_bad_peaks = 2
+        };
+    };
+
     /// Refines the defocus (and phase-shift) of the input CTF with the fitting range.
     /// When this function returns, the CTF is updated, as well as the fitting range.
     auto refine_grid_search(
@@ -119,22 +131,23 @@ namespace {
         const Vec<f64, 2>& fftfreq_range,
         Vec<f64, 2>& fitting_range,
         ns::CTFIsotropic<f64>& ctf,
-        f64 smallest_defocus,
-        f64 initial_defocus_range,
-        f64 initial_phase_shift_range
+        Baseline& baseline,
+        const RefineGridSearchOptions& options
     ) -> f64 {
-        Baseline baseline{};
         baseline.fit(spectrum, fftfreq_range, ctf);
 
-        const auto defocus_offset = Vec{initial_defocus_range, 0.1};
+        const auto defocus_offset = Vec{options.initial_defocus_range, 0.1};
         const auto defocus_step = Vec{0.02, 0.001};
-        const auto phase_shift_offset = Vec{initial_phase_shift_range, std::min(initial_phase_shift_range, 10.)};
+        const auto phase_shift_offset = Vec{
+            options.initial_phase_shift_range,
+            std::min(options.initial_phase_shift_range, 10.),
+        };
 
         f64 best_ncc{};
         for (i32 i: noa::irange(2)) {
             const auto defocus = ctf.defocus();
             const auto defocus_range = Vec{
-                std::max(smallest_defocus, defocus - defocus_offset[i]),
+                std::max(options.smallest_defocus, defocus - defocus_offset[i]),
                 defocus + defocus_offset[i],
                 defocus_step[i]
             };
@@ -149,7 +162,10 @@ namespace {
                 spectrum, fftfreq_range, fitting_range, ctf,
                 phase_shift_range, defocus_range, baseline
             );
-            fitting_range = baseline.fit_and_tune_fitting_range(spectrum, fftfreq_range, ctf);
+
+            fitting_range = baseline.fit_and_tune_fitting_range(
+                spectrum, fftfreq_range, ctf, options.tuning_options
+            );
         }
         return best_ncc;
     }
@@ -163,18 +179,16 @@ namespace {
     ) -> Vec<f64, 2> {
         auto spectrum_bs = Array<f32>(spectrum.shape().width());
 
-        // Fit and subtract the baseline.
+        // Fit and subtract the baseline within an initial fitting range.
+        auto fitting_range = Vec{std::max(0.07, fftfreq_range[0]), 0.4};
         auto baseline = Baseline{};
-        baseline.fit(spectrum, fftfreq_range, {0.07, 0.45});
-        baseline.sample(spectrum_bs.span_1d(), fftfreq_range);
-        save_plot_xy(noa::Linspace<f64>::from_vec(fftfreq_range), spectrum_bs, baseline_plot_filename, {.label = "baseline"});
+        baseline.fit(spectrum, fftfreq_range, fitting_range);
         baseline.subtract(spectrum, spectrum_bs.span_1d(), fftfreq_range);
 
         // For the initial fitting, prioritize the low-frequency rings.
         const f64 original_bfactor = ctf.bfactor();
-        const f64 desired_bfactor = power_spectrum_bfactor_at(ctf, 0.4, 0.1);
+        const f64 desired_bfactor = power_spectrum_bfactor_at(ctf, fitting_range[1], 0.1);
         ctf.set_bfactor(desired_bfactor);
-        auto fitting_range = Vec{fftfreq_range[0], 0.4};
 
         // Do the full range search.
         const auto defocus_range = Vec{0.6, 10., 0.02}; // start, stop, step
@@ -186,19 +200,18 @@ namespace {
         const f64 initial_defocus = ctf.defocus();
         const f64 initial_phase_shift = noa::rad2deg(ctf.phase_shift());
 
-        // Refine using a more appropriate fitting range.
+        // Then, refine using a more appropriate fitting range.
         ctf.set_bfactor(original_bfactor);
-        fitting_range = baseline.fit_and_tune_fitting_range(spectrum, fftfreq_range, ctf, {
-            .keep_first_nth_peaks = 3,
-            .n_extra_peaks_to_append = 1,
-            .n_recoveries_allowed = 1,
-        });
         const f64 defocus_offset = 0.75;
         const f64 phase_shift_offset = fit_phase_shift ? 50. : 0.;
-        refine_grid_search(
-            spectrum, fftfreq_range, fitting_range, ctf, defocus_range[0],
-            defocus_offset, phase_shift_offset
-        );
+        refine_grid_search(spectrum, fftfreq_range, fitting_range, ctf, baseline, {
+            .smallest_defocus = defocus_range[0],
+            .initial_defocus_range = defocus_offset,
+            .initial_phase_shift_range = phase_shift_offset,
+        });
+
+        baseline.sample(spectrum_bs.span_1d(), fftfreq_range);
+        save_plot_xy(noa::Linspace<f64>::from_vec(fftfreq_range), spectrum_bs, baseline_plot_filename, {.label = "baseline"});
 
         Logger::trace(
             "Spectrum fit:\n"
@@ -439,17 +452,18 @@ namespace qn::ctf {
             // Instead, use the phase-shift from the initial reference as first approximation.
             // TODO Maybe fitting the phase-shift could be useful here?
             metadata_fit.sort("tilt");
-            const auto smallest_defocus = 0.5;
-            auto fit_neighbor_image = [&](i64 i, auto& ifitting_range, auto& ictf) {
+            auto fit_spectrum = [&](i64 i, Vec<f64, 2>& ifitting_range, CTFIsotropic64& ictf, Baseline& baseline) {
                 refine_grid_search(
-                    spectra[metadata_fit[i].index], patches.rho_vec(),
-                    ifitting_range, ictf, smallest_defocus, 0.6, 0
-                );
+                    spectra[metadata_fit[i].index], patches.rho_vec(), ifitting_range, ictf, baseline, {
+                        .initial_defocus_range = 0.6,
+                        .initial_phase_shift_range = 0,
+                    });
                 metadata_fit[i].defocus = {ictf.defocus(), 0., 0.};
                 metadata_fit[i].phase_shift = ctf.phase_shift();
 
                 // Save in the same order as the original metadata.
                 const auto index = static_cast<size_t>(metadata_fit[i].index);
+                Logger::trace("i={:.2f}, fitting_range={::.4f}", metadata_fit[i].angles[1], ifitting_range);
                 fitting_ranges[index] = ifitting_range;
             };
 
@@ -458,14 +472,16 @@ namespace qn::ctf {
             auto _0 = pool.enqueue([&] () mutable {
                 auto ictf = ctf;
                 auto ifitting_range = options.initial_fitting_range;
+                Baseline baseline{};
                 for (i64 i = pivot; i < metadata_fit.ssize(); ++i) // towards positive tilts
-                    fit_neighbor_image(i, ifitting_range, ictf);
+                    fit_spectrum(i, ifitting_range, ictf, baseline);
             });
             auto _1 = pool.enqueue([&] () mutable {
                 auto ictf = ctf;
                 auto ifitting_range = options.initial_fitting_range;
+                Baseline baseline{};
                 for (i64 i = pivot - 1; i >= 0; --i) // towards negative tilts
-                    fit_neighbor_image(i, ifitting_range, ictf);
+                    fit_spectrum(i, ifitting_range, ictf, baseline);
             });
         }
 

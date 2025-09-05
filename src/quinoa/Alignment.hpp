@@ -22,12 +22,14 @@ namespace qn {
         f64 cs;
         f64 amplitude;
         f64 phase_shift;
+        f64 thickness;
 
         f64 patch_size_ang;
         i64 n_images_in_initial_average;
         Vec<f64, 2> resolution_range;
         bool fit_phase_shift;
         bool fit_astigmatism;
+        bool fit_thickness;
 
         // Coarse:
         bool has_user_rotation;

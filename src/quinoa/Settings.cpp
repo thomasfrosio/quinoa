@@ -143,7 +143,6 @@ namespace {
         experiment.specimen_tilt = parse_number_("experiment.specimen_tilt", table, UNSPECIFIED_VALUE);
         experiment.specimen_pitch = parse_number_("experiment.specimen_pitch", table, UNSPECIFIED_VALUE);
         experiment.phase_shift = parse_number_("experiment.phase_shift", table, UNSPECIFIED_VALUE);
-        experiment.thickness = parse_number_("experiment.thickness", table, UNSPECIFIED_VALUE);
 
         check(noa::allclose(UNSPECIFIED_VALUE, experiment.specimen_tilt) or
               std::abs(experiment.specimen_tilt) < 40,
@@ -157,9 +156,10 @@ namespace {
               (experiment.phase_shift >= 0 and experiment.phase_shift <= 150),
               "experiment.phase_shift={} (degrees). Should be between 0 and 150 degrees.",
               experiment.phase_shift);
-        check(noa::allclose(UNSPECIFIED_VALUE, experiment.thickness) or
-              (experiment.thickness >= 40 and experiment.thickness <= 550),
-              "experiment.thickness={} (nm). Should be between 40nm and 550 nm.",
+
+        experiment.thickness = parse_number_("experiment.thickness", table, 0.);
+        check(experiment.thickness >= 0 and experiment.thickness <= 550,
+              "experiment.thickness={} (nm). Should be between 0nm and 550 nm.",
               experiment.thickness);
 
         experiment.voltage = parse_number_("experiment.voltage", table, 300.);
