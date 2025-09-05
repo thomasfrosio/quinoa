@@ -1,5 +1,27 @@
+// Suppress Eigen warnings...
+#include <noa/core/Config.hpp>
+#if defined(NOA_COMPILER_GCC) || defined(NOA_COMPILER_CLANG)
+#   pragma GCC diagnostic push
+#   pragma GCC diagnostic ignored "-Wsign-conversion"
+#   pragma GCC diagnostic ignored "-Wnull-dereference"
+#   if defined(NOA_COMPILER_GCC)
+#       pragma GCC diagnostic ignored "-Wduplicated-branches"
+#       pragma GCC diagnostic ignored "-Wuseless-cast"
+#       pragma GCC diagnostic ignored "-Wclass-memaccess"
+#   endif
+#elif defined(NOA_COMPILER_MSVC)
+#   pragma warning(push, 0)
+#endif
+
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
+
+#if defined(NOA_COMPILER_GCC) || defined(NOA_COMPILER_CLANG)
+    #pragma GCC diagnostic pop
+#elif defined(NOA_COMPILER_MSVC)
+    #pragma warning(pop)
+#endif
+
 #include <nlopt.hpp>
 
 #include "quinoa/Types.hpp"
@@ -13,8 +35,6 @@ namespace qn {
         SpanContiguous<f64> baseline,
         const ALSSOptions& options
     ) {
-        const auto& [smoothing, p, max_iter, tol, relaxation] = options;
-
         // Convert to f64 precision fp.
         const auto n = spectrum.ssize();
         auto y = Eigen::VectorXd(n);
@@ -40,7 +60,8 @@ namespace qn {
             auto triplets = std::vector<Eigen::Triplet<f64>>{};
             triplets.reserve(static_cast<size_t>(n - 2));
 
-            // Gaussian decay, from lambda[0] at x=0, to lambda[1] at x=0.8*n.
+            // Gaussian decay.
+            const auto& smoothing = options.smoothing;
             const f64 decay_cut = static_cast<f64>(n) * smoothing.base_width;
             const f64 gaussian_decay = std::sqrt(-std::log(smoothing.base_value / smoothing.peak_value)) / decay_cut;
             for (i64 i{}; i < n - 2; ++i) {
@@ -69,7 +90,7 @@ namespace qn {
         // Solve z, as in (W+DtLD)z = (Wy), using sparse Cholesky decomposition.
         Eigen::SimplicialLDLT<Eigen::SparseMatrix<f64>> solver;
         Eigen::Map<Eigen::VectorXd> z(baseline.data(), n);
-        for (i32 iter{}; iter < max_iter; ++iter) {
+        for (i32 iter{}; iter < options.max_iter; ++iter) {
             solver.compute(W + DtLD);
             check(solver.info() == Eigen::Success, "Decomposition failed");
             z = solver.solve(w.cwiseProduct(y));
@@ -77,12 +98,12 @@ namespace qn {
 
             // Compute the new weights, with optional relaxation for faster convergence.
             for (i64 i{}; i < n; ++i) {
-                const auto new_w = (y[i] > z[i]) ? p : (1.0 - p);
-                w_new[i] = relaxation * new_w + (1.0 - relaxation) * w[i];
+                const auto new_w = (y[i] > z[i]) ? options.asymmetric_penalty : (1.0 - options.asymmetric_penalty);
+                w_new[i] = options.relaxation * new_w + (1.0 - options.relaxation) * w[i];
             }
 
-            // Check convergence (and stop), otherwise try again with updated weights.
-            if ((w - w_new).cwiseAbs().maxCoeff() < tol)
+            // Check convergence (and stop), otherwise, try again with updated weights.
+            if ((w - w_new).cwiseAbs().maxCoeff() < options.tol)
                 break;
             w.swap(w_new);
             for (i64 i{}; i < n; ++i)

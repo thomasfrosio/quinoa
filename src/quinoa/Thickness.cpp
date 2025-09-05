@@ -183,7 +183,7 @@ namespace qn {
             const f64 background_stddev = std::sqrt(background_variance);
 
             f64 signal_threshold = std::min(0.5, background_mean + 6 * background_stddev);
-            Logger::trace("signal_threshold={:.4f} (bg_mean={:.4f}, bg_stddev={:.4f}, signal_scale=6.",
+            Logger::trace("signal_threshold={:.4f} (bg_mean={:.4f}, bg_stddev={:.4f}, signal_scale=6.)",
                           signal_threshold, background_mean, background_stddev);
 
             // Values are within [0,1], so if we reconstructed a large enough z-section and if the baseline subtraction
@@ -214,7 +214,7 @@ namespace qn {
                 if (not is_within_window and e >= threshold) {
                     is_within_window = true;
                     start = i;
-                } else if (is_within_window and e < threshold) {
+                } else if (is_within_window and (e < threshold or i == volume_depth - 1)) {
                     is_within_window = false;
                     const auto window_size = i - start;
                     if (window_size >= smallest_window_size)
