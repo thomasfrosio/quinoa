@@ -24,12 +24,18 @@
 #frames_directory = '~/Datasets/Yakun'
 #csv_file = '~/Tmp/quinoa/Yakun/tilt9906/thickness_01/tilt9906_aligned.csv'
 
+#mdoc_file = '~/Projects/synthetic_tomogram/tilt_series.mdoc'
+#stack_file = '~/Projects/synthetic_tomogram/tilt_series_aligned.mrc'
+#output_directory = '~/Projects/synthetic_tomogram3'
+#frames_directory = '~/Projects/synthetic_tomogram'
+#csv_file = '~/Projects/synthetic_tomogram3/tilt_series.csv'
+
 ## Remote
 mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun/tilt9906.mdoc'
 stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun/tilt9906.mrc'
-output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/yakun/tilt9906/recons01'
+output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/yakun/tilt9906/recons04'
 frames_directory = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun'
-csv_file = '/dls/ebic/data/staff-scratch/thomas2/tmp/yakun/tilt9906/recons01/tilt9906_aligned.csv'
+csv_file = '/dls/ebic/data/staff-scratch/thomas2/tmp/yakun/tilt9906/recons02/tilt9906_aligned.csv'
 
 #output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/10304/002/tilt1'
 #frames_directory = '/dls/ebic/data/staff-scratch/thomas2/datasets/10304'
@@ -68,7 +74,7 @@ voltage = 300
 amplitude = 0.07
 cs = 2.7
 phase_shift = 0
-thickness = 400
+thickness = 350
 
 [preprocessing]
 run = false
@@ -96,14 +102,23 @@ fit_thickness = true
 [postprocessing]
 run = true
 resolution = 18
-save_aligned_stack = false
-reconstruct.run = true
-reconstruct.mode = 'real' # fourier or real
-reconstruct.weighting = 'radial' # fourier, radial, sirt-15
-reconstruct.z_padding = 0
+
+stack.run = false
+stack.correct_rotation = true
+stack.interpolation = 'linear'
+stack.dtype = 'f16'
+
+tomogram.run = true
+tomogram.correct_rotation = true
+tomogram.interpolation = 'linear'
+tomogram.dtype = 'f16'
+tomogram.oversample = false
+tomogram.correct_ctf = true
+tomogram.z_padding_percent = 10
+tomogram.phase_flip_strength = 8
 
 [compute]
 device = 'auto'
-n_threads = 6
+n_threads = 8
 register_stack = true
 log_level = 'trace'

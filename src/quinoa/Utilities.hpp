@@ -72,6 +72,25 @@ namespace qn {
         }
     }
 
+    template<size_t N>
+    void parallel_for(i32 n_threads, const Shape<i64, N>& shape, auto&& func) {
+        if constexpr (N == 1) {
+            #pragma omp parallel for num_threads(n_threads)
+            for (i64 i = 0; i < shape[0]; ++i) {
+                func(omp_get_thread_num(), i);
+            }
+        } else if constexpr (N == 2) {
+            #pragma omp parallel for num_threads(n_threads) collapse(2)
+            for (i64 i = 0; i < shape[0]; ++i) {
+                for (i64 j = 0; j < shape[1]; ++j) {
+                    func(omp_get_thread_num(), i, j);
+                }
+            }
+        } else {
+            static_assert(nt::always_false<Tag<N>>);
+        }
+    }
+
     constexpr auto effective_thickness(f64 thickness, const Vec<f64, 3>& stage_angles) {
         const f64 scaling = (
             ng::rotate_y(noa::deg2rad(stage_angles[1])) *
@@ -160,13 +179,13 @@ namespace qn {
         // Since the actual peak is close to argmax, focus on (and only render) a small subregion around argmax.
         const auto rotate_xmap =
             ng::translate(xmap_center) *
-            ng::linear2affine(ng::rotate(-distortion_angle)) *
+            ng::rotate<true>(-distortion_angle) *
             ng::translate(-xmap_center);
         peak_indices = (rotate_xmap * peak_indices.push_back(1)).pop_back();
 
         const auto rotate_and_center_peak = (
             ng::translate(xmap_center - peak_indices + xmap_centered_center) *
-            ng::linear2affine(ng::rotate(-distortion_angle)) *
+            ng::rotate<true>(-distortion_angle) *
             ng::translate(-xmap_center)
         ).inverse();
         ng::transform_2d(xmap, xmap_centered, rotate_and_center_peak, {.interp = noa::Interp::LINEAR});
@@ -178,6 +197,64 @@ namespace qn {
 
         // Given cross_correlation_map(lhs, rhs, xmap), this should be subtracted to the lhs to align it onto the rhs.
         return shift;
+    }
+#endif
+
+    inline auto subdivide_axis(i64 size, i64 subsize, i64 step) -> std::vector<i64> {
+        // Arange:
+        const auto n_patches = noa::divide_up(size, step);
+        std::vector<i64> patch_origin;
+        patch_origin.reserve(static_cast<size_t>(n_patches));
+        for (i64 i{}; i < n_patches; ++i)
+            patch_origin.push_back(i * step);
+
+        if (patch_origin.empty())
+            return patch_origin;
+
+        // Center:
+        const i64 end = patch_origin.back() + subsize;
+        const i64 offset = (size - end) / 2;
+        for (auto& origin: patch_origin)
+            origin += offset;
+
+        return patch_origin;
+    }
+
+#ifndef QN_INCLUDE_CPU_ONLY
+    template<size_t N>
+    auto subdivide_axes(
+        const Shape<i64, N>& shape,
+        const Shape<i64, N>& subshape,
+        const Vec<i64, N>& step
+    ) {
+        std::array<std::vector<i64>, N> origins;
+        auto grid_shape = Shape<i64, N>::from_value(1);
+        for (i64 i = 0; i < N; ++i) {
+            origins[i] = subdivide_axis(shape[i], subshape[i], step[i]);
+            grid_shape[4 - N] = origins[i].size();
+        }
+
+        auto output = Array<Vec<i64, N>>(grid_shape);
+        if constexpr (N == 1) {
+            auto output_1d = output.span_1d();
+            for (size_t i{}; i < origins[0].size(); ++i)
+                output_1d(i) = origins[0][i];
+        } else if constexpr (N == 2) {
+            auto output_2d = output.span().filter(2, 3);
+            for (size_t i{}; i < origins[0].size(); ++i)
+                for (size_t j{}; j < origins[1].size(); ++j)
+                    output_2d(i, j) = {origins[0][i], origins[1][j]};
+        } else if constexpr (N == 3) {
+            auto output_3d = output.span().filter(1, 2, 3);
+            for (size_t i{}; i < origins[0].size(); ++i)
+                for (size_t j{}; j < origins[1].size(); ++j)
+                    for (size_t k{}; k < origins[1].size(); ++k)
+                        output_3d(i, j, k) = {origins[0][i], origins[1][j], origins[2][k]};
+        } else {
+            static_assert(nt::always_false<Vec<i64, N>>);
+        }
+
+        return output;
     }
 #endif
 }

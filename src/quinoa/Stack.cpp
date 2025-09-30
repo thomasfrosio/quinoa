@@ -412,66 +412,50 @@ namespace qn {
         return stack;
     }
 
-    // void save_stack(
-    //     const Path& input_stack_path,
-    //     const Path& output_stack_path,
-    //     const MetadataStack& metadata,
-    //     const LoadStackParameters& loading_parameters,
-    //     const SaveStackParameters& saving_parameters
-    // ) {
-    //     auto timer = Logger::trace_scope_time("Saving aligned stack");
-    //
-    //     auto stack_loader = StackLoader(input_stack_path, loading_parameters);
-    //     const auto output_slice_shape = stack_loader.slice_shape().push_front<2>(1);
-    //     const auto output_slice_center = (stack_loader.slice_shape().vec / 2).as<f64>();
-    //     const auto options = ArrayOption{stack_loader.compute_device(), stack_loader.allocator()};
-    //
-    //     // Output buffers.
-    //     auto output_slice = noa::Array<f32>(output_slice_shape, options);
-    //     auto output_slice_aligned = noa::Array<f32>(output_slice_shape, options);
-    //     auto output_slice_io = options.is_dereferenceable() ? noa::Array<f32>{} : noa::Array<f32>(output_slice_shape);
-    //
-    //     // Set up the output file.
-    //     auto output_file = noa::io::ImageFile(output_stack_path, {.write = true}, {
-    //         .shape = stack_loader.slice_shape().push_front(Vec{metadata.ssize(), i64{1}}),
-    //         .spacing = stack_loader.stack_spacing().push_front(1),
-    //         .dtype = noa::io::Encoding::F32
-    //     });
-    //
-    //     // As always, the metadata should be unscaled, i.e. shifts are at the original spacing as
-    //     // encoded in the input file. Here we apply the shifts on the rescaled images returned by
-    //     // the stack loader, so we need to scale the shifts from the metadata down before applying them.
-    //     const auto shift_scale_factor = stack_loader.file_spacing() / stack_loader.stack_spacing();
-    //
-    //     // Slices are saved in the same order as specified in the metadata.
-    //     i64 output_file_index{};
-    //     for (const MetadataSlice& slice_metadata: metadata) {
-    //         stack_loader.read_slice(output_slice.view(), slice_metadata.index_file);
-    //
-    //         const auto slice_shifts = slice_metadata.shifts * shift_scale_factor;
-    //         const auto slice_rotation =
-    //             saving_parameters.correct_rotation ?
-    //             noa::deg2rad(slice_metadata.angles[0]) : 0;
-    //
-    //         const auto inverse_transform = (
-    //             ng::translate(output_slice_center) *
-    //             ng::linear2affine(ng::rotate(-slice_rotation)) *
-    //             ng::translate(-output_slice_center - slice_shifts)
-    //         ).inverse().as<f32>();
-    //
-    //         ng::transform_2d(output_slice.view(), output_slice_aligned.view(), inverse_transform, {
-    //             .interp = saving_parameters.interp,
-    //             .border = saving_parameters.border,
-    //         });
-    //
-    //         View<const f32> to_write = options.is_dereferenceable() ?
-    //             output_slice_aligned.view().reinterpret_as_cpu() :
-    //             output_slice_aligned.view().to(output_slice_io.view());
-    //
-    //         output_file.write_slice(to_write.span(), {.bd_offset = {output_file_index, 0}});
-    //         ++output_file_index;
-    //     }
-    // }
+    void save_stack(
+        StackLoader& stack,
+        const Path& filename,
+        const MetadataStack& metadata,
+        const SaveStackParameters& saving_parameters
+    ) {
+        auto timer = Logger::trace_scope_time("Saving stack");
+
+        // Output buffer.
+        const auto center = (stack.slice_shape().vec / 2).as<f64>();
+        auto output = Array<f32>(stack.slice_shape().push_front(Vec<i64, 2>{1, 1}), {
+            .device = stack.compute_device(),
+            .allocator = Allocator::MANAGED
+        });
+
+        // Set up the output file.
+        auto output_file = noa::io::ImageFile(filename, {.write = true}, {
+            .shape = stack.slice_shape().push_front(Vec{metadata.ssize(), i64{1}}),
+            .spacing = stack.stack_spacing().push_front(1),
+            .dtype = saving_parameters.dtype,
+        });
+
+        // Slices will be saved in the same order as in the metadata.
+        for (i64 i{}; const auto& slice: metadata) {
+            const auto rotation = saving_parameters.correct_rotation ? noa::deg2rad(slice.angles[0]) : 0;
+            const auto inverse_transform = (
+                ng::translate(center) *
+                ng::rotate<true>(-rotation) *
+                ng::translate(-center - slice.shifts)
+            ).inverse().as<f32>();
+
+            stack.read_slice(output.view().subregion(0), slice.index_file, saving_parameters.cache_loader);
+            ng::transform_2d(output.view().subregion(0), output.view().subregion(1), inverse_transform, {
+                .interp = saving_parameters.interp,
+                .border = saving_parameters.border,
+            });
+
+            output_file.write_slice(
+                output.view().reinterpret_as_cpu().span<const f32>(),
+                {.bd_offset = {i++, 0}}
+            );
+        }
+        Logger::trace("{} saved", filename);
+    }
 
     void save_stack(
         const View<f32>& stack,
@@ -499,13 +483,10 @@ namespace qn {
 
         // Slices will be saved in the same order as in the metadata.
         for (i64 i{}; const auto& slice: metadata) {
-            const auto slice_rotation =
-                saving_parameters.correct_rotation ?
-                noa::deg2rad(slice.angles[0]) : 0;
-
+            const auto rotation = saving_parameters.correct_rotation ? noa::deg2rad(slice.angles[0]) : 0;
             const auto inverse_transform = (
                 ng::translate(center) *
-                ng::linear2affine(ng::rotate(-slice_rotation)) *
+                ng::rotate<true>(-rotation) *
                 ng::translate(-center - slice.shifts)
             ).inverse().as<f32>();
 

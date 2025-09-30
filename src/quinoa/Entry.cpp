@@ -10,7 +10,7 @@
 #include "quinoa/Settings.hpp"
 #include "quinoa/Stack.hpp"
 #include "quinoa/Thickness.hpp"
-#include "quinoa/Reconstruction.hpp"
+#include "quinoa/PostProcessing.hpp"
 
 auto main(int argc, char* argv[]) -> int {
     using namespace qn;
@@ -160,54 +160,32 @@ auto main(int argc, char* argv[]) -> int {
         // Postprocessing.
         if (settings.postprocessing.run) {
             auto scope_timer = Logger::status_scope_time("Postprocessing");
-
-            const auto [stack, stack_spacing, file_spacing, _] = load_stack(settings.files.stack_file, metadata, {
-                .compute_device = settings.compute.device,
-                .allocator = Allocator::DEFAULT_ASYNC,
-                .precise_cutoff = true,
-                .rescale_target_resolution = settings.postprocessing.resolution,
-                .rescale_min_size = 1024,
-                .bandpass{
-                    .highpass_cutoff = 0.01,
-                    .highpass_width = 0.01,
-                    .lowpass_cutoff = 0.49,
-                    .lowpass_width = 0.01,
-                },
-                .bandpass_mirror_padding_factor = 0.5,
-                .normalize_and_standardize = true,
-                .smooth_edge_percent = 0.02,
-                .zero_pad_to_fast_fft_shape = false,
-                .zero_pad_to_square_shape = false,
-            });
-            auto postprocessing_metadata = metadata;
-            postprocessing_metadata.rescale_shifts(file_spacing, stack_spacing);
-
-            if (settings.postprocessing.save_aligned_stack) {
-                const auto filename = settings.files.output_directory / fmt::format("{}_aligned.mrc", basename);
-                save_stack(stack.view(), stack_spacing, postprocessing_metadata, filename);
-            }
-
-            if (settings.postprocessing.reconstruct_tomogram) {
-                auto ctf = ns::CTFIsotropic<f64>({
-                    .pixel_size = mean(stack_spacing),
-                    .defocus = 0.,
+            post_processing(settings.files.stack_file, metadata,
+                {
+                    .compute_device = settings.compute.device,
+                    .target_resolution = settings.postprocessing.resolution,
+                    .min_size = 512,
+                    .output_directory = settings.files.output_directory,
+                }, {
+                    .save_aligned_stack = settings.postprocessing.stack_run,
+                    .correct_rotation = settings.postprocessing.stack_correct_rotation,
+                    .interp = settings.postprocessing.stack_interpolation,
+                    .dtype = settings.postprocessing.stack_dtype,
+                }, {
+                    .save_tomogram = settings.postprocessing.tomogram_run,
+                    .correct_ctf = settings.postprocessing.tomogram_correct_ctf,
+                    .phase_flip_strength = settings.postprocessing.tomogram_phase_flip_strength,
                     .voltage = settings.experiment.voltage,
                     .amplitude = settings.experiment.amplitude,
                     .cs = settings.experiment.cs,
-                    .phase_shift = 0,
-                    .bfactor = 0,
-                    .scale = 1.,
-                });
-
-                tomogram_reconstruction(stack.view(), postprocessing_metadata, ctf, {
+                    .defocus_step_nm = 15,
                     .sample_thickness_nm = settings.experiment.thickness,
-                    .z_padding_percent = 0.1,
-                    .correct_ctf = true,
-                    .defocus_step_nm = 15.,
-                    .interp = noa::Interp::LINEAR,
-                    .output_directory = settings.files.output_directory,
-                });
-            }
+                    .z_padding_percent = settings.postprocessing.tomogram_z_padding_percent / 100,
+                    .correct_rotation = settings.postprocessing.tomogram_correct_rotation,
+                    .oversample = settings.postprocessing.tomogram_oversample,
+                    .interp = settings.postprocessing.tomogram_interpolation,
+                    .dtype = settings.postprocessing.tomogram_dtype,
+            });
         }
     } catch (...) {
         for (i32 i{}; auto& message : noa::Exception::backtrace())

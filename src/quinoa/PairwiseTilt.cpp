@@ -87,9 +87,9 @@ namespace {
             // Cancel the difference (if any) in rotation and shift as well.
             matrix = (
                 ng::translate(slice_center + metadata[index_reference].shifts) *
-                ng::linear2affine(ng::rotate(reference_angles[0])) *
-                ng::linear2affine(ng::scale(cos_factor)) *
-                ng::linear2affine(ng::rotate(-target_angles[0])) *
+                ng::rotate<true>(reference_angles[0]) *
+                ng::scale<true>(cos_factor) *
+                ng::rotate<true>(-target_angles[0]) *
                 ng::translate(-slice_center - metadata[index_target].shifts)
             ).inverse().pop_back().as<f32>();
         }

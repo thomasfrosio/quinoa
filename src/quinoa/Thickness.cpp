@@ -113,10 +113,10 @@ namespace qn {
             auto angles = noa::deg2rad(slice.angles);
             matrix = ( // (image->volume).inverse()
                 ng::translate(volume_center) * //  + Vec{0., 0., 40.}
-                ng::linear2affine(ng::rotate_z(+angles[0])) * // TODO .to_affine()
-                ng::linear2affine(ng::rotate_x(-angles[2])) * // TODO .to_affine()
-                ng::linear2affine(ng::rotate_y(-angles[1])) * // TODO .to_affine()
-                ng::linear2affine(ng::rotate_z(-angles[0])) * // TODO .to_affine()
+                ng::rotate_z<true>(+angles[0]) *
+                ng::rotate_x<true>(-angles[2]) *
+                ng::rotate_y<true>(-angles[1]) *
+                ng::rotate_z<true>(-angles[0]) *
                 ng::translate(-(image_center + slice.shifts).push_front(0))
             ).inverse().filter_rows(1, 2).as<f32>(); // (y, x)
         }

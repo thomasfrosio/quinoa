@@ -43,9 +43,9 @@ namespace qn {
 
                 // Shift and stretch the current slice area to compare it with the common area.
                 const Mat<f64, 2, 3> current_tilt_to_0deg = (
-                    ng::linear2affine(ng::rotate(angles[0])) *
-                    ng::linear2affine(ng::scale(cos_scale)) *
-                    ng::linear2affine(ng::rotate(-angles[0])) *
+                    ng::rotate<true>(angles[0]) *
+                    ng::scale<true>(cos_scale) *
+                    ng::rotate<true>(-angles[0]) *
                     ng::translate(-slice.shifts)
                 ).pop_back();
 
@@ -94,9 +94,9 @@ namespace qn {
             auto shifts = correct_shifts ? metadata.shifts : Vec<f64, 2>{};
             return (
                 ng::translate(m_common_area_center) *
-                ng::linear2affine(ng::rotate(angles[0])) *
-                ng::linear2affine(ng::scale(1 / cos_scale)) *
-                ng::linear2affine(ng::rotate(-angles[0])) *
+                ng::rotate<true>(angles[0]) *
+                ng::scale<true>(1 / cos_scale) *
+                ng::rotate<true>(-angles[0]) *
                 ng::translate(-m_common_area_center - shifts)
             ).pop_back().as<f32>();
         }

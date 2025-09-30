@@ -62,6 +62,8 @@ namespace qn {
 
         [[nodiscard]] static auto registered_stack() noexcept -> View<const f32> { return s_input_stack.view(); }
 
+        void clear_cache() { m_cache.clear(); }
+
     private:
         void read_slice_and_precision_pad_(i64 file_slice_index, const View<f32>& padded_slice);
 
@@ -110,16 +112,16 @@ namespace qn {
 
     struct SaveStackParameters {
         bool correct_rotation{false};
+        bool cache_loader{false};
         noa::Interp interp{noa::Interp::LINEAR};
         noa::Border border{noa::Border::ZERO};
         noa::io::Encoding::Type dtype = noa::io::Encoding::F32;
     };
 
     void save_stack(
-        const Path& input_stack_path,
-        const Path& output_stack_path,
+        StackLoader& stack,
+        const Path& filename,
         const MetadataStack& metadata,
-        const LoadStackParameters& loading_parameters,
         const SaveStackParameters& saving_parameters = {}
     );
 

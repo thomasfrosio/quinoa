@@ -60,11 +60,20 @@ namespace qn {
         struct PostProcessing {
             bool run{};
             f64 resolution{};
-            bool save_aligned_stack{};
-            bool reconstruct_tomogram{};
-            std::string reconstruct_mode{};
-            std::string reconstruct_weighting{};
-            f64 reconstruct_z_padding{};
+
+            bool stack_run{};
+            bool stack_correct_rotation{};
+            noa::Interp stack_interpolation{};
+            noa::io::Encoding::Type stack_dtype{};
+
+            bool tomogram_run{};
+            bool tomogram_correct_rotation{};
+            noa::Interp tomogram_interpolation{};
+            noa::io::Encoding::Type tomogram_dtype{};
+            bool tomogram_oversample{};
+            bool tomogram_correct_ctf{};
+            f64 tomogram_z_padding_percent{};
+            i64 tomogram_phase_flip_strength{};
         } postprocessing;
 
         struct Compute {

@@ -50,11 +50,18 @@ namespace {
             "alignment.refine.fit_thickness"sv,
             "postprocessing.run"sv,
             "postprocessing.resolution"sv,
-            "postprocessing.save_aligned_stack"sv,
-            "postprocessing.reconstruct.run"sv,
-            "postprocessing.reconstruct.mode"sv,
-            "postprocessing.reconstruct.weighting"sv,
-            "postprocessing.reconstruct.z_padding"sv,
+            "postprocessing.stack.run"sv,
+            "postprocessing.stack.correct_rotation"sv,
+            "postprocessing.stack.interpolation"sv,
+            "postprocessing.stack.dtype"sv,
+            "postprocessing.tomogram.run"sv,
+            "postprocessing.tomogram.correct_rotation"sv,
+            "postprocessing.tomogram.interpolation"sv,
+            "postprocessing.tomogram.dtype"sv,
+            "postprocessing.tomogram.oversample"sv,
+            "postprocessing.tomogram.correct_ctf"sv,
+            "postprocessing.tomogram.z_padding_percent"sv,
+            "postprocessing.tomogram.phase_flip_strength"sv,
             "compute.device"sv,
             "compute.n_threads"sv,
             "compute.register_stack"sv,
@@ -87,12 +94,38 @@ namespace {
         return fallback;
     }
 
+    auto parse_string_(std::string_view name, const toml::table& table, std::string fallback) -> std::string {
+        if (auto arg = table.at_path(name)) {
+            check(arg.is_string(), "{}={} is not a string", name, arg);
+            return noa::string::to_lower(noa::string::trim(arg.value<std::string>().value()));
+        }
+        return fallback;
+    }
+
     auto parse_boolean_(std::string_view name, const toml::table& table, bool fallback) -> bool {
         if (auto arg = table.at_path(name)) {
             check(arg.is_boolean(), "{}={} is not a boolean", name, arg);
             return arg.value_exact<bool>().value();
         }
         return fallback;
+    }
+
+    auto parse_interp(std::string_view name, const toml::table& table, const std::string& fallback) {
+        const auto stack_interp = parse_string_(name, table, fallback);
+        if (stack_interp == "linear")
+            return noa::Interp::LINEAR;
+        if (stack_interp == "cubic-bspline")
+            return noa::Interp::CUBIC_BSPLINE;
+        panic(R"({} should be "linear" or "cubic-bspline", but got "{}")", name, stack_interp);
+    }
+
+    auto parse_dtype(std::string_view name, const toml::table& table, const std::string& fallback) {
+        const auto stack_dtype = parse_string_(name, table, fallback);
+        if (stack_dtype == "f16")
+            return noa::io::Encoding::F16;
+        if (stack_dtype == "f32")
+            return noa::io::Encoding::F32;
+        panic(R"({} should be "f16" or "f32", but got "{}")", name, stack_dtype);
     }
 
     auto parse_files_(const toml::table& table, const cxxopts::ParseResult& cl) -> Settings::Files {
@@ -122,9 +155,7 @@ namespace {
         get_path("files.stack_file", "stack", files.stack_file, true);
         get_path("files.frames_directory", "frames", files.frames_directory, false);
         get_path("files.csv_file", "csv", files.csv_file, true);
-
         get_path("files.mdoc_file", "mdoc", files.mdoc_file, true);
-        check(not files.mdoc_file.empty(), "A mdoc file is required");
 
         get_path("files.output_directory", "output", files.output_directory, false);
         if (files.output_directory.empty())
@@ -228,33 +259,29 @@ namespace {
     auto parse_postprocessing_(const toml::table& table) -> Settings::PostProcessing {
         Settings::PostProcessing postprocessing;
         postprocessing.run = parse_boolean_("postprocessing.run", table, true);
-        postprocessing.save_aligned_stack = parse_boolean_("postprocessing.save_aligned_stack", table, false);
         postprocessing.resolution = parse_number_("postprocessing.resolution", table, -1.);
-        postprocessing.reconstruct_tomogram = parse_boolean_("postprocessing.reconstruct_tomogram", table, true);
 
-        auto& mode = postprocessing.reconstruct_mode;
-        auto& weight = postprocessing.reconstruct_weighting;
-        using namespace noa::string;
+        postprocessing.stack_run = parse_boolean_("postprocessing.stack.run", table, false);
+        postprocessing.stack_correct_rotation = parse_boolean_("postprocessing.stack.correct_rotation", table, true);
+        postprocessing.stack_interpolation = parse_interp("postprocessing.stack.interpolation", table, "linear");
+        postprocessing.stack_dtype = parse_dtype("postprocessing.stack.dtype", table, "f32");
 
-        mode = to_lower(trim(parse_number_("postprocessing.reconstruct_mode", table, std::string("real"))));
-        check(mode == "fourier" or mode == "real",
-              R"(postprocessing.reconstruct_mode should be "fourier" or "real", but got {})",
-              mode);
+        postprocessing.tomogram_run = parse_boolean_("postprocessing.tomogram.run", table, true);
+        postprocessing.tomogram_correct_rotation = parse_boolean_("postprocessing.tomogram.correct_rotation", table, true);
+        postprocessing.tomogram_interpolation = parse_interp("postprocessing.tomogram.interpolation", table, "linear");
+        postprocessing.tomogram_dtype = parse_dtype("postprocessing.tomogram.dtype", table, "f32");
+        postprocessing.tomogram_oversample = parse_boolean_("postprocessing.tomogram.oversample", table, false);
+        postprocessing.tomogram_correct_ctf = parse_boolean_("postprocessing.tomogram.correct_ctf", table, true);
 
-        weight = to_lower(trim(parse_number_(
-                "postprocessing.reconstruct_weighting", table,
-                std::string(mode == "fourier" ? "fourier" : "radial"))));
-        check(weight == "fourier" or weight == "radial" or
-              (starts_with(weight, "sirt-") and parse<u32>(std::string_view(weight.begin() + 5, weight.end())).has_value()),
-              R"(postprocessing.reconstruct_weighting should be "fourier", "radial" or "sirt-n" (where n is a positive integer), but got {})",
-              weight);
-        check(mode == "fourier" or weight != "fourier",
-              "Fourier weighting is currently only supported with postprocessing.reconstruct_mode=fourier");
+        postprocessing.tomogram_z_padding_percent = parse_number_("postprocessing.tomogram.z_padding_percent", table, 10.);
+        check(postprocessing.tomogram_z_padding_percent >= 0 and postprocessing.tomogram_z_padding_percent <= 200,
+              "postprocessing:tomogram_z_padding_percent should be between 0 and 200, but got {}",
+              postprocessing.tomogram_z_padding_percent);
 
-        postprocessing.reconstruct_z_padding = parse_number_("postprocessing.reconstruct_z_padding", table, 10.);
-        check(postprocessing.reconstruct_z_padding >= 0 and postprocessing.reconstruct_z_padding <= 200,
-              "postprocessing:reconstruct_z_padding should be between 0 and 200, but got {}",
-              postprocessing.reconstruct_z_padding);
+        postprocessing.tomogram_phase_flip_strength = parse_number_("postprocessing.tomogram.phase_flip_strength", table, i64{8});
+        check(postprocessing.tomogram_phase_flip_strength >= 0 and postprocessing.tomogram_phase_flip_strength <= 10,
+              "postprocessing:tomogram_phase_flip_strength should be between 0 and 10, but got {}",
+              postprocessing.tomogram_phase_flip_strength);
 
         return postprocessing;
     }

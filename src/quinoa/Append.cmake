@@ -9,12 +9,12 @@ set(QUINOA_HEADERS
     src/quinoa/Settings.hpp
     src/quinoa/PairwiseShift.hpp
     src/quinoa/PairwiseTilt.hpp
-    src/quinoa/Reconstruction.hpp
     src/quinoa/RotationOffset.hpp
     src/quinoa/Stack.hpp
     src/quinoa/Types.hpp
     src/quinoa/Thickness.hpp
     src/quinoa/Utilities.hpp
+    src/quinoa/PostProcessing.hpp
 
     src/quinoa/SplineCurve.hpp
     src/quinoa/SplineGrid.hpp
@@ -40,6 +40,7 @@ set(QUINOA_SOURCES_UNIFIED
     src/quinoa/Stack.cpp
 
     src/quinoa/ExcludeViews.cpp
+    src/quinoa/PostProcessing.cpp
 
     src/quinoa/Alignment.cpp
     src/quinoa/PairwiseShift.cpp
@@ -51,5 +52,4 @@ set(QUINOA_SOURCES_UNIFIED
     src/quinoa/CTFRefine.cpp
     src/quinoa/Thickness.cpp
 #    src/quinoa/ProjectionMatching.cpp
-    src/quinoa/Reconstruction.cpp
 )

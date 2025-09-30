@@ -24,8 +24,8 @@ namespace {
             const auto current = metadata[i].index;
             const auto previous = metadata[i - 1].index;
             indices.push_back(current);
-            points.push_back(variances[current]);
-            gradients.push_back(std::abs(variances[current] - variances[previous]));
+            points.push_back(static_cast<f64>(variances[current]));
+            gradients.push_back(static_cast<f64>(std::abs(variances[current] - variances[previous])));
         }
 
         // Quality metrics.
