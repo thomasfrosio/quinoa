@@ -44,7 +44,7 @@ namespace qn {
 
             // Image processing after cropping:
             .normalize_and_standardize = true,
-            .smooth_edge_percent = 0.,
+            .smooth_edge_percent = 0.05,
             .zero_pad_to_fast_fft_shape = true,
             .zero_pad_to_square_shape = false,
         });
@@ -69,9 +69,8 @@ namespace qn {
             .output_directory = parameters.output_directory,
         };
 
-        auto rotation_fitter = RotationOffset{};
         auto rotation_parameters = RotationOffsetParameters{
-            .interp{noa::Interp::LANCZOS8},
+            .bandpass = {0., 0., 0.5, 0.}, // off
             .output_directory = parameters.output_directory,
         };
 
