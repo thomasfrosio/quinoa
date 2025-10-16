@@ -128,7 +128,7 @@ namespace qn {
         Logger::trace(
             "device={}\n"
             "angle_range={:.2f}deg\n"
-            "angle_step={:.2f}deg\n",
+            "angle_step={:.2f}deg",
             stack.device(), options.grid_search_range, options.grid_search_step
         );
 

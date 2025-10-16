@@ -6,7 +6,6 @@
 
 #include "quinoa/Logger.hpp"
 #include "quinoa/Metadata.hpp"
-#include "quinoa/Reconstruction.hpp"
 #include "quinoa/CTF.hpp"
 #include "quinoa/PostProcessing.hpp"
 

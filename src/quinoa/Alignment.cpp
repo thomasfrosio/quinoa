@@ -99,9 +99,7 @@ namespace qn {
                 rotation_parameters.reset_rotation = not has_rotation;
                 rotation_parameters.angle_range = not has_rotation ? 90. : 10.;
                 rotation_parameters.angle_step = not has_rotation ? 1. : 0.1;
-                // rotation_parameters.line_range = not has_rotation ? 0. : 0.2;
-                // rotation_parameters.line_step = not has_rotation ? 1. : 0.1;
-                rotation_fitter.search(tilt_series.view(), metadata, rotation_parameters);
+                find_rotation_offset(tilt_series.view(), metadata, rotation_parameters);
                 has_rotation = true;
             }
 
@@ -130,9 +128,7 @@ namespace qn {
             if (parameters.fit_rotation_offset) {
                 rotation_parameters.angle_range = angle_range;
                 rotation_parameters.angle_step = angle_step;
-                // rotation_parameters.line_range = 0.2;
-                // rotation_parameters.line_step = 0.01;
-                rotation_fitter.search(tilt_series.view(), metadata, rotation_parameters);
+                find_rotation_offset(tilt_series.view(), metadata, rotation_parameters);
             }
 
             if (parameters.fit_tilt_offset) {

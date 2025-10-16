@@ -3,62 +3,39 @@
 #include <noa/Geometry.hpp>
 #include <noa/Signal.hpp>
 
-#include "quinoa/RotationOffset.hpp"
+#include "quinoa/CommonArea.hpp"
 #include "quinoa/GridSearch.hpp"
 #include "quinoa/Logger.hpp"
-#include "quinoa/CommonArea.hpp"
 #include "quinoa/Plot.hpp"
+#include "quinoa/RotationOffset.hpp"
 
 namespace qn {
-    // struct ExtractLines {
-    // public:
-    //     static constexpr noa::Interp INTERP = noa::Interp::LANCZOS8;
-    //     using input_type = SpanContiguous<const c32, 3>;
-    //     using interpolator_type = noa::InterpolatorSpectrum<2, noa::Remap::H2H, INTERP, input_type>;
-    //     using value_type = c32;
-    //     using real_type = f32;
-    //
-    //     using coord_type = f64;
-    //     using index_type = i64;
-    //     using coord2_type = Vec<coord_type, 2>;
-    //     using matrix_type = Mat<coord_type, 2, 2>;
-    //
-    // public:
-    //     ExtractLines(
-    //         const SpanContiguous<const value_type, 3>& spectra,
-    //         const SpanContiguous<value_type, 3>& lines,
-    //         const SpanContiguous<const matrix_type, 1>& line_rotations
-    //     ) {
-    //
-    //     }
-    //
-    // public:
-    //     interpolator_type spectra; // (b,h,w)
-    //     SpanContiguous<c32, 3> lines; // (b,i,w)
-    //     SpanContiguous<const Mat<coord_type, 2, 2>, 1> matrices; // (i)
-    //     index_type window_radius;
-    //
-    //     constexpr auto windowed_sinc(coord_type frequency_offset) const {
-    //         return static_cast<real_type>(frequency_offset);
-    //     }
-    //
-    //     constexpr void operator()(i64 b, i64 i, i64 w, i64 u) const {
-    //         // Get the sinc weight.
-    //         const auto frequency_offset = static_cast<coord_type>(w - window_radius);
-    //         const auto sinc_weight = windowed_sinc(frequency_offset);
-    //
-    //         // Get the line.
-    //         const auto frequency_2d = matrices[i] * coord2_type::from_values(frequency_offset, u);
-    //         const auto value = spectra.interpolate_spectrum_at(frequency_2d, b);
-    //
-    //         //
-    //         noa::guts::atomic_add(lines, value * sinc_weight, b, i, u);
-    //     }
-    // };
+    struct ReduceHeight {
+        using span_t = SpanContiguous<const f32, 3>;
+        using interp_t = noa::Interpolator<2, noa::Interp::LINEAR, noa::Border::ZERO, span_t>;
+
+        interp_t images{};
+        SpanContiguous<const Mat<f32, 2, 3>> image_transforms{};
+        SpanContiguous<const ParallelogramMask> fov_masks{};
+
+        NOA_HD void init(i64 i, i64 h, i64 w, f32& sum) const {
+            const auto indices = Vec{h, w};
+            const auto image_coordinates = image_transforms[i] * indices.as<f32>().push_back(1);
+            const auto mask = fov_masks[i](image_coordinates);
+
+            f32 value{};
+            if (mask > 1e-6f)
+                value = images.interpolate_at(image_coordinates, i);
+
+            sum += value * mask;
+        }
+
+        NOA_HD static void join(f32 isum, f32& sum) { sum += isum; }
+    };
 }
 
 namespace qn {
-    void RotationOffset::search(
+    void find_rotation_offset(
         const View<const f32>& stack,
         MetadataStack& metadata,
         const RotationOffsetParameters& options
@@ -66,6 +43,7 @@ namespace qn {
         auto timer = Logger::info_scope_time("Rotation offset alignment using common-lines");
 
         const f64 initial_rotation_offset = options.reset_rotation ? 0 : metadata[0].angles[0];
+        f64 max_shift{};
         for (auto& slice: metadata) {
             if (options.reset_rotation) {
                 // For the initial search, we usually want to start from 0 and search +-90 deg.
@@ -79,71 +57,49 @@ namespace qn {
                     "rotation offset of the lowest tilt."
                 );
             }
+            max_shift = std::max(max_shift, noa::max(slice.shifts));
         }
 
-        // To project the stack along any axis, we need to zero-pad by at least sqrt(2) first.
-        // Since the projection is done in Fourier space, bring this up to a factor of 2.
-        // TODO Experiment with lower oversampling and Lanczos-6|8 interpolation.
-        const auto shape = stack.shape();
-        const auto padding = max(shape.filter(2, 3));
-        const auto shape_padded = shape + Shape<i64, 4>{0, 0, padding, padding};
-        const auto center_padded = (shape_padded.vec.filter(2, 3) / 2).as<f32>();
-        const auto border_left = (shape_padded / 2 - shape / 2).vec.filter(2, 3);
-        const auto border_right = padding - border_left;
-        const auto oversampling_factor = static_cast<f64>(shape_padded[3]) / static_cast<f64>(shape[3]);
+        // To project the stack along any axis, we need to zero-pad to make sure the image doesn't go out-of-view.
+        const auto image_shape = stack.shape().filter(2, 3);
+        const auto n_images = stack.shape()[0];
+        auto line_size = static_cast<i64>(std::sqrt(2) * static_cast<f64>(noa::max(image_shape)) + max_shift);
+        const auto do_bandpass = options.bandpass.highpass_cutoff > 0 or options.bandpass.lowpass_cutoff < 0.5;
+        if (do_bandpass)
+            line_size = nf::next_fast_size(line_size);
 
-        const auto angle_range = Vec{-options.angle_range, +options.angle_range};
-        const auto rotation_range = initial_rotation_offset + angle_range;
-        const auto phi_range = Vec{-options.line_range, +options.line_range};
-        const auto n_lines_per_target = static_cast<i64>(std::round(2 * options.line_range / options.line_step)) + 1;
-        const auto shape_polar = Shape<i64, 4>{shape[0], 1, n_lines_per_target, shape_padded[3]};
-        const auto shape_lines = Shape<i64, 4>{shape[0] * n_lines_per_target, 1, 1, shape_padded[3]};
+        const auto image_padded_shape = Shape{line_size, line_size};
+        const auto image_padded_center = (image_padded_shape.vec / 2).as<f64>();
+        const auto image_center = (image_shape.vec / 2).as<f64>();
 
         const auto device = stack.device();
         Logger::trace(
             "RotationOffset()::search():\n"
             "  reset_rotation={}\n"
             "  device={}\n"
-            "  fourier_interp={} (oversampling_factor={:.2f})\n"
+            "  line_size={} (image_shape={}, max_shift={:.2f})\n"
             "  angle_range={:.2f}deg (rotation_offset={:.2f})\n"
-            "  angle_step={:.3f}deg\n"
-            "  line_range={:.2f}deg\n"
-            "  line_step={:.2f}deg\n"
-            "  lines_size={}",
+            "  angle_step={:.3f}deg",
             options.reset_rotation, device,
-            options.interp, oversampling_factor,
+            line_size, image_shape, max_shift,
             options.angle_range, initial_rotation_offset,
-            options.angle_step, options.line_range, options.line_step,
-            shape_padded[3]
+            options.angle_step
         );
-
-        // Allocate the padded stack and initialize it with the input stack.
-        if (noa::vany(noa::NotEqual{}, shape_padded.rfft(), m_stack_padded_rfft.shape()) or
-            device != m_stack_padded_rfft.device())
-        {
-            m_stack_padded_rfft = noa::Array<c32>(shape_padded.rfft(), {
-                .device = device,
-                .allocator =  Allocator::DEFAULT_ASYNC,
-            });
-            Logger::trace(
-                "RotationOffset(): allocated {:.2f}GB on {} (shape={}, allocator={})",
-                static_cast<f64>(m_stack_padded_rfft.size() * sizeof(c32)) * 1e-9,
-                device, m_stack_padded_rfft.shape(), m_stack_padded_rfft.allocator()
-            );
-        }
-        const auto stack_padded_rfft = m_stack_padded_rfft.view();
-        const auto stack_padded = nf::alias_to_real(stack_padded_rfft, shape_padded);
-        const auto stack_padded_filled = stack_padded.subregion(
-            ni::Ellipsis{}, 0,
-            ni::Slice{border_left[0], -border_right[0]},
-            ni::Slice{border_left[1], -border_right[1]});
 
         // Allocate dereferenceable buffers.
         const auto options_managed = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
-        const auto inverse_matrices = Array<Mat<f32, 2, 3>>(shape[0], options_managed);
-        const auto shifts = Array<Vec<f32, 2>>(shape[0], options_managed);
-        const auto polar_rfft = Array<c32>(shape_polar.rfft(), options_managed);
-        const auto polar = nf::alias_to_real(polar_rfft.view(), shape_polar);
+        const auto image_transforms = Array<Mat<f32, 2, 3>>(n_images, options_managed);
+        const auto fov_masks = Array<ParallelogramMask>(n_images, options_managed);
+        const auto lines = Array<f32>({n_images, 1, 1, line_size}, options_managed);
+        const auto lines_rfft = do_bandpass ? Array<c32>(lines.shape().rfft(), options_managed) : Array<c32>{};
+
+        // Sort metadata in the same order as the stack.
+        auto metadata_sorted = metadata;
+        metadata_sorted.sort("index");
+        const auto index_reference = metadata_sorted.find_lowest_tilt_index();
+
+        const auto angle_range = Vec{-options.angle_range, +options.angle_range};
+        const auto rotation_range = initial_rotation_offset + angle_range;
 
         std::vector<f64> nccs{};
         f64 best_ncc{};
@@ -153,75 +109,80 @@ namespace qn {
             .end = rotation_range[1],
             .step = options.angle_step
         });
-        grid_search.for_each([&, metadata](f64 rotation_offset) mutable {
+        grid_search.for_each([&](f64 rotation_offset) mutable {
             // Set to the current rotation.
-            for (auto& slice: metadata)
+            for (auto& slice: metadata_sorted)
                 slice.angles[0] = rotation_offset;
 
-            // Zero-pad for the Fourier projection, and enforce a common field-of-view.
-            // Note that this is applied to the unaligned stack, so don't correct for the shifts.
-            noa::fill(stack_padded, 0);
-            auto area = CommonArea();
-            area.set_geometry(shape.filter(2, 3), metadata);
-            area.compute_inverse_transforms(metadata, inverse_matrices.span_1d_contiguous(), false);
-            area.mask(stack, stack_padded_filled, inverse_matrices.view(), 0.1); // TODO check
+            // Set the image transforms.
+            for (auto&& [slice, image_transform]: noa::zip(metadata_sorted, image_transforms.span_1d())) {
+                const auto rotation = noa::deg2rad(slice.angles[0]);
+                image_transform = (
+                    ng::translate(image_padded_center) *
+                    ng::rotate<true>(noa::deg2rad(-90.)) * // align tilt-axis on x-axis
+                    ng::rotate<true>(-rotation) *
+                    ng::translate(-image_center - slice.shifts)
+                ).inverse().pop_back().as<f32>();
+            }
 
-            // Get the spectra.
-            nf::r2c(stack_padded, stack_padded_rfft);
-
-            // Move the real-space signal to the rotation center.
-            for (auto span = shifts.span_1d_contiguous(); auto& slice: metadata)
-                span[slice.index] = -slice.shifts.as<f32>() - center_padded;
-            ns::phase_shift_2d<"h2h">(
-                stack_padded_rfft, stack_padded_rfft, shape_padded,
-                shifts.reinterpret_as(device.type())
-            );
-
-            // Compute the lines, aka real-space projections orthogonal to the searched tilt-axes.
-            // The rotation offset is relative to the y-axis, so we need to add 90deg to match the phi-range.
-            const auto iphi_range = noa::deg2rad(phi_range + rotation_offset + 90);
-            ng::spectrum2polar<"h2fc">(stack_padded_rfft, shape_padded, polar_rfft.view(), {
-                .phi_range = {iphi_range[0], iphi_range[1], true},
-                .interp = options.interp,
+            // Set the FOV mask.
+            auto fov = CommonFOV{};
+            fov.set_geometry(image_shape, metadata_sorted);
+            fov.set_fovs(metadata_sorted, fov_masks.span_1d(), {
+                .smooth_edge_percent = 0.1,
+                .add_shifts = true, // the coordinates passed correspond to the unaligned image
             });
 
-            // Get the final projections in real-space.
-            // We need to process these lines in batch, so reshape: (b,1,h,w) -> (b*h,1,1,w).
-            const auto lines_rfft = polar_rfft.view().reinterpret_as_cpu().reshape(shape_lines.rfft());
-            ns::bandpass<"h2h">(lines_rfft, lines_rfft, shape_lines, options.bandpass);
-            ns::phase_shift_1d<"h2h">(lines_rfft, lines_rfft, shape_lines, center_padded.filter(1));
-            auto lines = nf::alias_to_real(lines_rfft, shape_lines);
-            nf::c2r(lines_rfft, lines);
+            // Compute the lines.
+            noa::reduce_axes_iwise(
+                image_padded_shape.push_front(n_images), device, f32{0}, lines.permute({1, 0, 2, 3}),
+                ReduceHeight{
+                    .images = ReduceHeight::interp_t(stack.span().filter(0, 2, 3).as_contiguous(), image_shape),
+                    .image_transforms = image_transforms.span_1d(),
+                    .fov_masks = fov_masks.span_1d(),
+                });
 
-            auto normalized_cross_correlate = [](auto lhs, auto rhs) -> f64 {
-                f64 ncc{}, lhs_ncc{}, rhs_ncc{};
+            // Filter the lines, if necessary.
+            if (do_bandpass) {
+                nf::r2c(lines, lines_rfft);
+                ns::bandpass<"h2h">(lines_rfft, lines_rfft, lines.shape(), options.bandpass);
+                nf::c2r(lines_rfft, lines);
+            }
+            lines.eval();
+
+            auto zero_normalized_cross_correlation = [](auto lhs, auto rhs) {
+                f64 sum_lhs{};
+                f64 sum_rhs{};
+                f64 sum_lhs_lhs{};
+                f64 sum_rhs_rhs{};
+                f64 sum_lhs_rhs{};
                 for (i64 i{}; i < lhs.ssize(); ++i) {
-                    ncc += static_cast<f64>(lhs[i] * rhs[i]);
-                    lhs_ncc += static_cast<f64>(lhs[i] * lhs[i]);
-                    rhs_ncc += static_cast<f64>(rhs[i] * rhs[i]);
+                    const auto lhs_ = static_cast<f64>(lhs[i]);
+                    const auto rhs_ = static_cast<f64>(rhs[i]);
+                    sum_lhs += lhs_;
+                    sum_rhs += rhs_;
+                    sum_lhs_lhs += lhs_ * lhs_;
+                    sum_rhs_rhs += rhs_ * rhs_;
+                    sum_lhs_rhs += lhs_ * rhs_;
                 }
-                return ncc / (std::sqrt(lhs_ncc) * std::sqrt(rhs_ncc));
+                const f64 count = static_cast<f64>(lhs.ssize());
+                const f64 denominator_lhs = sum_lhs_lhs - sum_lhs * sum_lhs / count;
+                const f64 denominator_rhs = sum_rhs_rhs - sum_rhs * sum_rhs / count;
+                f64 denominator = denominator_lhs * denominator_rhs;
+                if (denominator <= 0.0)
+                    return 0.0;
+                const f64 numerator = sum_lhs_rhs - sum_lhs * sum_rhs / count;
+                return numerator / std::sqrt(denominator);
             };
 
             // Cross-correlation.
-            const auto index_reference = metadata.find_lowest_tilt_index();
-            const auto lines_bhw = polar.span().filter(0, 2, 3).as_contiguous(); // (b,h,w)
-            const auto reference = lines_bhw.subregion(index_reference, n_lines_per_target / 2).as_1d();
-
             f64 ncc{};
-            for (i64 b{}; b < lines_bhw.shape()[0]; ++b) {
-                if (b == index_reference)
-                    continue;
-
-                f64 b_ncc{};
-                const auto lines_hw = lines_bhw[b];
-                for (i64 h{}; h < lines_hw.shape()[0]; ++h) {
-                    const f64 score = normalized_cross_correlate(reference, lines_hw[h]);
-                    b_ncc = std::max(b_ncc, score);
-                }
-                ncc += b_ncc;
-            }
-            ncc /= static_cast<f64>(lines_bhw.shape()[0] - 1);
+            const auto reference = lines.span().subregion(index_reference).as_1d();
+            const auto targets = lines.span().filter(0, 3).as_contiguous();
+            for (i64 i{}; i < targets.shape()[0]; ++i)
+                if (i != index_reference)
+                    ncc += zero_normalized_cross_correlation(reference, targets[i]);
+            ncc /= static_cast<f64>(targets.shape()[0] - 1);
 
             // Maximize the ncc.
             if (ncc > best_ncc) {
@@ -233,7 +194,7 @@ namespace qn {
 
         const auto increment = best_rotation_offset - initial_rotation_offset;
         Logger::info(
-            "rotation_offset={:.3f} degrees (increment={:+.3f}, ncc={:.4f}, n_iter={}), or equivalently {:.3f} degrees",
+            "rotation_offset={:.3f}deg (increment={:+.3f}, ncc={:.4f}, n_iter={}), or equivalently {:.3f}deg",
             best_rotation_offset, increment, best_ncc, grid_search.size(),
             MetadataSlice::to_angle_range(best_rotation_offset + 180)
         );

@@ -458,7 +458,7 @@ namespace qn {
     }
 
     void save_stack(
-        const View<f32>& stack,
+        const View<const f32>& stack,
         const Vec<f64, 2>& spacing,
         const MetadataStack& metadata,
         const Path& filename,
