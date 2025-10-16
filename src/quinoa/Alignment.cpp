@@ -1,6 +1,5 @@
 #include "quinoa/Alignment.hpp"
 #include "quinoa/GridSearch.hpp"
-#include "quinoa/Optimizer.hpp"
 #include "quinoa/PairwiseShift.hpp"
 #include "quinoa/PairwiseTilt.hpp"
 #include "quinoa/RotationOffset.hpp"
@@ -253,7 +252,7 @@ namespace qn {
         });
         auto patches = ctf::Patches::from_stack(
             stack_loader, metadata_initial, grid, parameters.resolution_range,
-            patch_size, patch_size_padded, patch_size
+            patch_size, patch_size_padded
         );
         auto fitting_range = ctf::initial_fit(
             grid, patches, metadata_initial, ctf, {
@@ -280,10 +279,12 @@ namespace qn {
         );
 
         // Extract the entire stack and sample the patches using the aliasing-free size.
+        metadata.sort("tilt").reset_indices();
+        const auto bin_angle = parameters.fit_astigmatism ? 3 : -1;
         patches = ctf::Patches{}; // erase initial patches
         patches = ctf::Patches::from_stack(
             stack_loader, metadata, grid, parameters.resolution_range,
-            patch_size, patch_size_padded, patch_size
+            patch_size, patch_size_padded, bin_angle
         );
         stack_loader = StackLoader{}; // erase buffers
 
@@ -305,7 +306,7 @@ namespace qn {
         // final refine fit.
         f64 specimen_thickness_nm{};
         if (parameters.fit_thickness) {
-            // In order to fit the thickness from the tomogram, we first need to find the stage angles.
+            // To fit the thickness from the tomogram, we first need to find the stage angles.
             // Since we don't need to be very accurate here, turning off the astigmatism for significantly
             // faster compute time should be fine.
             ctf::refine_fit(

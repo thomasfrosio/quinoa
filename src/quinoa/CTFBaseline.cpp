@@ -47,7 +47,6 @@ namespace qn::ctf {
 
         // Similarly, at the end of the spectrum, the background can vary significantly,
         // so try to detect such variation in the signal and cut if out of the fitting range.
-
         i64 window_size{half_oscillation_size * 2 + 1};
         auto sample_local_average = [&](i64 index) {
             f32 value{};
@@ -76,26 +75,25 @@ namespace qn::ctf {
 
         // Set the signal threshold
         auto [gradient_threshold, signal_threshold] = [&gradient] {
-            const auto quartile_75 = static_cast<size_t>(static_cast<f64>(gradient.size()) * 0.75);
+            const auto quartile_75 = static_cast<size_t>(static_cast<f32>(gradient.size()) * 0.75f);
             auto gradient_copy = gradient;
-            stdr::nth_element(gradient_copy, gradient_copy.begin() + quartile_75);
-            const f64 gradient_threshold = gradient_copy[quartile_75];
+            stdr::nth_element(gradient_copy, gradient_copy.begin() + static_cast<ptrdiff_t>(quartile_75));
+            const f32 gradient_threshold_ = gradient_copy[quartile_75];
 
-            f64 sum{}, sum_squares{};
-            i64 count{};
+            f32 sum{}, sum_squares{};
+            i32 count{};
             for (const auto& e: gradient) {
-                auto ed = static_cast<f64>(e);
-                if (ed < gradient_threshold) {
-                    sum += ed;
-                    sum_squares += ed * ed;
+                if (e < gradient_threshold_) {
+                    sum += e;
+                    sum_squares += e * e;
                     ++count;
                 }
             }
-            const f64 background_mean = sum / static_cast<f64>(count);
-            const f64 background_variance = sum_squares / static_cast<f64>(count) - (background_mean * background_mean);
-            const f64 background_stddev = std::sqrt(background_variance);
-            const f64 signal_threshold = std::min(0.5, background_mean + 6 * background_stddev);
-            return Pair{gradient_threshold, signal_threshold};
+            const f32 background_mean = sum / static_cast<f32>(count);
+            const f32 background_variance = sum_squares / static_cast<f32>(count) - (background_mean * background_mean);
+            const f32 background_stddev = std::sqrt(background_variance);
+            const f32 signal_threshold_ = std::min(0.5f, background_mean + 6 * background_stddev);
+            return Pair{gradient_threshold_, signal_threshold_};
         }();
 
         // First, collect the regions above the thresholds.
@@ -109,10 +107,10 @@ namespace qn::ctf {
                 is_within_window = true;
                 start = i;
                 max_value_within_window = -1;
-            } else if (is_within_window and (e < signal_threshold or i == gradient.size() - 1)) {
+            } else if (is_within_window and (e < signal_threshold or i == std::ssize(gradient) - 1)) {
                 is_within_window = false;
-                const auto window_size = i - start;
-                if (window_size >= 3 and max_value_within_window >= gradient_threshold)
+                const auto window_size_ = i - start;
+                if (window_size_ >= 3 and max_value_within_window >= gradient_threshold)
                     possible_windows.push_back({start, i});
             }
             ++i;

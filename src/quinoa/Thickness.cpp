@@ -3,6 +3,7 @@
 
 #include "quinoa/Thickness.hpp"
 #include "quinoa/Plot.hpp"
+#include "quinoa/Stack.hpp"
 
 namespace {
     using namespace qn;
@@ -286,5 +287,25 @@ namespace qn {
         metadata.add_volume_shift({-z_offset, 0., 0.});
 
         return specimen_window_size_nm;
+    }
+
+    void ThicknessModulation::sample(
+        SpanContiguous<f32> spectrum,
+        const Vec<f64, 2>& fftfreq_range
+    ) const {
+        const auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum.ssize() - 1);
+        for (i64 i{}; i < spectrum.ssize(); ++i) {
+            const auto fftfreq = static_cast<f64>(i) * fftfreq_step + fftfreq_range[0];
+            spectrum[i] = static_cast<f32>(sample_at(fftfreq));
+        }
+    }
+
+    void ThicknessModulation::sample(
+        const View<f32>& spectrum,
+        const Vec<f64, 2>& fftfreq_range
+    ) const {
+        auto [b, d, h, w] = spectrum.shape();
+        check(b == 1 and d == 1 and h == 1);
+        sample(spectrum.reinterpret_as_cpu().span_1d(), fftfreq_range);
     }
 }

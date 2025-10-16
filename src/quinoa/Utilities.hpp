@@ -99,6 +99,14 @@ namespace qn {
         return thickness / scaling;
     }
 
+    template<typename T>
+    constexpr auto simple_average(SpanContiguous<T, 1> data) -> f64 {
+        f64 sum{};
+        for (auto& e: data)
+            sum += static_cast<f64>(e);
+        return sum / static_cast<f64>(data.ssize());
+    }
+
     struct GaussianSlider {
         /// Normalized coordinates of the Gaussian peak.
         /// [0,1] is the input range, but out-of-range coordinates are valid.

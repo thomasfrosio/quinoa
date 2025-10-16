@@ -23,7 +23,8 @@ namespace qn::ctf {
             const Vec<f64, 2>& resolution_range,
             i64 patch_size,
             i64 patch_padded_size,
-            i64 phi_size,
+            f64 target_bin_angle = 0,
+            i64 target_phi_size = 1024,
             noa::Interp polar_interp = noa::Interp::CUBIC_BSPLINE
         ) -> Patches;
 
@@ -54,8 +55,6 @@ namespace qn::ctf {
         [[nodiscard]] auto n_patches_total() const noexcept -> i64 { return n_images() * n_patches_per_image(); }
         [[nodiscard]] auto height() const noexcept -> i64 { return m_polar.shape().height(); }
         [[nodiscard]] auto width() const noexcept -> i64 { return m_polar.shape().width(); }
-
-        void exclude_views(SpanContiguous<const i64> indices);
 
     private:
         Array<value_type> m_polar{}; // (n,p,phi,rho)
