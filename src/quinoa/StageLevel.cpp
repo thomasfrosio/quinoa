@@ -4,9 +4,8 @@
 #include "quinoa/GridSearch.hpp"
 #include "quinoa/Logger.hpp"
 #include "quinoa/Metadata.hpp"
-#include "quinoa/PairwiseTilt.hpp"
+#include "quinoa/StageLevel.hpp"
 #include "quinoa/Types.hpp"
-#include "quinoa/Plot.hpp"
 
 namespace {
     using namespace qn;

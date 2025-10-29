@@ -10,7 +10,6 @@ namespace qn {
         f64 tilt_search_step{1};
         f64 pitch_search_range{};
         f64 pitch_search_step{1};
-        Path output_directory{};
     };
 
     void coarse_stage_leveling(

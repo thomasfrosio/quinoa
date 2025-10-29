@@ -1,11 +1,13 @@
+#include <noa/FFT.hpp>
+
 #include "quinoa/Alignment.hpp"
-#include "quinoa/GridSearch.hpp"
+#include "quinoa/CTF.hpp"
 #include "quinoa/PairwiseShift.hpp"
-#include "quinoa/PairwiseTilt.hpp"
+#include "quinoa/ProjectionMatching.hpp"
 #include "quinoa/RotationOffset.hpp"
 #include "quinoa/Stack.hpp"
+#include "quinoa/StageLevel.hpp"
 #include "quinoa/Thickness.hpp"
-#include "quinoa/CTF.hpp"
 
 namespace qn {
     auto coarse_alignment(
@@ -16,7 +18,7 @@ namespace qn {
         auto timer = Logger::status_scope_time("Coarse alignment");
 
         // To keep it simple, work with the stack sorted with its tilt in ascending order.
-        // PairwiseTilt relies on this and will throw an error if the stack isn't ordered.
+        // The stage leveling relies on this and will throw an error if the stack isn't ordered.
         metadata.sort("tilt").reset_indices();
 
         // These alignments are quite robust at low tilts.
@@ -73,9 +75,7 @@ namespace qn {
             .output_directory = parameters.output_directory,
         };
 
-        auto stage_parameters = StageLevelingParameters{
-            .output_directory = parameters.output_directory,
-        };
+        auto stage_parameters = StageLevelingParameters{};
 
         // TODO Detect for view with huge shifts and remove them?
         //      Maybe only for higher tilts, e.g. >20deg, I don't want to remove valuable low tilts...
