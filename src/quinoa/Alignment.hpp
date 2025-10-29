@@ -10,6 +10,7 @@ namespace qn {
         f64 maximum_resolution;
         bool fit_rotation_offset;
         bool fit_tilt_offset;
+        bool fit_pitch_offset;
         bool has_user_rotation;
         Path output_directory;
     };

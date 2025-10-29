@@ -85,6 +85,7 @@ exclude_stack_images = []
 run = false
 fit_rotation = true
 fit_tilt = true
+fit_pitch = true
 
 [alignment.ctf]
 run = false

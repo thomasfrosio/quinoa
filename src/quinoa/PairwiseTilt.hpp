@@ -5,16 +5,18 @@
 #include "quinoa/Metadata.hpp"
 
 namespace qn {
-    struct PairwiseTiltOptions {
-        f64 grid_search_range;
-        f64 grid_search_step;
-        Path output_directory;
+    struct StageLevelingParameters {
+        f64 tilt_search_range{};
+        f64 tilt_search_step{1};
+        f64 pitch_search_range{};
+        f64 pitch_search_step{1};
+        Path output_directory{};
     };
 
-    void coarse_fit_tilt(
+    void coarse_stage_leveling(
         const View<f32>& stack,
         MetadataStack& metadata,
-        f64& tilt_offset,
-        const PairwiseTiltOptions& options
+        Vec<f64, 2>& tilt_pitch_offset,
+        const StageLevelingParameters& options
     );
 }

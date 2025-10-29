@@ -10,8 +10,9 @@
 // For now though, this works fine.
 
 #ifndef QN_INCLUDE_CPU_ONLY
-#include <noa/FFT.hpp>
 #include <noa/Geometry.hpp>
+#include <noa/Signal.hpp>
+#include <noa/FFT.hpp>
 #endif
 
 namespace qn {

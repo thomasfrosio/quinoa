@@ -162,7 +162,7 @@ namespace qn {
         d[n - 1] = 0.0;
     }
 
-    Vec<f64, 2> find_best_peak(const SpanContiguous<const f32, 2>& data) {
+    auto find_best_peak(const SpanContiguous<const f32, 2>& data) -> Vec<f64, 2> {
         constexpr i64 BLOCK_SIZE = 5;
         constexpr i64 BLOCK_RADIUS = BLOCK_SIZE / 2;
         constexpr i64 N_BLOCKS_Y = 3;

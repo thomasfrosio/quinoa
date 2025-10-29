@@ -39,6 +39,7 @@ namespace {
             "alignment.coarse.run"sv,
             "alignment.coarse.fit_rotation"sv,
             "alignment.coarse.fit_tilt"sv,
+            "alignment.coarse.fit_pitch"sv,
             "alignment.ctf.run"sv,
             "alignment.ctf.fit_rotation"sv,
             "alignment.ctf.fit_tilt"sv,
@@ -241,6 +242,7 @@ namespace {
         alignment.coarse_run = parse_boolean_("alignment.coarse.run", table, true);
         alignment.coarse_fit_rotation = parse_boolean_("alignment.coarse.fit_rotation", table, true);
         alignment.coarse_fit_tilt = parse_boolean_("alignment.coarse.fit_tilt", table, true);
+        alignment.coarse_fit_pitch = parse_boolean_("alignment.coarse.fit_pitch", table, true);
 
         alignment.ctf_run = parse_boolean_("alignment.ctf.run", table, true);
         alignment.ctf_fit_rotation = parse_boolean_("alignment.ctf.fit_rotation", table, false);

@@ -73,12 +73,16 @@ namespace qn {
             .output_directory = parameters.output_directory,
         };
 
+        auto stage_parameters = StageLevelingParameters{
+            .output_directory = parameters.output_directory,
+        };
+
         // TODO Detect for view with huge shifts and remove them?
         //      Maybe only for higher tilts, e.g. >20deg, I don't want to remove valuable low tilts...
 
         bool has_rotation = parameters.has_user_rotation;
-        bool has_tilt{};
-        f64 tilt_offset{};
+        bool has_stage{};
+        Vec<f64, 2> tilt_pitch_offset{};
         for (auto smooth_edge_percent: std::array{0.08, 0.3, 0.3}) {
             // First, get the large shifts out of the way. Once these are removed, focus on the center.
             // If we have an estimate of the rotation from the user, use cosine-stretching but don't use
@@ -102,13 +106,17 @@ namespace qn {
             }
 
             // Once we have an estimate for the rotation, do the tilt search.
-            if (parameters.fit_tilt_offset) {
-                coarse_fit_tilt(tilt_series.view(), metadata, tilt_offset, {
-                    .grid_search_range = not has_tilt ? 25. : 15.,
-                    .grid_search_step = not has_tilt ? 5. : 0.5,
-                    .output_directory = parameters.output_directory,
-                });
-                has_tilt = true;
+            if (parameters.fit_tilt_offset or parameters.fit_pitch_offset) {
+                if (parameters.fit_tilt_offset) {
+                    stage_parameters.tilt_search_range = not has_stage ? 25. : 10.;
+                    stage_parameters.tilt_search_step = not has_stage ? 5. : 0.25;
+                }
+                if (parameters.fit_pitch_offset) {
+                    stage_parameters.pitch_search_range = not has_stage ? 25. : 10.;
+                    stage_parameters.pitch_search_step = not has_stage ? 5. : 0.25;
+                }
+                coarse_stage_leveling(tilt_series.view(), metadata, tilt_pitch_offset, stage_parameters);
+                has_stage = true;
             }
         }
 
@@ -129,12 +137,16 @@ namespace qn {
                 find_rotation_offset(tilt_series.view(), metadata, rotation_parameters);
             }
 
-            if (parameters.fit_tilt_offset) {
-                coarse_fit_tilt(tilt_series.view(), metadata, tilt_offset, {
-                    .grid_search_range = 10.,
-                    .grid_search_step = 0.1,
-                    .output_directory = parameters.output_directory,
-                });
+            if (parameters.fit_tilt_offset or parameters.fit_pitch_offset) {
+                if (parameters.fit_tilt_offset) {
+                    stage_parameters.tilt_search_range = 10.;
+                    stage_parameters.tilt_search_step = 0.1;
+                }
+                if (parameters.fit_pitch_offset) {
+                    stage_parameters.pitch_search_range = 10.;
+                    stage_parameters.pitch_search_step = 0.1;
+                }
+                coarse_stage_leveling(tilt_series.view(), metadata, tilt_pitch_offset, stage_parameters);
             }
         }
 

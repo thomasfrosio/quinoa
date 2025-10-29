@@ -93,6 +93,7 @@ auto main(int argc, char* argv[]) -> int {
                         .maximum_resolution = 12.,
                         .fit_rotation_offset = settings.alignment.coarse_fit_rotation,
                         .fit_tilt_offset = settings.alignment.coarse_fit_tilt,
+                        .fit_pitch_offset = settings.alignment.coarse_fit_pitch,
                         .has_user_rotation = has_user_rotation,
                         .output_directory = settings.files.output_directory,
                     }

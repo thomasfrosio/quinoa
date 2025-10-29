@@ -1,12 +1,12 @@
+#include <noa/Geometry.hpp>
+#include <noa/Signal.hpp>
+
 #include "quinoa/GridSearch.hpp"
 #include "quinoa/Logger.hpp"
 #include "quinoa/Metadata.hpp"
 #include "quinoa/PairwiseTilt.hpp"
 #include "quinoa/Types.hpp"
 #include "quinoa/Plot.hpp"
-
-#include <noa/Geometry.hpp>
-#include <noa/Signal.hpp>
 
 namespace {
     using namespace qn;
@@ -15,25 +15,34 @@ namespace {
         if (idx_target >= index_lowest_tilt)
             idx_target += 1;
 
-        // If ith target has:
-        //  - negative tilt angle, then reference is at i + 1.
-        //  - positive tilt angle, then reference is at i - 1.
+        // The tilts are sorted in ascending order, so if the ith target has:
+        //  - a negative tilt angle, then the reference is at i + 1.
+        //  - a positive tilt angle, then the reference is at i - 1.
         const bool is_negative = idx_target < index_lowest_tilt;
         const i32 idx_reference = idx_target + 1 * is_negative - 1 * !is_negative;
         return Pair{idx_target, idx_reference};
     }
 
-    template<typename Input, typename Matrices>
     struct CrossCorrelate {
-        Input stack;
-        Matrices inverse_matrices;
-        i32 index_lowest_tilt;
+        using span_type = SpanContiguous<const f32, 3, i32>;
+        using interpolator_type = noa::Interpolator<2, noa::Interp::LINEAR, noa::Border::ZERO, span_type>;
 
-        constexpr void init(i32 batch, i32 y, i32 x, f32& cc, f32& lhs_cc, f32& rhs_cc) const {
+        interpolator_type stack{};
+        SpanContiguous<const Vec<f32, 4>> reference_plane_coefficients{};
+        SpanContiguous<const Mat<f32, 2, 4>> reference2target{};
+        i32 index_lowest_tilt{};
+
+        NOA_HD void init(i32 batch, i32 y, i32 x, f32& cc, f32& lhs_cc, f32& rhs_cc) const {
             const auto [index_target, index_reference] = get_indices_(batch, index_lowest_tilt);
 
-            const auto coordinates = inverse_matrices[batch] * Vec<f32, 3>::from_values(y, x, 1);
-            const auto target_stretched = stack.interpolate_at(coordinates, index_target);
+            // Get the z at this image coordinate by solving the plane equation (d - ax - by) / c.
+            const auto& [a, b, c, d] = reference_plane_coefficients[batch];
+            const auto z = -(a * static_cast<f32>(x) + b * static_cast<f32>(y) + d) / c;
+            const auto reference_coordinates = Vec<f32, 3>::from_values(z, y, x);
+
+            // Transform from target to reference.
+            const auto target_coordinates = reference2target[batch] * reference_coordinates.push_back(1);
+            const auto target_stretched = stack.interpolate_at(target_coordinates, index_target);
             const auto& reference = stack(index_reference, y, x);
 
             cc += reference * target_stretched;
@@ -41,7 +50,7 @@ namespace {
             rhs_cc += target_stretched * target_stretched;
         }
 
-        static constexpr void join(
+        static NOA_HD void join(
             f32 icc, f32 icc_lhs, f32 icc_rhs,
             f32& cc, f32& cc_lhs, f32& cc_rhs
         ) {
@@ -51,16 +60,19 @@ namespace {
         }
 
         using remove_defaulted_final = bool;
-        static constexpr void final(f32 cc, f32 cc_lhs, f32 cc_rhs, f32& ncc) {
-            // Normalize using autocorrelation.
+        static NOA_HD void final(f32 cc, f32 cc_lhs, f32 cc_rhs, f32& ncc) {
             const auto energy = noa::sqrt(cc_lhs) * noa::sqrt(cc_rhs);
-            ncc = cc / energy;
+            if (noa::abs(energy) > 1e-6f)
+                ncc = cc / energy;
         }
     };
 
     auto ncc_(
         const View<f32>& stack,
-        const MetadataStack& metadata
+        const MetadataStack& metadata,
+        const View<Vec<f32, 4>>& plane_coefficients,
+        const View<Mat<f32, 2, 4>>& projection_matrices,
+        const View<f32>& nccs
     ) {
         check(metadata.ssize() == stack.shape()[0]);
 
@@ -71,65 +83,71 @@ namespace {
         const auto slice_center = (slice_shape.vec / 2).as<f64>();
 
         // Compute the target->reference transformations.
-        auto matrices = Array<Mat<f32, 2, 3>>(n_slices);
-        for (i32 i{}; auto& matrix: matrices.span_1d_contiguous()) {
+        for (i32 i{}; auto&& [coeffs, matrix]: noa::zip(plane_coefficients.span_1d(), projection_matrices.span_1d())) {
             const auto [index_target, index_reference] = get_indices_(i++, index_lowest_tilt);
+            const auto& target = metadata[index_target];
+            const auto& reference = metadata[index_reference];
 
-            // Compute the affine matrix to transform the target "onto" the reference.
-            const Vec<f64, 3> target_angles = noa::deg2rad(metadata[index_target].angles);
-            const Vec<f64, 3> reference_angles = noa::deg2rad(metadata[index_reference].angles);
+            // Compute the reference-plane coefficients.
+            const auto target_angles = noa::deg2rad(target.angles);
+            const auto reference_angles = noa::deg2rad(reference.angles);
+            const auto reference_plane_rotation = (
+                ng::rotate_z(reference_angles[0]) *
+                ng::rotate_y(reference_angles[1]) *
+                ng::rotate_x(reference_angles[2])
+            );
+            const auto [c, b, a] = reference_plane_rotation * Vec{1., 0., 0.}; // plane normal
+            const auto reference_center = slice_center + reference.shifts;
+            const auto d = b * -reference_center[0] + a * -reference_center[1]; // precompute coordinate - shifts
+            coeffs = Vec{a, b, c, d}.as<f32>();
 
-            // First, compute the cosine stretching to estimate the tilt (and technically pitch) difference.
-            // These angles are flipped, since the cos-scaling is perpendicular to the axis of rotation.
-            // So since the tilt axis is along Y, its stretching is along X.
-            Vec<f64, 2> cos_factor = noa::cos(reference_angles.filter(2, 1)) / noa::cos(target_angles.filter(2, 1));
-
-            // Cancel the difference (if any) in rotation and shift as well.
+            // Compute the reference -> target transformation.
             matrix = (
-                ng::translate(slice_center + metadata[index_reference].shifts) *
-                ng::rotate<true>(reference_angles[0]) *
-                ng::scale<true>(cos_factor) *
-                ng::rotate<true>(-target_angles[0]) *
-                ng::translate(-slice_center - metadata[index_target].shifts)
-            ).inverse().pop_back().as<f32>();
+                ng::translate(slice_center.push_front(0) + target.shifts.push_front(0)) *
+                ng::rotate_z<true>(target_angles[0]) *
+                ng::rotate_y<true>(target_angles[1]) *
+                ng::rotate_x<true>(target_angles[2]) *
+                ng::rotate_x<true>(-reference_angles[2]) *
+                ng::rotate_y<true>(-reference_angles[1]) *
+                ng::rotate_z<true>(-reference_angles[0]) *
+                ng::translate(-slice_center.push_front(0) - reference.shifts.push_front(0))
+            ).filter_rows(1, 2).as<f32>();
         }
-        matrices = std::move(matrices).to({.device = device, .allocator = Allocator::ASYNC});
 
         // Normalize cross-correlation between the references and their cosine-stretched targets.
-        auto nccs = noa::like<f32>(matrices);
-        auto stack_span = stack.span<f32, 3, i32>().as_contiguous();
-        using interpolator_t = noa::Interpolator<2, noa::Interp::LINEAR, noa::Border::ZERO, decltype(stack_span)>;
-
+        using interp_t = CrossCorrelate::interpolator_type;
         noa::reduce_axes_iwise( // DHW->D11
             slice_shape.push_front(n_slices), device, noa::wrap(0.f, 0.f, 0.f), nccs.flat(1),
             CrossCorrelate{
-                .stack = interpolator_t(stack_span, slice_shape.as<i32>()),
-                .inverse_matrices = matrices.span_1d_contiguous(),
+                .stack = interp_t(stack.span_contiguous<f32, 3, i32>(), slice_shape.as<i32>()),
+                .reference_plane_coefficients = plane_coefficients.span_1d(),
+                .reference2target = projection_matrices.span_1d(),
                 .index_lowest_tilt = index_lowest_tilt,
             });
-        nccs = std::move(nccs).to_cpu();
 
-        // The optimization is for the entire stack, so return the average ncc.
+        // Optimize for the entire stack.
         f64 average{};
-        for (auto ncc: nccs.span_1d_contiguous())
+        for (auto ncc: nccs.eval().span_1d())
             average += static_cast<f64>(ncc);
         return average / static_cast<f64>(n_slices);
     }
 }
 
 namespace qn {
-    void coarse_fit_tilt(
+    void coarse_stage_leveling(
         const View<f32>& stack,
         MetadataStack& metadata,
-        f64& tilt_offset,
-        const PairwiseTiltOptions& options
+        Vec<f64, 2>& tilt_pitch_offset,
+        const StageLevelingParameters& options
     ) {
-        auto timer = Logger::info_scope_time("Tilt offset alignment using pairwise cosine-stretching");
+        auto timer = Logger::info_scope_time("Stage leveling");
         Logger::trace(
             "device={}\n"
-            "angle_range={:.2f}deg\n"
-            "angle_step={:.2f}deg",
-            stack.device(), options.grid_search_range, options.grid_search_step
+            "tilt_search=[range={:.2f}, step={:.2f}]deg\n"
+            "pitch_search=[range={:.2f}, step={:.2f}]deg",
+            stack.device(),
+            options.tilt_search_range, options.tilt_search_step,
+            options.pitch_search_range, options.pitch_search_step
         );
 
         // The algorithm assumes that the slices in the stack are sorted by their tilt angles.
@@ -145,35 +163,36 @@ namespace qn {
         }
         check(stack_is_sorted, "The tilts in the stack should be sorted in ascending order");
 
+        // Unified reusable buffers.
+        const auto projection_matrices = Array<Mat<f32, 2, 4>>(metadata.ssize() - 1, {
+            .device = stack.device(),
+            .allocator = Allocator::MANAGED,
+        });
+        const auto plane_coefficients = noa::like<Vec<f32, 4>>(projection_matrices);
+        const auto nccs = noa::like<f32>(projection_matrices);
+
         f64 best_ncc{};
-        f64 best_tilt_offset{};
-        std::vector<f64> nccs;
-        GridSearch<f64>({
-            .start = -options.grid_search_range,
-            .end = options.grid_search_range,
-            .step = options.grid_search_step,
-        }).for_each([&](f64 offset) {
+        Vec<f64, 2> best_offsets{};
+
+        GridSearch<f64, f64>(
+            {.start = -options.tilt_search_range, .end = options.tilt_search_range, .step = options.tilt_search_step},
+            {.start = -options.pitch_search_range, .end = options.pitch_search_range, .step = options.pitch_search_step}
+        ).for_each([&](f64 tilt_offset, f64 pitch_offset) {
             auto i_metadata = metadata_sorted;
-            i_metadata.add_image_angles({0, offset, 0});
-            const auto ncc = ncc_(stack.view(), i_metadata);
+            i_metadata.add_image_angles({0, tilt_offset, pitch_offset});
+            const auto ncc = ncc_(stack.view(), i_metadata, plane_coefficients.view(), projection_matrices.view(), nccs.view());
             if (ncc > best_ncc) {
                 best_ncc = ncc;
-                best_tilt_offset = offset;
+                best_offsets = {tilt_offset, pitch_offset};
             }
-            nccs.emplace_back(ncc);
         });
 
         // Save the offset.
-        tilt_offset += best_tilt_offset;
-        metadata.add_image_angles({0, best_tilt_offset, 0});
-        Logger::info("tilt_offset={:.3f} ({:+.3f}) degrees (ncc={:.4f})", tilt_offset, best_tilt_offset, best_ncc);
-
-        save_plot_xy(
-            noa::Arange{tilt_offset - options.grid_search_range, options.grid_search_step},
-            nccs, options.output_directory / "tilt_offsets.txt", {
-                .title = "Tilt offset alignment using pairwise cosine-stretching",
-                .x_name = "Tilt offsets (degrees)",
-                .y_name = "NCC",
-            });
+        tilt_pitch_offset += best_offsets;
+        metadata.add_image_angles(best_offsets.push_front(0));
+        Logger::info(
+            "stage=[tilt={:.2f}deg ({:+.2f}), pitch={:.2f}deg ({:+.2f})] (ncc={:.4f})",
+            tilt_pitch_offset[0], best_offsets[0], tilt_pitch_offset[1], best_offsets[1], best_ncc
+        );
     }
 }
