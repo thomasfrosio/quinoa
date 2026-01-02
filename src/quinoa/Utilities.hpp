@@ -9,11 +9,42 @@
 // their code, but in this case having an option to turn off the CUDA section of the headers would be nice.
 // For now though, this works fine.
 
+// #undef QN_INCLUDE_CPU_ONLY
+
 #ifndef QN_INCLUDE_CPU_ONLY
 #include <noa/Geometry.hpp>
 #include <noa/Signal.hpp>
 #include <noa/FFT.hpp>
 #endif
+
+namespace {
+    using namespace qn;
+
+    struct CenterCrossCorrelationMap {
+        using span_t = SpanContiguous<const f32, 3, i32>;
+        using interp_t = noa::Interpolator<2, noa::Interp::LINEAR, noa::Border::ZERO, span_t>;
+
+        interp_t input{};
+        SpanContiguous<f32, 3, i32> output{};
+        SpanContiguous<const Vec<f32, 2>, 1, i32> peak_indices{};
+
+        Mat<f32, 2, 2> rotation{};
+        Vec<f32, 2> input_center{};
+        Vec<f32, 2> output_center{};
+
+        constexpr void operator()(i32 i, i32 y, i32 x) const {
+            auto rotated_peak = rotation.transpose() * (peak_indices[i] - input_center) + input_center;
+            auto coordinates = Vec{y, x}.as<f32>();
+            coordinates += rotated_peak - output_center;
+
+            coordinates -= input_center;
+            coordinates = rotation * coordinates;
+            coordinates += input_center;
+
+            output(i, y, x) = input.interpolate_at(coordinates, i);
+        }
+    };
+}
 
 namespace qn {
     template<typename T>
@@ -162,15 +193,63 @@ namespace qn {
     };
 
     /// Finds the coordinates (relative to the input center) of the best peak.
-    auto find_best_peak(const SpanContiguous<const f32, 2>& xmap_centered) -> Vec<f64, 2>;
+    auto find_best_peak(const SpanContiguous<const f32, 2>& xmap_centered) -> Pair<Vec<f64, 2>, f32>;
 
 #ifndef QN_INCLUDE_CPU_ONLY
-    template<noa::Remap REMAP> requires (REMAP.is_fc2xx())
-    auto find_shift(
+    template<nf::Layout REMAP> requires (REMAP.is_fc2xx())
+    void find_peaks(
+        const View<f32>& xmap,
+        const View<f32>& xmap_centered,
+        const View<Vec<f32, 2>>& peak_shifts,
+        const View<f32>& peak_values,
+        const FindBestPeakOptions& options = {}
+    ) {
+        const auto xmap_shape_2d = xmap.shape().filter(2, 3);
+        const auto xmap_center = (xmap_shape_2d.vec / 2).as<f64>();
+        const auto xmap_centered_center = (xmap_centered.shape().filter(2, 3).vec / 2).as<f32>();
+        const auto distortion_angle = noa::deg2rad(options.distortion_angle_deg);
+
+        // Get the highest peaks within the allowed lag.
+        ns::cross_correlation_peak_2d<"fc2fc">(xmap, peak_shifts, {}, {
+            .registration_radius = Vec<i64, 2>{0, 0}, // turn off the registration
+            .maximum_lag = Vec<f64, 2>::from_value(noa::min(xmap_center) * options.max_shift_percent),
+        });
+
+        // Due to the difference in tilt, the cross-correlation map can be distorted orthogonal to the tilt-axis.
+        // To improve the accuracy of the subpixel registration, correct the tilt-axis to have the distortion along x.
+        // Since the actual peak is close to argmax, focus on (and only render) a small subregion around argmax.
+        using interp_t = CenterCrossCorrelationMap::interp_t;
+        noa::iwise(xmap_centered.shape().filter(0, 2, 3).as<i32>(), xmap.device(), CenterCrossCorrelationMap{
+            .input = interp_t(xmap.span_contiguous<const f32, 3, i32>(), xmap_shape_2d.as<i32>()),
+            .output = xmap_centered.span_contiguous<f32, 3, i32>(),
+            .peak_indices = peak_shifts.span_contiguous<const Vec<f32, 2>, 1, i32>(),
+            .rotation = ng::rotate(distortion_angle).as<f32>(),
+            .input_center = xmap_center.as<f32>(),
+            .output_center = xmap_centered_center.as<f32>(),
+        });
+
+        const auto span = xmap_centered.reinterpret_as_cpu().span_contiguous<const f32, 3>();
+        const auto has_values = not peak_values.is_empty();
+        const auto span_peak_values = has_values ? peak_values.span_1d() : SpanContiguous<f32>{};
+        for (i64 i{}; auto& peak_shift: peak_shifts.span_1d()) {
+            const auto [peak_offset_rotated, peak_value] = find_best_peak(span[i]);
+            const auto peak_offset = ng::rotate(distortion_angle) * peak_offset_rotated;
+            const auto peak_coordinate = peak_shift.as<f64>() + peak_offset;
+            peak_shift = (peak_coordinate - xmap_center).as<f32>();
+
+            if (has_values)
+                span_peak_values[i] = peak_value;
+
+            ++i;
+        }
+    }
+
+    template<nf::Layout REMAP> requires (REMAP.is_fc2xx())
+    auto find_peak(
         const View<f32>& xmap,
         const View<f32>& xmap_centered,
         const FindBestPeakOptions& options = {}
-    ) -> Vec<f64, 2> {
+    ) -> Pair<Vec<f64, 2>, f32> {
         check(xmap.shape().batch() == 1 and xmap_centered.shape().batch() == 1);
         const auto xmap_shape_2d = xmap.shape().filter(2, 3);
         const auto xmap_center = (xmap_shape_2d.vec / 2).as<f64>();
@@ -200,12 +279,13 @@ namespace qn {
         ng::transform_2d(xmap, xmap_centered, rotate_and_center_peak, {.interp = noa::Interp::LINEAR});
 
         // Get the peak and rotate back to the original xmap reference-frame.
-        const auto peak_offset = find_best_peak(xmap_centered.reinterpret_as_cpu().span<const f32, 2>().as_contiguous());
+        const auto [peak_offset, peak_value] = find_best_peak(
+            xmap_centered.reinterpret_as_cpu().span<const f32, 2>().as_contiguous());
         const auto peak_coordinate = (rotate_xmap.inverse() * (peak_indices + peak_offset).push_back(1)).pop_back();
         auto shift = peak_coordinate - xmap_center;
 
         // Given cross_correlation_map(lhs, rhs, xmap), this should be subtracted to the lhs to align it onto the rhs.
-        return shift;
+        return {shift, peak_value};
     }
 #endif
 

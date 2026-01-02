@@ -8,7 +8,7 @@
 namespace qn::ctf {
     auto Patches::from_stack(
         StackLoader& stack_loader,
-        const MetadataStack& metadata,
+        const Metadata::Stack& metadata,
         const Grid& grid,
         const Vec<f64, 2>& resolution_range,
         i64 patch_size,
@@ -143,9 +143,9 @@ namespace qn::ctf {
         // Load the images in the same order as saved in the metadata.
         auto metadata_sorted = metadata;
         metadata_sorted.reset_indices();
-        for (const auto& slice_metadata: metadata_sorted) {
+        for (const auto& image_metadata: metadata_sorted) {
             // Extract the patches. Assume the slice is normalized and edges are tapered.
-            stack_loader.read_slice(image.view(), slice_metadata.index_file);
+            stack_loader.read_slice(image.view(), image_metadata.index_file);
             noa::extract_subregions(image.view(), patches, patches_origins.view());
 
             // Crop to the maximum frequency and oversample back to the original size
@@ -170,7 +170,7 @@ namespace qn::ctf {
             if (polar_interp == noa::Interp::CUBIC_BSPLINE)
                 noa::cubic_bspline_prefilter(patches_padded_rfft_ps, patches_padded_rfft_ps);
 
-            auto output_patches = output.patches(slice_metadata.index);
+            auto output_patches = output.patches(image_metadata.index);
             if (use_wedges) {
                 ng::spectrum2polar<"h2fc">(
                     patches_padded_rfft_ps, patches_padded_shape, patches_polar.view(), {
@@ -194,7 +194,7 @@ namespace qn::ctf {
                 });
             }
 
-            Logger::trace("tilt={:>+6.2f}", slice_metadata.angles[1]);
+            Logger::trace("tilt={:>+6.2f}", image_metadata.angles[1]);
         }
         output.view().eval();
         return output;

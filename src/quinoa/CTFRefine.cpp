@@ -305,14 +305,14 @@ namespace {
         SpanContiguous<const CTFAnisotropicPacked, 1> ctfs;
         ns::CTFAnisotropic<f32> ctf;
 
-        f64 phi_start{};
-        f64 phi_step{};
-        f64 rho_start{};
-        f64 rho_step{};
+        f32 phi_start{};
+        f32 phi_step{};
+        f32 rho_start{};
+        f32 rho_step{};
 
         NOA_HD void operator()(i64 i, i64 h, i64 w) {
-            const auto phi = static_cast<f64>(h) * phi_step + phi_start; // radians
-            const auto rho = static_cast<f64>(w) * rho_step + rho_start; // fftfreq
+            const auto phi = static_cast<f32>(h) * phi_step + phi_start; // radians
+            const auto rho = static_cast<f32>(w) * rho_step + rho_start; // fftfreq
             const auto fftfreq = rho * noa::sincos(phi);
 
             const auto& packed = ctfs[i];
@@ -451,7 +451,7 @@ namespace {
         Parameters() = default;
 
         Parameters(
-            const MetadataStack& metadata,
+            const Metadata::Stack& metadata,
             const SplineGridCubic<f64, 1>& phase_shift,
             const SplineGridCubic<f64, 1>& astigmatism_value,
             const SplineGridCubic<f64, 1>& astigmatism_angle,
@@ -497,8 +497,8 @@ namespace {
             m_initial_astigmatism_angle.resize(astigmatism_angle.size());
 
             // Initialize the values, whether they're the default or fitted values.
-            for (auto&& [defocus, slice]: noa::zip(defoci(), metadata))
-                defocus = slice.defocus.value;
+            for (auto&& [defocus, image]: noa::zip(defoci(), metadata))
+                defocus = image.defocus.value;
             for (auto&& [o, i]: noa::zip(this->astigmatism_value().span, astigmatism_value.span))
                 o = i;
             for (auto&& [o, i]: noa::zip(this->astigmatism_angle().span, astigmatism_angle.span))
@@ -576,7 +576,7 @@ namespace {
         using enum Parameters::Index;
 
         // Input data.
-        const MetadataStack& m_metadata;
+        const Metadata& m_metadata;
         const Grid& m_grid;
         const Patches& m_patches;
 
@@ -612,7 +612,6 @@ namespace {
         bool m_is_reduce_height_done{};
 
         // Thickness-aware CTF.
-        f64 m_sample_thickness;
         Array<f32> m_thickness_modulations; // (c,n,1,w)
         bool m_is_thickness_sampled{};
 
@@ -624,25 +623,22 @@ namespace {
 
     public:
         Fitter(
-            const MetadataStack& metadata,
+            const Metadata& metadata,
             const Grid& grid,
             const Patches& patches,
-            const ns::CTFIsotropic<f64>& average_ctf,
             const SpanContiguous<Vec<f64, 2>>& fitting_ranges,
             const SplineGridCubic<f64, 1>& phase_shift,
             const SplineGridCubic<f64, 1>& astigmatism_value,
             const SplineGridCubic<f64, 1>& astigmatism_angle,
-            const Parameters::SetOptions<Vec<f64, 2>>& relative_bounds,
-            const f64 thickness_estimate_um
+            const Parameters::SetOptions<Vec<f64, 2>>& relative_bounds
         ) :
             m_metadata(metadata),
             m_grid(grid),
             m_patches(patches),
-            m_fitting_ranges(fitting_ranges),
-            m_ctf(average_ctf)
+            m_fitting_ranges(fitting_ranges)
         {
             // Initialize and configure the optimization parameters.
-            m_parameters = Parameters(metadata, phase_shift, astigmatism_value, astigmatism_angle, relative_bounds);
+            m_parameters = Parameters(metadata.stack, phase_shift, astigmatism_value, astigmatism_angle, relative_bounds);
             m_parameters.set_abs_tolerance({
                 .rotation = noa::deg2rad(0.01),
                 .tilt = noa::deg2rad(0.01),
@@ -688,12 +684,11 @@ namespace {
             // Baseline and thickness-aware CTF-model.
             m_baselines_sampled = Array<f32>({n, 1, 1, w}, options_pitched_managed);
             m_thickness_modulations = Array<f32>({m_n_channels, n, 1, w}, options_pitched_managed);
-            m_sample_thickness = thickness_estimate_um;
 
             // Precompute the spline range and weights.
             // These are for the time-resolved phase-shift and tilt-resolved astigmatism.
-            m_tilt_range = metadata.tilt_range();
-            m_time_range = metadata.time_range().as<f64>();
+            m_tilt_range = metadata.stack.tilt_range();
+            m_time_range = metadata.stack.time_range().as<f64>();
             m_phase_shift_weights = Array<f64>({1, 1, phase_shift.ssize(), n});
             m_astigmatism_value_weights = Array<f64>({1, 1, astigmatism_value.ssize(), n});
             m_astigmatism_angle_weights = Array<f64>({1, 1, astigmatism_angle.ssize(), n});
@@ -702,7 +697,7 @@ namespace {
                 auto span = array.template span<f64, 2>();
                 for (i64 i{}; i < span.shape()[0]; ++i) { // per node
                     for (i64 j{}; j < span.shape()[1]; ++j) { // per image
-                        const f64 nc = (to_norm_coordinate(metadata[j]) - range[0]) / (range[1] - range[0]);
+                        const f64 nc = (to_norm_coordinate(metadata.stack[j]) - range[0]) / (range[1] - range[0]);
                         span(i, j) = SplineGridCubic<f64, 1>::weight_at(Vec{nc}, Vec{i}, span.shape().filter(0));
                     }
                 }
@@ -710,6 +705,18 @@ namespace {
             set_weights([](auto& s) { return static_cast<f64>(s.time); }, m_time_range, m_phase_shift_weights);
             set_weights([](auto& s) { return s.angles[1]; }, m_tilt_range, m_astigmatism_value_weights);
             set_weights([](auto& s) { return s.angles[1]; }, m_tilt_range, m_astigmatism_angle_weights);
+
+            // Set up the base settings for the CTF.
+            m_ctf = ns::CTFIsotropic<f64>({
+                .pixel_size = mean(metadata.spacing),
+                .defocus = 0., // overwritten
+                .voltage = metadata.sample.voltage,
+                .amplitude = metadata.sample.amplitude,
+                .cs = metadata.sample.cs,
+                .phase_shift = 0, // overwritten
+                .bfactor = 0,
+                .scale = 1.,
+            });
 
             // Operators and buffers for the non-astigmatic case.
             m_reduced_cnpw = Array<f32>({m_n_channels, n, p, w}, options_pitched);
@@ -774,17 +781,17 @@ namespace {
             const SplineGridCubic<f64, 1> tilt_resolved_astigmatism_value = m_parameters.astigmatism_value();
             const SplineGridCubic<f64, 1> tilt_resolved_astigmatism_angle = m_parameters.astigmatism_angle();
             const SpanContiguous<f64> defoci = m_parameters.defoci();
-            const f64 sample_thickness_um = m_sample_thickness + m_parameters.thickness();
+            const f64 sample_thickness_um = m_metadata.sample.thickness * 1e-3 + m_parameters.thickness();
 
             const auto ctf_anisotropic_images = m_anisotropic_ctf_images.subregion(channel).span_1d();
             const auto ctf_isotropic_images = m_isotropic_ctf_images.subregion(channel).span_1d();
             for (i64 i{}; i < m_patches.n_images(); ++i) {
                 // Time-resolved phase-shift.
-                const f64 itime = normalized_time(m_metadata[i]);
+                const f64 itime = normalized_time(m_metadata.stack[i]);
                 const f64 phase_shift = time_resolved_phase_shift.interpolate_at(itime);
 
                 // Tilt-resolved astigmatism.
-                const f64 itilt = normalized_tilt(m_metadata[i]);
+                const f64 itilt = normalized_tilt(m_metadata.stack[i]);
                 const f64 slice_astigmatism_value = tilt_resolved_astigmatism_value.interpolate_at(itilt);
                 const f64 slice_astigmatism_angle = tilt_resolved_astigmatism_angle.interpolate_at(itilt);
 
@@ -796,29 +803,29 @@ namespace {
                 ctf_isotropic_images[i].defocus = ctf_anisotropic_images[i].defocus;
                 ctf_isotropic_images[i].phase_shift = ctf_anisotropic_images[i].phase_shift;
 
+                const auto chunk = m_patches.chunk(i);
+                const auto ctf_patches = m_anisotropic_ctf_patches.subregion(channel).span_1d().subregion(chunk);
+                const auto defocus_patches = m_defocus_patches.subregion(channel).span_1d().subregion(chunk);
+
+                const auto image_spacing = Vec<f64, 2>::from_value(m_ctf.pixel_size());
+                const auto image_angles = noa::deg2rad(m_metadata.stack[i].angles) + angle_offsets;
+                const auto patch_centers = m_grid.patches_centers();
+
                 // Sample the thickness modulation for this image. If the thickness isn't
-                // modeled (m_thickness=0), the modulation is a row of ones and does nothing.
+                // modeled, the modulation is a row of ones and does nothing.
                 if (not m_is_thickness_sampled) {
                     ThicknessModulation{
                         .wavelength = m_ctf.wavelength(),
                         .spacing = m_ctf.pixel_size(),
-                        .thickness = effective_thickness(sample_thickness_um, m_metadata[i].angles) * 1e4,
+                        .thickness = effective_thickness(sample_thickness_um, image_angles) * 1e4,
                     }.sample(
                         m_thickness_modulations.span().subregion(channel, i).as_1d(),m_patches.rho_vec()
                     );
                 }
 
                 // Update the CTFs of the patches belonging to the current image.
-                const auto chunk = m_patches.chunk(i);
-                const auto ctf_patches = m_anisotropic_ctf_patches.subregion(channel).span_1d().subregion(chunk);
-                const auto defocus_patches = m_defocus_patches.subregion(channel).span_1d().subregion(chunk);
-
-                const auto slice_spacing = Vec<f64, 2>::from_value(m_ctf.pixel_size());
-                const auto slice_angles = noa::deg2rad(m_metadata[i].angles) + angle_offsets;
-                const auto patch_centers = m_grid.patches_centers();
-
                 for (i64 j{}; j < m_patches.n_patches_per_image(); ++j) {
-                    const auto patch_z_offset_um = m_grid.patch_z_offset(slice_angles, slice_spacing, patch_centers[j]);
+                    const auto patch_z_offset_um = m_grid.patch_z_offset(image_angles, image_spacing, patch_centers[j]);
                     const auto patch_defocus = defoci[i] - patch_z_offset_um;
                     ctf_patches[j].defocus = static_cast<f32>(patch_defocus);
                     ctf_patches[j].astigmatism = ctf_anisotropic_images[i].astigmatism;
@@ -1087,7 +1094,6 @@ namespace {
             }
 
             // Prepare the baselines and fitting range for the fitting.
-            const f64 sample_thickness_um = m_sample_thickness + m_parameters.thickness();
             auto baseline = Baseline{};
             for (i64 i{}; i < m_patches.n_images(); ++i) {
                 m_fitting_ranges[i] = baseline.fit_and_tune_fitting_range(
@@ -1101,13 +1107,13 @@ namespace {
                         .n_recoveries_allowed = 1,
                         .maximum_n_consecutive_bad_peaks = 1,
 
-                        .thickness_um = effective_thickness(sample_thickness_um, m_metadata[i].angles),
+                        .thickness_um = effective_thickness(m_metadata.sample.thickness * 1e-3, m_metadata.stack[i].angles), // FIXME
                     });
                baseline.sample(m_baselines_sampled.subregion(i).span_1d(), m_patches.rho_vec());
             }
 
             save_plot_xy(
-                m_metadata | stdv::transform([](auto& s) { return s.index_file; }),
+                m_metadata.stack | stdv::transform([](auto& s) { return s.index_file; }),
                 m_fitting_ranges | stdv::transform([&](const auto& v) {
                     return fftfreq_to_resolution(m_ctf.pixel_size(), v[1]);
                 }),
@@ -1125,7 +1131,7 @@ namespace {
             // This is quite useful to assess the quality of the signal and the amount of astigmatism.
             auto m_reduced_n1hw = reduce_anisotropic_depth(true).permute({1, 0, 2, 3});
             auto filename = output_directory / "fused_spectra.mrc";
-            noa::write(m_reduced_n1hw, filename, {.dtype = noa::io::Encoding::F16});
+            noa::write_image(m_reduced_n1hw, filename, {.dtype = "f16"});
             Logger::trace("{} saved", filename);
 
             noa::iwise(m_reduced_n1hw.shape().filter(0, 2, 3), m_reduced_n1hw.device(), SimulateCTF{
@@ -1138,7 +1144,7 @@ namespace {
                 .rho_step = m_reduce_height.rho_step,
             });
             filename = output_directory / "simulated_ctfs.mrc";
-            noa::write(m_reduced_n1hw, output_directory / "simulated_ctfs.mrc", {.dtype = noa::io::Encoding::F16});
+            noa::write_image(m_reduced_n1hw, output_directory / "simulated_ctfs.mrc", {.dtype = "f16"});
             Logger::trace("{} saved", filename);
 
             // For diagnostics, reconstruct the spectrum of the stack.
@@ -1166,7 +1172,7 @@ namespace {
                         .keep_first_nth_peaks = 2,
                         .n_extra_peaks_to_append = 0,
                         .n_recoveries_allowed = 1,
-                        .thickness_um = effective_thickness(sample_thickness_um, m_metadata[i].angles),
+                        .thickness_um = effective_thickness(m_metadata.sample.thickness * 1e-3, m_metadata.stack[i].angles),
                     });
 
                 // Scale to the target CTF.
@@ -1188,7 +1194,7 @@ namespace {
                 const auto thickness_modulation = ThicknessModulation{
                     .wavelength = ctf_images[i].wavelength(),
                     .spacing = ctf_images[i].pixel_size(),
-                    .thickness = sample_thickness_um * 1e4,
+                    .thickness = m_metadata.sample.thickness * 10, // nm->angstrom
                 };
 
                 // Before adding this spectrum to the average, get the L2-norm within the fitting range.
@@ -1232,7 +1238,7 @@ namespace {
         }
 
         void update_metadata(
-            MetadataStack& metadata,
+            Metadata& metadata,
             SplineGridCubic<f64, 1> phase_shift,
             SplineGridCubic<f64, 1> astigmatism_value,
             SplineGridCubic<f64, 1> astigmatism_angle,
@@ -1247,37 +1253,37 @@ namespace {
             // phase-shift from the metadata, and uses the splines instead.
             const auto defoci = m_parameters.defoci();
             const auto angle_offsets = noa::rad2deg(m_parameters.angles());
-            for (i64 i{}; i < metadata.ssize(); ++i) {
-                auto& slice = metadata[i];
-                const auto time = normalized_time(slice);
-                const auto tilt = normalized_tilt(slice); // must be before updating the tilt angles
+            for (i64 i{}; i < metadata.stack.ssize(); ++i) {
+                auto& image = metadata.stack[i];
+                const auto time = normalized_time(image);
+                const auto tilt = normalized_tilt(image); // must be before updating the tilt angles
 
-                slice.angles = MetadataSlice::to_angle_range(slice.angles + angle_offsets);
-                slice.phase_shift = phase_shift.interpolate_at(time);
-                slice.defocus = {
+                image.angles = Metadata::Image::to_angle_range(image.angles + angle_offsets);
+                image.phase_shift = phase_shift.interpolate_at(time);
+                image.defocus = {
                     .value = defoci[i],
                     .astigmatism = astigmatism_value.interpolate_at(tilt),
                     .angle = astigmatism_angle.interpolate_at(tilt),
                 };
             }
-
+            metadata.sample.thickness = m_metadata.sample.thickness + m_parameters.thickness() * 1e3; // um->nm
             final_angle_offsets += angle_offsets;
         }
 
         [[nodiscard]] auto parameters() noexcept -> Parameters& { return m_parameters; }
         [[nodiscard]] auto memoizer() noexcept -> Memoizer& { return m_memoizer; }
 
-        [[nodiscard]] auto normalized_time(const MetadataSlice& slice) noexcept -> f64 {
+        [[nodiscard]] auto normalized_time(const Metadata::Image& slice) noexcept -> f64 {
             return (static_cast<f64>(slice.time) - m_time_range[0]) / (m_time_range[1] - m_time_range[0]);
         }
-        [[nodiscard]] auto normalized_tilt(const MetadataSlice& slice) noexcept -> f64 {
+        [[nodiscard]] auto normalized_tilt(const Metadata::Image& slice) noexcept -> f64 {
             return (slice.angles[1] - m_tilt_range[0]) / (m_tilt_range[1] - m_tilt_range[0]);
         }
     };
 
     void increase_spline_resolution(
         i64 new_resolution,
-        const MetadataStack& metadata,
+        const Metadata::Stack& metadata,
         const Vec<f64, 2>& range,
         Array<f64>& buffer,
         SplineGridCubic<f64, 1>& spline
@@ -1297,10 +1303,9 @@ namespace {
 
 namespace qn::ctf {
     void refine_fit(
-        MetadataStack& metadata,
+        Metadata& metadata,
         const Grid& grid,
         const Patches& patches,
-        ns::CTFIsotropic<f64>& isotropic_ctf,
         const FitRefineOptions& options
     ) {
         auto timer = Logger::info_scope_time("Refine CTF fitting");
@@ -1309,7 +1314,7 @@ namespace qn::ctf {
         auto phase_shift_buffer = Array<f64>(5);
         auto phase_shift = SplineGridCubic<f64, 1>(phase_shift_buffer.span_1d());
         for (auto& s: phase_shift.span)
-            s = metadata[0].phase_shift;
+            s = metadata.stack[0].phase_shift;
 
         // Tilt-resolved astigmatism value.
         auto astigmatism_value_buffer = Array<f64>(5);
@@ -1334,8 +1339,8 @@ namespace qn::ctf {
             auto t = Logger::trace_scope_time("Running optimizer");
 
             auto fitter = Fitter(
-                metadata, grid, patches, isotropic_ctf, fitting_ranges.span_1d(),
-                phase_shift, astigmatism_value, astigmatism_angle, relative_bounds, options.thickness
+                metadata, grid, patches, fitting_ranges.span_1d(),
+                phase_shift, astigmatism_value, astigmatism_angle, relative_bounds
             );
 
             Logger::trace(
@@ -1372,8 +1377,8 @@ namespace qn::ctf {
 
             // Diagnostics.
             save_plot_xy(
-                metadata | stdv::transform([](auto& s) { return s.index_file; }),
-                metadata | stdv::transform([](auto& s) { return s.defocus.value; }),
+                metadata.stack | stdv::transform([](auto& s) { return s.index_file; }),
+                metadata.stack | stdv::transform([](auto& s) { return s.defocus.value; }),
                 options.output_directory / "defocus_fit.txt", {
                     .title = "Per-tilt defocus",
                     .x_name = "Image index (as saved in the stack)",
@@ -1381,8 +1386,8 @@ namespace qn::ctf {
                     .label = "Refine fit",
                 });
             save_plot_xy(
-                metadata | stdv::transform([](auto& s) { return s.index_file; }),
-                metadata | stdv::transform([](auto& s) { return noa::rad2deg(s.phase_shift); }),
+                metadata.stack | stdv::transform([](auto& s) { return s.index_file; }),
+                metadata.stack | stdv::transform([](auto& s) { return noa::rad2deg(s.phase_shift); }),
                 options.output_directory / "phase_shift_fit.txt", {
                     .title = "Time-resolved phase_shift",
                     .x_name = "Image index (as saved in the stack)",
@@ -1390,8 +1395,8 @@ namespace qn::ctf {
                     .label = "Refine fit",
                 });
             save_plot_xy(
-                metadata | stdv::transform([](auto& s) { return s.index_file; }),
-                metadata | stdv::transform([](auto& s) { return s.defocus.astigmatism; }),
+                metadata.stack | stdv::transform([](auto& s) { return s.index_file; }),
+                metadata.stack | stdv::transform([](auto& s) { return s.defocus.astigmatism; }),
                 options.output_directory / "astigmatism_value_fit.txt", {
                     .title = "Tilt-resolved astigmatism",
                     .x_name = "Image index (as saved in the stack)",
@@ -1399,8 +1404,8 @@ namespace qn::ctf {
                     .label = "Refine fit",
                 });
             save_plot_xy(
-                metadata | stdv::transform([](auto& s) { return s.index_file; }),
-                metadata | stdv::transform([](auto& s) { return noa::rad2deg(s.defocus.angle); }),
+                metadata.stack | stdv::transform([](auto& s) { return s.index_file; }),
+                metadata.stack | stdv::transform([](auto& s) { return noa::rad2deg(s.defocus.angle); }),
                 options.output_directory / "astigmatism_angle_fit.txt", {
                     .title = "Tilt-resolved astigmatism",
                     .x_name = "Image index (as saved in the stack)",
@@ -1431,7 +1436,7 @@ namespace qn::ctf {
             .astigmatism_value = {-0.6, 0.6},
             .astigmatism_angle = {-noa::deg2rad(45.), noa::deg2rad(45.)},
         });
-        run_optimization(NLOPT_LD_LBFGS, 50, false,{
+        run_optimization(NLOPT_LD_LBFGS, 50, true,{
             .rotation = options.fit_rotation ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
             .tilt = options.fit_tilt ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
             .pitch = options.fit_pitch ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
@@ -1441,11 +1446,26 @@ namespace qn::ctf {
             .astigmatism_angle = {-noa::deg2rad(45.), noa::deg2rad(45.)},
         });
 
+        // Return early if no astigmatism.
+        bool has_significant_astigmatism{};
+        for (f64 astigmatism: astigmatism_value.span) {
+            if (std::abs(astigmatism) > 0.05) {
+                // TODO better detection, mean(abs(value))?
+                has_significant_astigmatism = true;
+                break;
+            }
+        }
+        if (not has_significant_astigmatism) {
+            Logger::info("No significant astigmatism detected, stopping the refinement here");
+            return;
+        }
+
         // Increase the tilt-resolution of the astigmatism.
+        // TODO This may be slightly too much. One control point every 3 image seem to be a good compromise.
         auto new_resolution = patches.n_images() / 2 + 1;
-        auto tilt_range = metadata.tilt_range();
-        increase_spline_resolution(new_resolution, metadata, tilt_range, astigmatism_value_buffer, astigmatism_value);
-        increase_spline_resolution(new_resolution, metadata, tilt_range, astigmatism_angle_buffer, astigmatism_angle);
+        auto tilt_range = metadata.stack.tilt_range();
+        increase_spline_resolution(new_resolution, metadata.stack, tilt_range, astigmatism_value_buffer, astigmatism_value);
+        increase_spline_resolution(new_resolution, metadata.stack, tilt_range, astigmatism_angle_buffer, astigmatism_angle);
 
         // Fit an average astigmatism.
         run_optimization(NLOPT_LD_LBFGS, 50, false, {

@@ -1,20 +1,25 @@
 set(QUINOA_HEADERS
     src/quinoa/Alignment.hpp
-    src/quinoa/CommonArea.hpp
+    src/quinoa/AlignmentCoarse.hpp
+
+    src/quinoa/CommonFOV.hpp
     src/quinoa/ExcludeViews.hpp
     src/quinoa/GridSearch.hpp
     src/quinoa/Logger.hpp
     src/quinoa/Metadata.hpp
     src/quinoa/Optimizer.hpp
     src/quinoa/Settings.hpp
-    src/quinoa/PairwiseShift.hpp
-    src/quinoa/PairwiseTilt.hpp
+#    src/quinoa/PairwiseShift.hpp
+    src/quinoa/StageLevel.hpp
     src/quinoa/RotationOffset.hpp
     src/quinoa/Stack.hpp
     src/quinoa/Types.hpp
     src/quinoa/Thickness.hpp
     src/quinoa/Utilities.hpp
     src/quinoa/PostProcessing.hpp
+    src/quinoa/StarFile.hpp
+
+    src/quinoa/ProjectionMatching.hpp
 
     src/quinoa/SplineCurve.hpp
     src/quinoa/SplineGrid.hpp
@@ -24,6 +29,9 @@ set(QUINOA_HEADERS
     src/quinoa/CTFGrid.hpp
     src/quinoa/CTFPatches.hpp
     src/quinoa/CTFSimulate.hpp
+
+    src/quinoa/Tests.hpp
+
 )
 
 set(QUINOA_SOURCES_CXX
@@ -43,13 +51,16 @@ set(QUINOA_SOURCES_UNIFIED
     src/quinoa/PostProcessing.cpp
 
     src/quinoa/Alignment.cpp
-    src/quinoa/PairwiseShift.cpp
-    src/quinoa/PairwiseTilt.cpp
+    src/quinoa/AlignmentCoarse.cpp
+
+#    src/quinoa/PairwiseShift.cpp
+    src/quinoa/StageLevel.cpp
     src/quinoa/RotationOffset.cpp
     src/quinoa/CTFBaseline.cpp
     src/quinoa/CTFCoarse.cpp
     src/quinoa/CTFPatches.cpp
     src/quinoa/CTFRefine.cpp
     src/quinoa/Thickness.cpp
-#    src/quinoa/ProjectionMatching.cpp
+    src/quinoa/ProjectionMatching.cpp
+    src/quinoa/ProjectionMatchingFourier.cpp
 )

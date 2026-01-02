@@ -24,10 +24,10 @@ namespace {
             "files.stack_file"sv,
             "files.output_directory"sv,
             "files.frames_directory"sv,
-            "files.csv_file"sv,
+            "files.star_file"sv,
             "experiment.tilt_axis"sv,
-            "experiment.specimen_tilt"sv,
-            "experiment.specimen_pitch"sv,
+            "experiment.add_specimen_tilt"sv,
+            "experiment.add_specimen_pitch"sv,
             "experiment.voltage"sv,
             "experiment.amplitude"sv,
             "experiment.cs"sv,
@@ -37,10 +37,12 @@ namespace {
             "preprocessing.exclude_blank_views"sv,
             "preprocessing.exclude_stack_images"sv,
             "alignment.coarse.run"sv,
+            "alignment.coarse.check_rotation"sv,
             "alignment.coarse.fit_rotation"sv,
             "alignment.coarse.fit_tilt"sv,
             "alignment.coarse.fit_pitch"sv,
             "alignment.ctf.run"sv,
+            "alignment.ctf.check_rotation"sv,
             "alignment.ctf.fit_rotation"sv,
             "alignment.ctf.fit_tilt"sv,
             "alignment.ctf.fit_pitch"sv,
@@ -123,9 +125,9 @@ namespace {
     auto parse_dtype(std::string_view name, const toml::table& table, const std::string& fallback) {
         const auto stack_dtype = parse_string_(name, table, fallback);
         if (stack_dtype == "f16")
-            return noa::io::Encoding::F16;
+            return noa::io::DataType::F16;
         if (stack_dtype == "f32")
-            return noa::io::Encoding::F32;
+            return noa::io::DataType::F32;
         panic(R"({} should be "f16" or "f32", but got "{}")", name, stack_dtype);
     }
 
@@ -155,7 +157,7 @@ namespace {
         Settings::Files files;
         get_path("files.stack_file", "stack", files.stack_file, true);
         get_path("files.frames_directory", "frames", files.frames_directory, false);
-        get_path("files.csv_file", "csv", files.csv_file, true);
+        get_path("files.star_file", "csv", files.star_file, true);
         get_path("files.mdoc_file", "mdoc", files.mdoc_file, true);
 
         get_path("files.output_directory", "output", files.output_directory, false);
@@ -172,44 +174,47 @@ namespace {
 
         // These are marked as unspecified because the metadata will need to know if the user entered.
         experiment.tilt_axis = parse_number_("experiment.tilt_axis", table, UNSPECIFIED_VALUE);
-        experiment.specimen_tilt = parse_number_("experiment.specimen_tilt", table, UNSPECIFIED_VALUE);
-        experiment.specimen_pitch = parse_number_("experiment.specimen_pitch", table, UNSPECIFIED_VALUE);
+        experiment.add_specimen_tilt = parse_number_("experiment.add_specimen_tilt", table, UNSPECIFIED_VALUE);
+        experiment.add_specimen_pitch = parse_number_("experiment.add_specimen_pitch", table, UNSPECIFIED_VALUE);
         experiment.phase_shift = parse_number_("experiment.phase_shift", table, UNSPECIFIED_VALUE);
 
-        check(noa::allclose(UNSPECIFIED_VALUE, experiment.specimen_tilt) or
-              std::abs(experiment.specimen_tilt) < 40,
-              "experiment.specimen_tilt={} (degrees). Should be less than 40 degrees.",
-              experiment.specimen_tilt);
-        check(noa::allclose(UNSPECIFIED_VALUE, experiment.specimen_pitch) or
-              std::abs(experiment.specimen_pitch) < 40,
-              "experiment.specimen_pitch={} (degrees). Should be less than 40 degrees.",
-              experiment.specimen_pitch);
+        check(noa::allclose(UNSPECIFIED_VALUE, experiment.add_specimen_tilt) or
+              std::abs(experiment.add_specimen_tilt) < 40,
+              "experiment.add_specimen_tilt={} (degrees). Should be less than 40 degrees.",
+              experiment.add_specimen_tilt);
+        check(noa::allclose(UNSPECIFIED_VALUE, experiment.add_specimen_pitch) or
+              std::abs(experiment.add_specimen_pitch) < 40,
+              "experiment.add_specimen_pitch={} (degrees). Should be less than 40 degrees.",
+              experiment.add_specimen_pitch);
         check(noa::allclose(UNSPECIFIED_VALUE, experiment.phase_shift) or
               (experiment.phase_shift >= 0 and experiment.phase_shift <= 150),
               "experiment.phase_shift={} (degrees). Should be between 0 and 150 degrees.",
               experiment.phase_shift);
 
-        experiment.thickness = parse_number_("experiment.thickness", table, 0.);
-        check(experiment.thickness >= 0 and experiment.thickness <= 550,
+        experiment.thickness = parse_number_("experiment.thickness", table, UNSPECIFIED_VALUE);
+        check(noa::allclose(UNSPECIFIED_VALUE, experiment.thickness) or
+              (experiment.thickness >= 0 and experiment.thickness <= 550),
               "experiment.thickness={} (nm). Should be between 0nm and 550 nm.",
               experiment.thickness);
 
-        experiment.voltage = parse_number_("experiment.voltage", table, 300.);
-        experiment.amplitude = parse_number_("experiment.amplitude", table, 0.07);
-        experiment.cs = parse_number_("experiment.cs", table, 2.7);
+        experiment.voltage = parse_number_("experiment.voltage", table, UNSPECIFIED_VALUE);
+        experiment.amplitude = parse_number_("experiment.amplitude", table, UNSPECIFIED_VALUE);
+        experiment.cs = parse_number_("experiment.cs", table, UNSPECIFIED_VALUE);
 
-        check(noa::allclose(experiment.voltage, 100.) or
+        check(noa::allclose(UNSPECIFIED_VALUE, experiment.voltage) or
+              noa::allclose(experiment.voltage, 100.) or
               noa::allclose(experiment.voltage, 200.) or
               noa::allclose(experiment.voltage, 300.),
               "experiment.voltage={} (kV). Should be 100kV, 200kV or 300kV.",
               experiment.voltage);
-        check(experiment.amplitude >= 0 and experiment.amplitude <= 0.2,
+        check(noa::allclose(UNSPECIFIED_VALUE, experiment.amplitude) or
+              (experiment.amplitude >= 0 and experiment.amplitude <= 0.2),
               "experiment.amplitude={} (fraction). Should be between 0 and 0.2.",
               experiment.amplitude);
-        check(experiment.cs >= 0 and experiment.cs <= 4,
+        check(noa::allclose(UNSPECIFIED_VALUE, experiment.cs) or
+              (experiment.cs >= 0 and experiment.cs <= 4),
               "experiment.cs={} (micrometers). Should be between 0 and 4 micrometers.",
               experiment.cs);
-
 
         return experiment;
     }
@@ -240,11 +245,13 @@ namespace {
         Settings::Alignment alignment;
 
         alignment.coarse_run = parse_boolean_("alignment.coarse.run", table, true);
+        alignment.coarse_check_rotation = parse_boolean_("alignment.coarse.check_rotation", table, true);
         alignment.coarse_fit_rotation = parse_boolean_("alignment.coarse.fit_rotation", table, true);
         alignment.coarse_fit_tilt = parse_boolean_("alignment.coarse.fit_tilt", table, true);
         alignment.coarse_fit_pitch = parse_boolean_("alignment.coarse.fit_pitch", table, true);
 
         alignment.ctf_run = parse_boolean_("alignment.ctf.run", table, true);
+        alignment.ctf_check_rotation = parse_boolean_("alignment.ctf.check_rotation", table, true);
         alignment.ctf_fit_rotation = parse_boolean_("alignment.ctf.fit_rotation", table, false);
         alignment.ctf_fit_tilt = parse_boolean_("alignment.ctf.fit_tilt", table, true);
         alignment.ctf_fit_pitch = parse_boolean_("alignment.ctf.fit_pitch", table, true);

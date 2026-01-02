@@ -1,6 +1,7 @@
 #pragma once
 
 #include <noa/Session.hpp>
+
 #include "quinoa/Types.hpp"
 
 namespace qn {
@@ -13,19 +14,15 @@ namespace qn {
         struct Files {
             Path stack_file{};
             Path mdoc_file{};
-            Path csv_file{};
             Path star_file{};
             Path frames_directory{};
             Path output_directory{};
-
-            // Filename of the frames, collected from the mdoc file.
-            std::vector<Pair<i64, Path>> frames{};
         } files;
 
         struct Experiment {
             f64 tilt_axis{};
-            f64 specimen_tilt{};
-            f64 specimen_pitch{};
+            f64 add_specimen_tilt{};
+            f64 add_specimen_pitch{};
             f64 voltage{};
             f64 amplitude{};
             f64 cs{};
@@ -41,11 +38,13 @@ namespace qn {
 
         struct Alignment {
             bool coarse_run{};
+            bool coarse_check_rotation{};
             bool coarse_fit_rotation{};
             bool coarse_fit_tilt{};
             bool coarse_fit_pitch{};
 
             bool ctf_run{};
+            bool ctf_check_rotation{};
             bool ctf_fit_rotation{};
             bool ctf_fit_tilt{};
             bool ctf_fit_pitch{};
@@ -64,12 +63,12 @@ namespace qn {
             bool stack_run{};
             bool stack_correct_rotation{};
             noa::Interp stack_interpolation{};
-            noa::io::Encoding::Type stack_dtype{};
+            noa::io::DataType stack_dtype{};
 
             bool tomogram_run{};
             bool tomogram_correct_rotation{};
             noa::Interp tomogram_interpolation{};
-            noa::io::Encoding::Type tomogram_dtype{};
+            noa::io::DataType tomogram_dtype{};
             bool tomogram_oversample{};
             bool tomogram_correct_ctf{};
             f64 tomogram_z_padding_percent{};

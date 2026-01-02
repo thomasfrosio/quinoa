@@ -49,7 +49,7 @@ namespace qn {
 
 
         template<typename... Args>
-        static auto warn_once(noa::guts::FormatWithLocation<std::type_identity_t<Args>...> fmt, Args&&... args) -> bool {
+        static auto warn_once(noa::details::FormatWithLocation<std::type_identity_t<Args>...> fmt, Args&&... args) -> bool {
             static std::vector<std::string> hashes;
             std::string hash = fmt::format("{}:{}", fmt.location.file_name(), fmt.location.line());
             if (std::ranges::find(hashes, hash) == hashes.end()) {
@@ -69,8 +69,9 @@ namespace qn {
 
             explicit ScopeTimer(
                 std::string_view name_,
-                spdlog::level::level_enum level_
-            ) : name(name_), level(level_)
+                spdlog::level::level_enum level_,
+                bool newline_ = true
+            ) : name(name_), level(level_), newline(newline_)
             {
                 s_logger.log(level, "{}...", name);
                 timer.start();
@@ -86,15 +87,15 @@ namespace qn {
 
         template<typename... Args>
         [[nodiscard]] static auto status_scope_time(fmt::format_string<Args...>&& fmt, Args&&... args) -> ScopeTimer {
-            return ScopeTimer(fmt::format(fmt::runtime(fmt), std::forward<Args>(args)...), spdlog::level::warn);
+            return ScopeTimer(fmt::format(fmt::runtime(fmt), std::forward<Args>(args)...), spdlog::level::warn, true);
         }
         template<typename... Args>
         [[nodiscard]] static auto info_scope_time(fmt::format_string<Args...>&& fmt, Args&&... args) -> ScopeTimer {
-            return ScopeTimer(fmt::format(fmt::runtime(fmt), std::forward<Args>(args)...), spdlog::level::info);
+            return ScopeTimer(fmt::format(fmt::runtime(fmt), std::forward<Args>(args)...), spdlog::level::info, true);
         }
         template<typename... Args>
         [[nodiscard]] static auto trace_scope_time(fmt::format_string<Args...>&& fmt, Args&&... args) -> ScopeTimer {
-            return ScopeTimer(fmt::format(fmt::runtime(fmt), std::forward<Args>(args)...), spdlog::level::debug);
+            return ScopeTimer(fmt::format(fmt::runtime(fmt), std::forward<Args>(args)...), spdlog::level::debug, false);
         }
 
     public:

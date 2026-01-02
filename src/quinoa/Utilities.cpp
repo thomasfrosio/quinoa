@@ -162,7 +162,7 @@ namespace qn {
         d[n - 1] = 0.0;
     }
 
-    auto find_best_peak(const SpanContiguous<const f32, 2>& data) -> Vec<f64, 2> {
+    auto find_best_peak(const SpanContiguous<const f32, 2>& data) -> Pair<Vec<f64, 2>, f32> {
         constexpr i64 BLOCK_SIZE = 5;
         constexpr i64 BLOCK_RADIUS = BLOCK_SIZE / 2;
         constexpr i64 N_BLOCKS_Y = 3;
@@ -298,6 +298,7 @@ namespace qn {
                 }
             }
         }
-        return best_peak_coordinates_offset;
+        // FIXME Returning the original peak value seem to be the right choice... isn't it?
+        return {best_peak_coordinates_offset, center_peak_registration.second};
     }
 }

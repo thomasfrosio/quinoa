@@ -8,17 +8,26 @@
 
 namespace qn {
     struct RotationOffsetParameters {
-        bool reset_rotation{false};
+        bool check_rotation{false};
         ns::Bandpass bandpass{0, 0, 0.5, 0};
         f64 angle_range{};
-        f64 angle_step{};
-        Path output_directory;
+        const Path* output_directory{};
     };
 
     void find_rotation_offset(
         const View<const f32>& stack,
-        MetadataStack& metadata,
+        Metadata::Stack& metadata,
+        Vec<f64, 3>& angle_offsets,
         const RotationOffsetParameters& parameters
     );
+
+    inline void find_rotation_offset(
+        const View<const f32>& stack,
+        Metadata::Stack& metadata,
+        const RotationOffsetParameters& parameters
+    ) {
+        auto angle_offsets = Vec<f64, 3>{};
+        find_rotation_offset(stack, metadata, angle_offsets, parameters);
+    }
 }
 

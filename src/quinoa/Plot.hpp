@@ -117,7 +117,7 @@ namespace qn {
     };
 
     void save_plot_shifts(
-        const MetadataStack& metadata,
+        const Metadata::Stack& metadata,
         const Path& path,
         const SavePlotShiftsOptions& options = {}
     );

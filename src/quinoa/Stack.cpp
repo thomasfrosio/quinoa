@@ -144,8 +144,8 @@ namespace qn {
         using namespace noa::io;
         auto file = ImageFile(filename, {.read = true});
         const auto n_elements = file.shape().n_elements();
-        const auto encoded_size = static_cast<f32>(Encoding::encoded_size(file.dtype(), n_elements));
-        const auto decoded_size = static_cast<f32>(Encoding::encoded_size(Encoding::F32, n_elements));
+        const auto encoded_size = static_cast<f32>(file.dtype().n_bytes(n_elements));
+        const auto decoded_size = static_cast<f32>(DataType::n_bytes(DataType::F32, n_elements));
 
         // Adding more threads is only useful when the file is compressed. Without compression, we're just
         // waiting for the filesystem, and having multiple threads in the mix seems to make it worse.
@@ -244,7 +244,7 @@ namespace qn {
             "  padded_shape={}  (precise_cutoff={})\n"
             "  cropped_shape={} (rescale_shift={::.3f})\n"
             "  bandpass_shape={} (mirror_padding_factor={:.2f})\n"
-            "  output_shape={}  (spacing={::.3f}, fast_shape={})\n",
+            "  output_shape={}  (spacing={::.3f}, fast_shape={})",
             parameters.compute_device,
             parameters.exposure_filter,
             parameters.normalize_and_standardize,
@@ -395,17 +395,17 @@ namespace qn {
         }
     }
 
-    void StackLoader::read_stack(MetadataStack& metadata, const View<f32>& stack) {
+    void StackLoader::read_stack(Metadata::Stack& metadata, const View<f32>& stack) {
         auto timer = Logger::trace_scope_time("Loading the stack");
         // noa::Session::set_fft_cache_limit(4); // FIXME
-        for (i32 batch{}; auto& slice_metadata: metadata) {
-            read_slice(stack.subregion(batch), slice_metadata.index_file);
-            slice_metadata.index = batch; // reset order of the slices in the stack.
+        for (i32 batch{}; auto& image: metadata) {
+            read_slice(stack.subregion(batch), image.index_file);
+            image.index = batch; // reset order of the slices in the stack.
             ++batch;
         }
     }
 
-    auto StackLoader::read_stack(MetadataStack& metadata) -> Array<f32> {
+    auto StackLoader::read_stack(Metadata::Stack& metadata) -> Array<f32> {
         const auto shape = slice_shape().push_front(Vec{metadata.ssize(), i64{1}});
         auto stack = noa::Array<f32>(shape, {.device = compute_device(), .allocator = Allocator::DEFAULT_ASYNC});
         read_stack(metadata, stack.view());
@@ -415,14 +415,14 @@ namespace qn {
     void save_stack(
         StackLoader& stack,
         const Path& filename,
-        const MetadataStack& metadata,
+        const Metadata::Stack& metadata,
         const SaveStackParameters& saving_parameters
     ) {
         auto timer = Logger::trace_scope_time("Saving stack");
 
         // Output buffer.
         const auto center = (stack.slice_shape().vec / 2).as<f64>();
-        auto output = Array<f32>(stack.slice_shape().push_front(Vec<i64, 2>{1, 1}), {
+        auto output = Array<f32>(stack.slice_shape().push_front(Vec<i64, 2>{2, 1}), {
             .device = stack.compute_device(),
             .allocator = Allocator::MANAGED
         });
@@ -435,22 +435,22 @@ namespace qn {
         });
 
         // Slices will be saved in the same order as in the metadata.
-        for (i64 i{}; const auto& slice: metadata) {
-            const auto rotation = saving_parameters.correct_rotation ? noa::deg2rad(slice.angles[0]) : 0;
+        for (i64 i{}; const auto& image: metadata) {
+            const auto rotation = saving_parameters.correct_rotation ? noa::deg2rad(image.angles[0]) : 0;
             const auto inverse_transform = (
                 ng::translate(center) *
                 ng::rotate<true>(-rotation) *
-                ng::translate(-center - slice.shifts)
+                ng::translate(-center - image.shifts)
             ).inverse().as<f32>();
 
-            stack.read_slice(output.view().subregion(0), slice.index_file, saving_parameters.cache_loader);
+            stack.read_slice(output.view().subregion(0), image.index_file, saving_parameters.cache_loader);
             ng::transform_2d(output.view().subregion(0), output.view().subregion(1), inverse_transform, {
                 .interp = saving_parameters.interp,
                 .border = saving_parameters.border,
             });
 
             output_file.write_slice(
-                output.view().reinterpret_as_cpu().span<const f32>(),
+                output.view().subregion(1).reinterpret_as_cpu().span<const f32>(),
                 {.bd_offset = {i++, 0}}
             );
         }
@@ -460,7 +460,7 @@ namespace qn {
     void save_stack(
         const View<const f32>& stack,
         const Vec<f64, 2>& spacing,
-        const MetadataStack& metadata,
+        const Metadata::Stack& metadata,
         const Path& filename,
         const SaveStackParameters& saving_parameters
     ) {
@@ -482,15 +482,15 @@ namespace qn {
         });
 
         // Slices will be saved in the same order as in the metadata.
-        for (i64 i{}; const auto& slice: metadata) {
-            const auto rotation = saving_parameters.correct_rotation ? noa::deg2rad(slice.angles[0]) : 0;
+        for (i64 i{}; const auto& image: metadata) {
+            const auto rotation = saving_parameters.correct_rotation ? noa::deg2rad(image.angles[0]) : 0;
             const auto inverse_transform = (
                 ng::translate(center) *
                 ng::rotate<true>(-rotation) *
-                ng::translate(-center - slice.shifts)
+                ng::translate(-center - image.shifts)
             ).inverse().as<f32>();
 
-            ng::transform_2d(stack.subregion(slice.index), output.view(), inverse_transform, {
+            ng::transform_2d(stack.subregion(image.index), output.view(), inverse_transform, {
                 .interp = saving_parameters.interp,
                 .border = saving_parameters.border,
             });

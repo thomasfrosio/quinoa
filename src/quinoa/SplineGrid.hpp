@@ -5,7 +5,7 @@
 
 #include "quinoa/Types.hpp"
 
-namespace qn::guts {
+namespace qn::details {
     template<typename T, size_t N>
     struct SplineGridSpanLike {
         Shape<i64, N> m_shape;
@@ -116,12 +116,12 @@ namespace qn {
             if constexpr (N == 2) {
                 if (noa::any(shape == 1)) {
                     const auto dim = static_cast<i32>(shape[0] == 1);
-                    auto data = guts::SplineGridSpanLike<weight_type, 1>(shape.filter(dim), node_index.filter(dim));
+                    auto data = details::SplineGridSpanLike<weight_type, 1>(shape.filter(dim), node_index.filter(dim));
                     return weight_at_(normalized_coordinate.filter(dim), data);
                 }
             }
 
-            auto data = guts::SplineGridSpanLike<weight_type, N>(shape, node_index);
+            auto data = details::SplineGridSpanLike<weight_type, N>(shape, node_index);
             return interpolate_at_(normalized_coordinate, data);
         }
 

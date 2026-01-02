@@ -173,7 +173,7 @@ namespace {
     auto fit_spectrum_from_scratch(
         const SpanContiguous<const f32, 1>& spectrum,
         const Vec<f64, 2>& fftfreq_range,
-        ns::CTFIsotropic<f64>& ctf,
+        ns::CTFIsotropic<f64>& ctf, // unset defocus and phase-shift
         bool fit_phase_shift,
         const Path& baseline_plot_filename
     ) -> Vec<f64, 2> {
@@ -226,14 +226,14 @@ namespace {
         return fitting_range;
     }
 
-    auto rotation_check(
-        MetadataStack& metadata,
-        const ns::CTFIsotropic<f64>& ctf,
+    void rotation_check(
+        Metadata::Stack& metadata,
+        const ns::CTFIsotropic<f64>& average_ctf,
         const Grid& grid,
         const View<const f32>& spectra, // (n,p,1,w)
         const Vec<f64, 2>& fftfreq_range,
         const Path& output_directory
-    ) -> bool {
+    ) {
         auto timer = Logger::info_scope_time("Rotation check");
         const auto [n, p, w] = spectra.shape().filter(0, 1, 3);
         const auto fftfreq_linspace = noa::Linspace<f64>::from_vec(fftfreq_range);
@@ -242,7 +242,7 @@ namespace {
         const auto buffer = Array<f32>({n + 2, 1, 1, w}, options_managed);
         const auto ctfs_per_patch = Array<ns::CTFIsotropic<f64>>(p, options_managed);
         const auto ctfs_per_image = Array<ns::CTFIsotropic<f64>>(n);
-        const auto spacing = Vec<f64, 2>::from_value(ctf.pixel_size());
+        const auto spacing = Vec<f64, 2>::from_value(average_ctf.pixel_size());
 
         auto baseline = Baseline{};
         auto run = [&](f64 rotation) {
@@ -251,12 +251,12 @@ namespace {
             auto spectra_n = buffer.view().subregion(ni::Offset(2));
 
             f64 ncc{};
-            for (auto&& [slice, ictf]: noa::zip(metadata, ctfs_per_image.span_1d())) {
+            for (auto&& [image, ictf]: noa::zip(metadata, ctfs_per_image.span_1d())) {
                 // Save the CTF of the image and compute the CTF for every patch.
-                ictf = ctf;
-                ictf.set_defocus(slice.defocus.value);
-                ictf.set_phase_shift(slice.phase_shift);
-                const auto angles = noa::deg2rad(Vec{rotation, slice.angles[1], slice.angles[2]});
+                ictf = average_ctf;
+                ictf.set_defocus(image.defocus.value);
+                ictf.set_phase_shift(image.phase_shift);
+                const auto angles = noa::deg2rad(Vec{rotation, image.angles[1], image.angles[2]});
                 for (auto&& [pctf, patch_center]: noa::zip(ctfs_per_patch.span_1d(), grid.patches_centers())) {
                     const auto patch_z_offset_um = grid.patch_z_offset(angles, spacing, patch_center);
                     pctf = ictf;
@@ -267,9 +267,9 @@ namespace {
                 // Note that we do not want to tune the frequency range and exclude tuned out frequencies from
                 // the average. For a fair comparison, we simply want to scale the spectrum to the same (expected)
                 // phase and average them together.
-                const auto image_spectra = spectra.subregion(slice.index).permute({1, 0, 2, 3}); // (n,p,1,w) -> (p,1,1,w)
+                const auto image_spectra = spectra.subregion(image.index).permute({1, 0, 2, 3}); // (n,p,1,w) -> (p,1,1,w)
                 const auto image_spectra_pw = image_spectra.span().filter(0, 3).as_contiguous();
-                const auto image_spectrum = spectra_n.subregion(slice.index);
+                const auto image_spectrum = spectra_n.subregion(image.index);
                 const auto image_spectrum_w = image_spectrum.span_1d();
                 ng::fuse_spectra( // (p,1,1,w) -> (1,1,1,w)
                     image_spectra, fftfreq_linspace, ctfs_per_patch,
@@ -284,7 +284,7 @@ namespace {
                 // The final NCC is a weighted average of the per-image NCC. We want to measure the effect of the
                 // tilt-axis, so downweight the very low tilts (the zero should essentially be excluded since it is
                 // not affected by the tilt-axis). Sigmoid curve: https://www.desmos.com/calculator/elmw9ptuwc
-                const auto weight = 1. / (1. + std::exp(-(std::abs(slice.angles[1]) - 15) / 3.5));
+                const auto weight = 1. / (1. + std::exp(-(std::abs(image.angles[1]) - 15) / 3.5));
 
                 // NCC between spectrum and simulated CTF of every patch.
                 f64 incc{};
@@ -311,17 +311,17 @@ namespace {
             // Fuse the baseline-subtracted spectrum of every image into a single spectrum.
             ng::fuse_spectra( // (n,1,1,w) -> (1,1,1,w)
                 spectra_n, fftfreq_linspace, ctfs_per_image,
-                spectrum, fftfreq_linspace, ctf,
+                spectrum, fftfreq_linspace, average_ctf,
                 spectrum_weights
             );
 
             // Subtract the baseline and normalize.
-            baseline.fit(spectrum.span_1d(), fftfreq_range, ctf);
+            baseline.fit(spectrum.span_1d(), fftfreq_range, average_ctf);
             baseline.subtract(spectrum, spectrum, fftfreq_range);
             noa::normalize(spectrum, spectrum, {.mode = noa::Norm::L2});
 
             // Tune low-frequency range and plot for diagnostics.
-            auto fitting_range = baseline.tune_fitting_range(spectrum.span_1d(), fftfreq_range, ctf);
+            auto fitting_range = baseline.tune_fitting_range(spectrum.span_1d(), fftfreq_range, average_ctf);
             auto [start_index, start_fftfreq] = nearest_integer_fftfreq(w, fftfreq_range, fitting_range[0]);
             auto new_spectrum = spectrum.subregion(ni::Ellipsis{}, ni::Slice{start_index});
             save_plot_xy(
@@ -336,7 +336,7 @@ namespace {
         };
 
         const auto rotation = metadata[0].angles[0];
-        const f64 rotation_flipped = MetadataSlice::to_angle_range(rotation + 180);
+        const f64 rotation_flipped = Metadata::Image::to_angle_range(rotation + 180);
         auto ncc = run(rotation);
         auto ncc_flipped = run(rotation_flipped);
         Logger::trace(
@@ -347,7 +347,15 @@ namespace {
             std::max(ncc, ncc_flipped) / std::min(ncc, ncc_flipped)
         );
 
-        return ncc > ncc_flipped;
+        if (ncc > ncc_flipped) {
+            Logger::info("The defocus ramp matches the tilt-axis and tilt angles.");
+        } else {
+            panic(
+                "The defocus ramp is reversed. This is a bad sign!\n"
+                "Check that the rotation angle and tilt angles are correct, "
+                "and make sure the images were not flipped along one axis."
+            );
+        }
     }
 
     // Reduce the height/phi dimension to get the rotational average.
@@ -364,18 +372,17 @@ namespace {
 
 namespace qn::ctf {
     auto initial_fit(
+        const Metadata& metadata,
         const Grid& grid,
         const Patches& patches,
-        const MetadataStack& metadata,
-        ns::CTFIsotropic<f64>& ctf, // .defocus and .phase_shift updated
         const FitInitialOptions& options
-    ) -> Vec<f64, 2> {
+    ) -> FitInitialResults {
         auto timer = Logger::info_scope_time("Initial fitting");
 
         // Compute the per-image spectra.
         const auto spectra_per_patch = compute_rotational_averages(patches);
         const auto spectra_per_image = compute_spectra_near_tilt_axis(
-            grid, spectra_per_patch.view(), metadata[0].angles[0], 0.2
+            grid, spectra_per_patch.view(), metadata.stack[0].angles[0], 0.2
         );
 
         // Get the average spectrum.
@@ -395,35 +402,40 @@ namespace qn::ctf {
             .label = "spectrum",
         });
 
+        auto ctf = metadata.empty_ctf();
         auto fitting_range = fit_spectrum_from_scratch(
             average_spectrum_w, patches.rho_vec(),
             ctf, options.fit_phase_shift, plot_filename
         );
 
-        return fitting_range;
+        return {
+            .defocus = ctf.defocus(),
+            .phase_shift = ctf.phase_shift(),
+            .fitting_range = fitting_range,
+        };
     }
 
     void coarse_fit(
+        Metadata& metadata,
         const Grid& grid,
-        Patches patches,
-        ns::CTFIsotropic<f64>& ctf,
-        MetadataStack& metadata, // defocus is updated, rotation may be flipped
+        const Patches& patches,
         const FitCoarseOptions& options
     ) {
         auto timer = Logger::info_scope_time("Coarse fitting");
 
         // Compute the per-image spectrum.
+        const auto tilt_axis = metadata.stack[0].angles[0];
         const auto spectra_per_patch = compute_rotational_averages(patches);
-        const auto spectra_per_image = compute_spectra_near_tilt_axis(
-            grid, spectra_per_patch.view(), metadata[0].angles[0], 0.2);
+        const auto spectra_per_image = compute_spectra_near_tilt_axis(grid, spectra_per_patch.view(), tilt_axis, 0.2);
         const auto spectra = spectra_per_image.span().filter(0, 3).as_contiguous();
         save_plot_xy(patches.rho(), spectra, options.output_directory / "coarse_spectra.txt", {
             .title = "Per-image coarse spectra (sorted by collection order)",
             .x_name = "fftfreq",
         });
 
-        auto metadata_fit = metadata;
-        auto fitting_ranges = std::vector<Vec<f64, 2>>(metadata.size()); // for diagnostics
+        auto ctf = metadata.average_ctf();
+        auto meta = metadata.stack;
+        auto fitting_ranges = std::vector<Vec<f64, 2>>(meta.size()); // for diagnostics
 
         // In hybrid mode, exclude the first image from the next steps since it may have a very different
         // defocus from the rest of the stack. It is also excluded from the rotation check since it won't affect it.
@@ -436,13 +448,15 @@ namespace qn::ctf {
                 .label = "spectrum",
             });
             auto ictf = ctf;
-            auto ifitting_range = fit_spectrum_from_scratch(spectra[0], patches.rho_vec(), ictf, options.fit_phase_shift, plot_filename);
+            auto ifitting_range = fit_spectrum_from_scratch(
+                spectra[0], patches.rho_vec(), ictf, options.fit_phase_shift, plot_filename
+            );
             fitting_ranges[0] = ifitting_range;
-            metadata[0].defocus = {ictf.defocus(), 0., 0.};
-            metadata[0].phase_shift = ictf.phase_shift();
+            metadata.stack[0].defocus = {ictf.defocus(), 0., 0.};
+            metadata.stack[0].phase_shift = ictf.phase_shift();
 
             Logger::trace("Excluding higher exposure image from the rest of the coarse alignment");
-            metadata_fit.exclude_if([](auto& s) { return s.index == 0; });
+            meta.exclude_if([](auto& s) { return s.index == 0; });
         }
 
         {
@@ -451,29 +465,29 @@ namespace qn::ctf {
             // We don't fit the phase-shift, leave this to the CTF-refine that can model a time-resolved shift.
             // Instead, use the phase-shift from the initial reference as first approximation.
             // TODO Maybe fitting the phase-shift could be useful here?
-            metadata_fit.sort("tilt");
+            meta.sort("tilt");
             auto fit_spectrum = [&](i64 i, Vec<f64, 2>& ifitting_range, CTFIsotropic64& ictf, Baseline& baseline) {
                 refine_grid_search(
-                    spectra[metadata_fit[i].index], patches.rho_vec(), ifitting_range, ictf, baseline, {
+                    spectra[meta[i].index], patches.rho_vec(), ifitting_range, ictf, baseline, {
                         .initial_defocus_range = 0.6,
                         .initial_phase_shift_range = 0,
                     });
-                metadata_fit[i].defocus = {ictf.defocus(), 0., 0.};
-                metadata_fit[i].phase_shift = ctf.phase_shift();
+                meta[i].defocus = {ictf.defocus(), 0., 0.};
+                meta[i].phase_shift = ctf.phase_shift();
 
                 // Save in the same order as the original metadata.
-                const auto index = static_cast<size_t>(metadata_fit[i].index);
-                Logger::trace("i={:.2f}, fitting_range={::.4f}", metadata_fit[i].angles[1], ifitting_range);
+                const auto index = static_cast<size_t>(meta[i].index);
+                Logger::trace("i={:.2f}, fitting_range={::.4f}", meta[i].angles[1], ifitting_range);
                 fitting_ranges[index] = ifitting_range;
             };
 
-            const auto pivot = metadata_fit.find_lowest_tilt_index();
+            const auto pivot = meta.find_lowest_tilt_index();
             auto pool = noa::ThreadPool(2);
             auto _0 = pool.enqueue([&] () mutable {
                 auto ictf = ctf;
                 auto ifitting_range = options.initial_fitting_range;
                 Baseline baseline{};
-                for (i64 i = pivot; i < metadata_fit.ssize(); ++i) // towards positive tilts
+                for (i64 i = pivot; i < meta.ssize(); ++i) // towards positive tilts
                     fit_spectrum(i, ifitting_range, ictf, baseline);
             });
             auto _1 = pool.enqueue([&] () mutable {
@@ -485,10 +499,10 @@ namespace qn::ctf {
             });
         }
 
-        metadata.update_from(metadata_fit, {.update_defocus = true, .update_phase_shift = true});
+        metadata.stack.update_from(meta, {.update_defocus = true, .update_phase_shift = true});
         save_plot_xy(
-            metadata | stdv::transform([](auto& s) { return s.index_file; }),
-            metadata | stdv::transform([](auto& s) { return s.defocus.value; }),
+            metadata.stack | stdv::transform([](auto& s) { return s.index_file; }),
+            metadata.stack | stdv::transform([](auto& s) { return s.defocus.value; }),
             options.output_directory / "defocus_fit.txt", {
                 .title = "Per-tilt defocus",
                 .x_name = "Image index (as saved in the stack)",
@@ -497,7 +511,7 @@ namespace qn::ctf {
             });
 
         save_plot_xy(
-            metadata | stdv::transform([](auto& s) { return s.index_file; }),
+            metadata.stack | stdv::transform([](auto& s) { return s.index_file; }),
             fitting_ranges | stdv::transform([&](const auto& v) {
                 return fftfreq_to_resolution(ctf.pixel_size(), v[1]);
             }),
@@ -520,7 +534,7 @@ namespace qn::ctf {
         f64 min_fitting_fftfreq{1};
         f64 max_fitting_fftfreq{};
         auto average_fitting_range = Vec<f64, 2>{};
-        for (auto&& [slice, fitting_range]: noa::zip(metadata_fit, fitting_ranges)) {
+        for (auto&& [slice, fitting_range]: noa::zip(meta, fitting_ranges)) {
             min_defocus = std::min(min_defocus, slice.defocus.value);
             max_defocus = std::max(max_defocus, slice.defocus.value);
             average_defocus += slice.defocus.value;
@@ -529,44 +543,28 @@ namespace qn::ctf {
             max_fitting_fftfreq = std::max(max_fitting_fftfreq, fitting_range[1]);
             average_fitting_range += fitting_range;
         }
-        const auto n_images = static_cast<f64>(metadata_fit.size());
-        ctf.set_defocus(average_defocus / n_images);
-        ctf.set_phase_shift(average_phase_shift / n_images);
+        const auto n_images = static_cast<f64>(meta.size());
+        average_defocus /= n_images;
+        average_phase_shift /= n_images;
         average_fitting_range /= n_images;
         Logger::info(
             "phase_shift={:.2f}deg\n"
             "average_defocus={:.4f}um (min={:.4f}um, max={:.4f}um)\n"
             "average_fitting_range={::.3f}cpp ({::.2f}A, cutoff_min={:.3f}cpp, cutoff_max={:.3f}cpp)",
-            noa::rad2deg(ctf.phase_shift()), ctf.defocus(), min_defocus, max_defocus,
+            noa::rad2deg(average_phase_shift), average_defocus, min_defocus, max_defocus,
             average_fitting_range, fftfreq_to_resolution(ctf.pixel_size(), average_fitting_range),
             min_fitting_fftfreq, max_fitting_fftfreq
         );
 
-        // Check if the rotation is flipped.
-        // If it was computed using the common-line search, there's a 50/50 chance we have the opposite tilt-axis,
-        // so use the defocus gradients in the images to get the correct rotation. Note that rotating the tilt-axis
-        // by +/-180deg is equivalent to negating the tilt angles.
-        const bool is_ok = rotation_check(
-            metadata_fit, ctf, grid, spectra_per_patch.view(),
-            patches.rho_vec(), options.output_directory
-        );
-        if (is_ok) {
-            Logger::info("The defocus ramp matches the tilt-axis and tilt angles.");
-        } else {
-            if (not options.has_user_rotation) {
-                metadata.add_image_angles({180, 0, 0});
-                Logger::info(
-                    "The defocus ramp is reversed.\n"
-                    "Not to worry, this is expected as the tilt-axis was computed using the common-line method.\n"
-                    "Rotating the tilt-axis by 180 degrees to match the CTF."
-                );
-            } else {
-                Logger::warn(
-                    "The defocus ramp is reversed. This is a bad sign!\n"
-                    "Check that the rotation angle and tilt angles are correct, "
-                    "and make sure the images were not flipped along one axis."
-                );
-            }
+        ctf.set_defocus(average_defocus);
+        ctf.set_phase_shift(average_phase_shift);
+
+        // Check that the defocus gradients in the images match the tilt geometry.
+        if (options.check_rotation) {
+            rotation_check(
+                meta, ctf, grid, spectra_per_patch.view(),
+                patches.rho_vec(), options.output_directory
+            );
         }
     }
 }

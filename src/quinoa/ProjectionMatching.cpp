@@ -2,280 +2,351 @@
 #include <noa/Signal.hpp>
 #include <noa/Geometry.hpp>
 #include <noa/FFT.hpp>
+#include <noa/Utils.hpp>
+#include <noa/IO.hpp>
 
+#include "Logger.hpp"
 #include "quinoa/Metadata.hpp"
-#include "quinoa/CommonArea.hpp"
+#include "quinoa/CommonFOV.hpp"
 #include "quinoa/Types.hpp"
+#include "quinoa/Utilities.hpp"
+#include "quinoa/Stack.hpp"
 
 namespace {
     using namespace qn;
 
-    struct SIRTWeight {
-        using value_type = f32;
-        f32 fake_iter;
+    template<size_t N = 160>
+    struct BitMask {
+        static_assert(noa::is_multiple_of(N, 8));
+        static constexpr size_t WORD_COUNT = 32;
+        static constexpr size_t N_WORDS = N / 32;
+        u32 buffer[N_WORDS]{};
 
-        // With a large enough level (>1000), this is equivalent to a radial weighting.
-        NOA_HD constexpr explicit SIRTWeight(f32 level) {
-            fake_iter = level <= 15.f ? level :
-                        level <= 30.f ? 15.f + 0.4f * (level - 15.f) :
-                                        27.f * 0.6f * (level - 30.f);
+        constexpr BitMask() = default;
+        constexpr explicit BitMask(const std::vector<bool>& mask) {
+            for (size_t i{}; i < mask.size(); ++i)
+                if (mask[i])
+                    buffer[i / 32] |= 1 << (i % 32);
         }
 
-        NOA_HD constexpr auto operator()(const Vec<f32, 3>& fftfreq_3d, i32) const {
-            const f32 fftfreq = noa::sqrt(dot(fftfreq_3d, fftfreq_3d));
-            if (fftfreq < 1e-6f or fftfreq > 0.5f)
-                return 0.f;
-            const f32 max = 0.5f * (1 - noa::pow(1 - 0.00195f / 0.5f, fake_iter));
-            const f32 current = fftfreq * (1 - noa::pow(1 - 0.00195f / fftfreq, fake_iter));
-            return current / max;
+        constexpr auto operator[](nt::integer auto i) const -> bool {
+            ni::bounds_check(N, i);
+            const u32 data = buffer[i / 32];
+            const u32 mask = 1 << (i % 32);
+            return data & mask;
         }
     };
 
-    struct ReduceMeanWithinMask {
-        static constexpr void init(f32 v, f32& s, i32& m) {
-            if (v != 0.f) {
-                s += v;
-                m += 1;
+    struct MaskReferences {
+        SpanContiguous<const f32, 3> input_images;
+        SpanContiguous<f32, 3> output_images;
+        SpanContiguous<const ParallelogramMask, 1> parallelograms;
+        SpanContiguous<const i32, 1> input_indices;
+
+        NOA_HD void operator()(i64 i, i64 h, i64 w) const {
+            auto value = parallelograms[i](h, w);
+            if (value > 1e-6f)
+                value *= input_images(input_indices[i], h, w);
+            output_images(i, h, w) = value;
+        }
+    };
+
+    struct MaskTarget {
+        SpanContiguous<f32, 2> input;
+        SpanContiguous<f32, 2> output;
+        ParallelogramMask parallelogram;
+
+        NOA_HD void operator()(i64 h, i64 w) const {
+            auto value = parallelogram(h, w);
+            if (value > 1e-6f)
+                value *= input(h, w);
+            output(h, w) = value;
+        }
+    };
+
+    struct FilterImages {
+        NOA_HD auto operator()(const Vec<f32, 2>& fftfreq_2d, i64) const -> f32 {
+            // Directly from Aretomo3.
+            const auto fftfreq = noa::sqrt(noa::dot(fftfreq_2d, fftfreq_2d));
+            return 2.f * fftfreq * (0.55f + 0.45f * noa::cos(6.2831852f * fftfreq));
+        }
+    };
+
+    // Adapted and simplified version of noa::geometry::BackwardForwardProject.
+    class BackwardForwardProject {
+    public:
+        using index_type = i32;
+        using coord_3d_type = Vec<f32, 3>;
+        using input_span_type = SpanContiguous<const f32, 3, index_type>;
+        using interpolator_type = noa::Interpolator<2, noa::Interp::LINEAR, noa::Border::ZERO, input_span_type>;
+
+        interpolator_type input_images;
+        SpanContiguous<const Mat<f32, 2, 4>> backward_matrices;
+
+        SpanContiguous<f32, 2> output_image;
+        Mat<f32, 3, 4> forward_matrix;
+
+        coord_3d_type volume_shape{};
+        coord_3d_type volume_center{};
+        index_type projection_window_radius{};
+
+    public:
+        static constexpr auto forward_projection_window_size(
+            const Shape<i64, 3>& volume_shape_,
+            const Mat<f32, 3, 4>& projection_matrix
+        ) -> i64 {
+            const auto projection_axis = projection_matrix.col(0);
+            const auto projection_window_center = (volume_shape_.vec / 2).as<f32>();
+
+            auto distance_to_volume_edge = Vec<f32, 3>::from_value(std::numeric_limits<f32>::max());
+            for (auto i: noa::irange(3))
+                if (abs(projection_axis[i]) > 0) // not parallel to the ith-plane
+                    distance_to_volume_edge[i] = abs(projection_window_center[i] / projection_axis[i]);
+
+            const auto index = argmin(distance_to_volume_edge);
+            check(index == 0);
+            const auto projection_window_radius_ = static_cast<i64>(ceil(distance_to_volume_edge[index]));
+            return (projection_window_radius_ + 1) * 2 + 1;
+        }
+
+        static constexpr auto image2volume(
+            const Vec<f32, 3>& image_coordinates,
+            const Vec<f32, 3>& projection_window_center,
+            const Mat<f32, 3, 4>& projection_matrix
+        ) -> Vec<f32, 3> {
+            const auto projection_axis = projection_matrix.col(0);
+            const auto projection_matrix_no_z = projection_matrix.filter_columns(1, 2, 3);
+
+            // Transform from image space to volume space.
+            // Since we need the transformed yx-plane, extract the 0yx transformed vector from the matrix-vector product.
+            Vec<f32, 3> plane_0yx = projection_matrix_no_z * image_coordinates.pop_front().push_back(1);
+            auto volume_coordinates = plane_0yx + projection_axis * image_coordinates[0];
+
+            // Compute and add the distance along the projection axis,
+            // from the yx-plane to the selected plane centered on the window center.
+            // This is from https://en.m.wikipedia.org/wiki/Line-plane_intersection
+            const f32 distance = (projection_window_center[0] - plane_0yx[0]) / projection_axis[0];
+            volume_coordinates += projection_axis * distance;
+
+            return volume_coordinates;
+        }
+
+        constexpr void operator()(index_type z, index_type y, index_type x) const {
+            const auto image_coordinates = coord_3d_type::from_values(z - projection_window_radius, y, x);
+            const auto volume_coordinates = image2volume(image_coordinates, volume_center, forward_matrix);
+
+            // Return early if the current coordinate falls outside the virtual volume.
+            if (volume_coordinates[0] < -1 or volume_coordinates[0] > volume_shape[0] or
+                volume_coordinates[1] < -1 or volume_coordinates[1] > volume_shape[1] or
+                volume_coordinates[2] < -1 or volume_coordinates[2] > volume_shape[2])
+                return;
+
+            // Backward project: sample the input images at the current coordinate.
+            f32 value{};
+            for (index_type j{}; j < backward_matrices.ssize(); ++j) {
+                const auto input_coordinates = backward_matrices[j] * volume_coordinates.push_back(1);
+                value += input_images.interpolate_at(input_coordinates, j);
             }
-        }
-        static constexpr void join(f32 i_s, i32 i_m, f32& s, i32& m) {
-            s += i_s;
-            m += i_m;
+
+            // Forward project: project along the z-axis (in image space).
+            noa::details::atomic_add(output_image, value, y, x);
         }
     };
 
-    struct SubtractMeanWithinMask {
-        constexpr void operator()(f32 s, i32 m, f32& v) const {
-            if (v != 0.f) {
-                v -= s / static_cast<f32>(m);
-            }
-        }
-    };
-
-    class Projector {
-        Array<f32> m_input_images;
-        Array<c32> m_references_rfft;
-        Array<f32> m_target_and_references;
-        Array<c32> m_target_and_references_padded_rfft;
+    struct Projector {
+        Array<Mat<f32, 2, 4>> m_backward_matrices; // (n)
+        Array<f32> m_reference_images;
+        Array<f32> m_reference_and_target;
+        Array<c32> m_reference_and_target_rfft;
         Array<f32> m_xmap;
+        Array<f32> m_xmap_centered;
+        Array<ParallelogramMask> m_parallelogram_references;
+        Array<i32> m_reference_indices;
+        Array<f32> m_volume;
 
-        CommonArea m_common_area;
-
-        [[nodiscard]] auto options_() const -> ArrayOption {
-            return {.device = m_input_images.device(), .allocator = Allocator::ASYNC};
+        Projector(i64 maximum_number_of_images, Device device) {
+            // m_backward_matrices = Array<Mat<f32, 2, 4>>(maximum_number_of_images, options);
+            // m_forward_matrices = Array<Mat<f32, 3, 4>>(maximum_number_of_images, options);
         }
 
-        [[nodiscard]] auto slice_shape_() const -> Shape<i64, 4> {
-            return m_input_images.shape().set<0>(1);
-        }
-
-        [[nodiscard]] auto references_rfft_(i64 n) const -> View<c32> {
-            return m_references_rfft.view().subregion(ni::Slice{0, n});
-        }
-
-        [[nodiscard]] auto references_(i64 n) const -> View<f32> {
-            return noa::fft::alias_to_real(references_rfft_(n), slice_shape_().set<0>(n));
-        }
-
-        [[nodiscard]] auto target_and_references_(i64 n) const -> View<f32> {
-            return m_target_and_references.view().subregion(ni::Slice{0, n + 1});
-        }
-
-        [[nodiscard]] auto target_and_references_padded_rfft_(i64 n) const -> View<c32> {
-            return m_target_and_references_padded_rfft.view().subregion(ni::Slice{0, n + 1});
-        }
-
-        [[nodiscard]] auto target_and_references_padded_(i64 n) const -> View<f32> {
-            return noa::fft::alias_to_real(target_and_references_padded_rfft_(n), slice_shape_().set<0>(n + 1));
-        }
-
-        void compute_projections(
-            const View<const f32>& tilt_series,
-            const MetadataStack& tilt_series_metadata,
-            const MetadataStack& output_metadata,
+        void compute_projected_reference(
+            const View<const f32>& input_images,
+            const Metadata::Stack& input_metadata,
+            const View<f32>& output_image,
+            const Metadata::Image& output_metadata,
             i64 volume_thickness
-        ) {
+        ) const {
+            noa::fill(output_image, 0);
+
             //
-            const auto options = options_();
-            const auto slice_shape = tilt_series.shape().filter(2, 3);
-            const auto volume_shape = slice_shape.push_front(volume_thickness);
+            const auto image_shape = input_images.shape().filter(2, 3);
+            const auto volume_shape = image_shape.push_front(volume_thickness);
             const auto volume_center = (volume_shape / 2).vec.as<f64>();
-
-            // Retrieve the input(s) and output(s).
-            const auto n_inputs = tilt_series_metadata.ssize();
-            auto input_images = m_input_images.view().subregion(ni::Slice{0, n_inputs});
-
-            // Apply the common FOV to the images about to be backward projected.
-            m_common_area = CommonArea(slice_shape, tilt_series_metadata);
-            m_common_area.mask(tilt_series, input_images, tilt_series_metadata, false, 0.1);
+            const auto n_inputs = input_metadata.ssize();
 
             // Backward projection matrices.
-            auto input_matrices = Array<Mat<f32, 2, 4>>(tilt_series_metadata.ssize());
-            for (auto&& [input_matrix, slice]: noa::zip(input_matrices.span_1d_contiguous(), tilt_series_metadata)) {
-                input_matrix = (
+            auto backward_matrices = m_backward_matrices.span_1d().subregion(ni::Slice{0, n_inputs});
+            for (auto&& [backward_matrix, slice]: noa::zip(backward_matrices, input_metadata)) {
+                const auto angles = noa::deg2rad(slice.angles);
+                backward_matrix = (
                     ng::translate((volume_center.pop_front() + slice.shifts).push_front(0)) *
-                    ng::linear2affine(ng::rotate_z(noa::deg2rad(slice.angles[0]))) *
-                    ng::linear2affine(ng::rotate_y(noa::deg2rad(slice.angles[1]))) *
-                    ng::linear2affine(ng::rotate_x(noa::deg2rad(slice.angles[2]))) *
+                    ng::rotate_z<true>(angles[0]) *
+                    ng::rotate_y<true>(angles[1]) *
+                    ng::rotate_x<true>(angles[2]) *
                     ng::translate(-volume_center)
                 ).inverse().filter_rows(1, 2).as<f32>();
             }
-            if (options.device.is_gpu())
-                input_matrices = std::move(input_matrices).to(options);
+            // ng::backward_project_3d(input_images, m_volume, m_backward_matrices.flat(0).subregion(ni::Slice{0, n_inputs}));
 
             // Forward projection matrices.
-            i64 projection_window{};
-            auto output_matrices = Array<Mat<f32, 3, 4>>(output_metadata.ssize());
-            for (auto&& [output_matrix, slice]: noa::zip(output_matrices.span_1d_contiguous(), output_metadata)) {
-                output_matrix = (
-                    ng::translate((volume_center.pop_front() + slice.shifts).push_front(0)) *
-                    ng::linear2affine(ng::rotate_z(noa::deg2rad(slice.angles[0]))) *
-                    ng::linear2affine(ng::rotate_y(noa::deg2rad(slice.angles[1]))) *
-                    ng::linear2affine(ng::rotate_x(noa::deg2rad(slice.angles[2]))) *
-                    ng::translate(-volume_center)
-                ).pop_back().as<f32>();
+            const auto forward_matrix = (
+                ng::translate((volume_center.pop_front() + output_metadata.shifts).push_front(0)) *
+                ng::rotate_z<true>(noa::deg2rad(output_metadata.angles[0])) *
+                ng::rotate_y<true>(noa::deg2rad(output_metadata.angles[1])) *
+                ng::rotate_x<true>(noa::deg2rad(output_metadata.angles[2])) *
+                ng::translate(-volume_center)
+            ).pop_back().as<f32>();
 
-                projection_window = std::max(
-                    projection_window, ng::forward_projection_window_size(volume_shape, output_matrix));
-            }
-            if (options.device.is_gpu())
-                output_matrices = std::move(output_matrices).to(options);
-
-            // Retrieve the outputs.
-            const auto n_outputs = output_metadata.ssize();
-            auto references_rfft = references_rfft_(n_outputs);
-            auto references = references_(n_outputs);
-
-            // Backward and forward project.
-            ng::backward_and_forward_project_3d(
-                input_images, references, volume_shape,
-                std::move(input_matrices), std::move(output_matrices), projection_window,
-                {.interp = noa::Interp::LINEAR, .add_to_output = false}
+            const auto projection_window = BackwardForwardProject::forward_projection_window_size(
+                volume_shape, forward_matrix
             );
 
-            // Radial weighting.
-            // TODO Add bandpass?
-            noa::fft::r2c(references, references_rfft);
-            ns::filter_spectrum<"h2h">(references_rfft, references_rfft, references.shape(), SIRTWeight{300});
-            noa::fft::c2r(references_rfft, references);
+            Logger::trace("forward_projection_window_size={}", projection_window);
+            noa::iwise(Shape{projection_window, image_shape[0], image_shape[1]}, output_image.device(), BackwardForwardProject{
+                .input_images = BackwardForwardProject::interpolator_type(
+                    input_images.span<const f32, 3, i32>().as_contiguous(), image_shape.as<i32>()),
+                .backward_matrices = backward_matrices,
+                .output_image = output_image.span().filter(2, 3).as_contiguous(),
+                .forward_matrix = forward_matrix,
+                .volume_shape = volume_shape.vec.as<f32>(),
+                .volume_center = volume_center.as<f32>(),
+                .projection_window_radius = static_cast<i32>(projection_window / 2 + 1),
+            });
         }
 
-        struct NCCResult {
+        void update_shifts(const View<f32>& stack, Metadata::Stack& metadata, f64 thickness_um) {
+            auto t = Logger::trace_scope_time("update shifts");
 
-        };
+            const auto device = stack.device();
+            const auto options = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
+            m_backward_matrices = Array<Mat<f32, 2, 4>>(metadata.ssize(), options);
+            m_reference_images = Array<f32>(stack.shape(), options); // FIXME -1
+            m_reference_and_target = Array<f32>(stack.shape().set<0>(2), options);
+            m_reference_and_target_rfft = Array<c32>(stack.shape().set<0>(2).rfft(), options);
+            m_xmap =  Array<f32>(stack.shape().set<0>(1), options);
+            m_xmap_centered = Array<f32>({1, 1, 128, 128}, options);
+            m_parallelogram_references = Array<ParallelogramMask>(metadata.ssize(), options);
+            m_reference_indices = Array<i32>(metadata.ssize(), options);
+            m_volume = Array<f32>(stack.shape().set<0>(1).set<1>(130), options);
 
-        /// Computes the normalized cross-correlation (NCC), between the target and each reference, at the best lag.
-        /// At such, this function returns, for each reference:
-        ///     1. the relative shift.
-        ///     2. the NCC at this shift.
-        void cross_correlate_projections(
-            const View<f32>& target,
-            const MetadataSlice& target_metadata,
-            const MetadataStack& references_metadata
-        ) {
-            // Retrieve the buffers.
-            const auto n_outputs = references_metadata.ssize();
-            auto references = references_(n_outputs);
-            auto target_and_references = target_and_references_(n_outputs);
-            auto target_and_references_padded_rfft = target_and_references_padded_rfft_(n_outputs);
-            auto target_and_references_padded = target_and_references_padded_(n_outputs);
+            Metadata::Stack references;
 
-            // Common FOV.
-            m_common_area.mask(target, target_and_references.subregion(0), target_metadata, false, 0.1);
-            m_common_area.mask(references, target_and_references.subregion(ni::Slice{1, n_outputs}), references_metadata, false, 0.1);
+            auto fov = CommonFOV{};
+            auto fov_mask_options = FOVMaskOptions{
+                .smooth_edge_percent = 0.05,
+                .add_shifts = false,
+            };
 
-            // Normalize the mean within the FOV.
-            const auto device = options_().device;
-            const auto options = options_().set_allocator(Allocator::MANAGED);
-            auto sums = noa::Array<f32>(n_outputs + 1, options).flat(0);
-            auto count = noa::Array<i32>(n_outputs + 1, options).flat(0);
-            noa::reduce_axes_ewise(
-                target_and_references,
-                noa::wrap(f32{}, i32{}),
-                noa::wrap(sums, count),
-                ReduceMeanWithinMask{}
-            );
-            noa::ewise(
-                noa::wrap(sums, count),
-                target_and_references,
-                SubtractMeanWithinMask{}
-            );
+            auto& stream = Stream::current(device);
+            auto start = noa::Event{};
+            auto end = noa::Event{};
 
-            // Compute the L2-norm.
-            // This will be used to normalize the cross-correlation peak.
-            // This is equivalent (but faster) to normalizing the peak with the auto-correlation.
-            const auto norms = sums.view(); // shape={n,1,1,1}
-            noa::l2_norm(target_and_references, norms);
+            for (i64 i{1}; i < metadata.ssize(); ++i) {
+                // Set up the references and target metadata.
+                references.images.push_back(metadata[i - 1]);
+                for (auto&& [reference, index]: noa::zip(references, m_reference_indices.span_1d()))
+                    index = reference.index;
 
-            // Zero-pad and compute the cross-correlation.
-            // This is the correct way to do it, but the padding is a bit overkill for most cases.
-            const auto padding = (target_and_references_padded.shape() - target_and_references.shape()).vec;
-            noa::resize(target_and_references, target_and_references_padded, {}, padding);
-            noa::fft::r2c(target_and_references_padded, target_and_references_padded_rfft, {
-                .norm = noa::fft::Norm::NONE
-            });
+                auto reference_images = m_reference_images.view().subregion(ni::Slice{0, references.ssize()});
 
-            // To save memory, reuse the weights to store the cross-correlation map.
-            const auto xmap = m_xmap.view().subregion(ni::Slice{0, n_outputs});
+                // Mask the references.
+                start.record(stream);
+                fov.set_geometry(stack.shape().filter(2, 3), metadata);
+                for (auto&& [slice, parallelogram] : noa::zip(references, m_parallelogram_references.span_1d()))
+                    parallelogram = fov.set_fov(slice, fov_mask_options);
+                noa::iwise(reference_images.shape().filter(0, 2, 3), device, MaskReferences{
+                    .input_images = stack.span().filter(0, 2, 3).as_contiguous(),
+                    .output_images = reference_images.span().filter(0, 2, 3).as_contiguous(),
+                    .parallelograms = m_parallelogram_references.span_1d(),
+                    .input_indices = m_reference_indices.span_1d(),
+                });
+                end.record(stream);
+                end.synchronize();
+                Logger::trace("reference mask took {}", noa::Event::elapsed(start, end));
+                // noa::write_image(reference_images, "~/Tmp/quinoa/pm01/reference_images.mrc");
 
-            // We rotate the xmap before the picking, so compute the centered xmap.
-            ns::cross_correlation_map<"h2fc">(
-                target_and_references_padded_rfft.subregion(0),
-                target_and_references_padded_rfft.subregion(ni::Slice{1, n_outputs}),
-                xmap, {.ifft_norm = noa::fft::Norm::NONE}
-            );
+                start.record(stream);
+                compute_projected_reference(
+                    reference_images, references,
+                    m_reference_and_target.view().subregion(0), metadata[i],
+                    100
+                );
+                end.record(stream);
+                end.synchronize();
+                Logger::trace("projection took {}", noa::Event::elapsed(start, end));
+                // noa::write_image(m_volume, fmt::format("~/Tmp/quinoa/pm01/volume_{:>02}.mrc", i));
 
-            // Work on a small subregion located at the center of the xmap, because the peak should be very close
-            // to the center and because it's more efficient. Moreover, the peak can be distorted perpendicular to
-            // the tilt-axis due to the tilt (although the z-mask should mostly fix that). To help the picking,
-            // rotate so that the distortion is along the X-axis. At the same time, setup transform_2d to only
-            // render the small subregion at the center of the xmap.
-            const View<f32> peak_window = m_peak_window.view();
+                start.record(stream);
+                noa::iwise(m_reference_and_target.shape().filter(2, 3), device, MaskTarget{
+                    .input = stack.span().subregion(metadata[i].index).filter(2, 3).as_contiguous(),
+                    .output = m_reference_and_target.span().subregion(1).filter(2, 3).as_contiguous(),
+                    .parallelogram = fov.set_fov(metadata[i], fov_mask_options),
+                });
+                end.record(stream);
+                end.synchronize();
+                Logger::trace("target mask took {}", noa::Event::elapsed(start, end));
 
-            const auto xmap_center = (xmap.shape().vec.filter(2, 3) / 2).as<f64>();
-            const auto peak_window_center = (peak_window.shape().vec.filter(2, 3) / 2).as<f64>();
-            const auto xmap_matrices = Array<Mat<f32, 2, 3>>(n_outputs, {.allocator = Allocator::MANAGED});
-            for (auto&& [matrix, slice]: noa::zip(xmap_matrices.span_1d_contiguous(), references_metadata)) {
-                matrix = (
-                    ng::translate(peak_window_center) *
-                    ng::linear2affine(ng::rotate(noa::deg2rad(-slice.angles[0]))) *
-                    ng::translate(-xmap_center)
-                ).inverse().pop_back().as<f32>();
+                nf::r2c(m_reference_and_target, m_reference_and_target_rfft);
+                ns::bandpass<"h2h">(
+                    m_reference_and_target_rfft, m_reference_and_target_rfft,
+                    m_reference_and_target.shape(), {
+                        .highpass_cutoff = 0.03, .highpass_width = 0.03,
+                        .lowpass_cutoff = 0.4, .lowpass_width = 0.1,
+                    }
+                    );
+                nf::c2r(m_reference_and_target_rfft, m_reference_and_target);
+                noa::normalize_per_batch(m_reference_and_target, m_reference_and_target, {.mode = noa::Norm::L2});
+                // noa::write_image(m_reference_and_target, fmt::format("~/Tmp/quinoa/pm01/reference_target_{:>02}.mrc", i));
+
+                start.record(stream);
+                nf::r2c(m_reference_and_target, m_reference_and_target_rfft);
+                ns::cross_correlation_map<"h2fc">(
+                    m_reference_and_target_rfft.subregion(0),
+                    m_reference_and_target_rfft.subregion(1),
+                    m_xmap
+                );
+                auto shift = qn::find_peak<"fc2fc">(m_xmap.view(), m_xmap_centered.view(), {
+                    .distortion_angle_deg = metadata[i].angles[0],
+                    .max_shift_percent = 0.1,
+                }).first;
+                Logger::trace("shift={}", shift);
+                end.record(stream);
+                end.synchronize();
+                Logger::trace("rfft/ccmap/peak took {}", noa::Event::elapsed(start, end));
+                // noa::write_image(m_xmap, fmt::format("~/Tmp/quinoa/pm01/xmap_{:>02}.mrc", i));
+                // noa::write_image(m_xmap_centered, "~/Tmp/qui   noa/pm01/xmap_centered.mrc");
+
+                // metadata[i].shifts -= shift;
+                // if (i == 2)
+                //     panic();
             }
-            ng::transform_2d(xmap, peak_window, xmap_matrices.view().reinterpret_as(device.type()));
-
-            // Find the peak, with subpixel-registration.
-            // TODO Test without peak_window and transform_2d.
-            auto peak_coordinates = Array<Vec<f32, 2>>(n_outputs, options);
-            auto peak_values = Array<f32>(n_outputs, options);
-            ns::cross_correlation_peak_2d<"fc2fc">(peak_window, peak_coordinates, peak_values);
-
-            Vec<Vec<f64, 2>, 3> shifts;
-            Vec<f64, 3> scores;
-            auto norm_target = norms.first();
-
-            for (auto&& [peak_coordinate, peak_value, norm_reference, slice]:
-                 noa::zip(peak_coordinates.span_1d_contiguous(),
-                          peak_values.span_1d_contiguous(),
-                          norms.span_1d_contiguous().offset_inplace(1),
-                          references_metadata)
-            ) {
-                // Deduce the shift from the peak position.
-                // Don't forget to rotate back; the shift is not rotated!
-                const Mat<f64, 2, 2> rotation_offset = ng::rotate(noa::deg2rad(slice.angles[0]));
-                const Vec<f64, 2> shift_rotated = peak_coordinate.as<f64>() - peak_window_center;
-                const Vec<f64, 2> shift = rotation_offset * shift_rotated.as<f64>();
-
-                // Peak normalization.
-                const auto denominator =
-                        static_cast<f64>(norm_target) * // target norm
-                        static_cast<f64>(norm_reference) * // projected norm
-                        static_cast<f64>(xmap.shape().filter(2, 3).n_elements()); // fft scale
-                const auto score = static_cast<f64>(peak_value) / denominator;
-            }
-            return {score, shift};
         }
     };
+}
 
+namespace qn {
+    void simple_projection_matching(
+        const View<f32>& stack, Metadata::Stack& metadata, f64 thickness_um, const Path& output_directory) {
+        auto projector = Projector(stack.shape()[0], stack.device());
 
+        auto metadata_sorted = metadata;
+        metadata_sorted.sort("absolute_tilt");
+
+        projector.update_shifts(stack, metadata_sorted, thickness_um);
+
+        metadata_sorted.sort("tilt");
+        save_stack(stack, {}, metadata_sorted, output_directory / "aligned2.mrc");
+
+        panic();
+    }
 }

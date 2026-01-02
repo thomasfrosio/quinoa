@@ -14,8 +14,8 @@ namespace qn::ctf {
             m_patch_size(patch_size),
             m_patch_step(patch_step)
         {
-            const std::vector origins_along_y = patch_grid_1d_2(m_slice_shape[0], m_patch_size, m_patch_step);
-            const std::vector origins_along_x = patch_grid_1d_2(m_slice_shape[1], m_patch_size, m_patch_step);
+            const std::vector origins_along_y = patch_grid_1d_(m_slice_shape[0], m_patch_size, m_patch_step);
+            const std::vector origins_along_x = patch_grid_1d_(m_slice_shape[1], m_patch_size, m_patch_step);
 
             m_origins.reserve(origins_along_y.size() * origins_along_x.size());
             for (i64 y: origins_along_y)
@@ -60,7 +60,7 @@ namespace qn::ctf {
             return subregion_origins;
         }
 
-        [[nodiscard]] auto patch_z_offset(
+        [[nodiscard]] auto patch_z_offset2( // FIXME test before and after, then remove
             const Vec<f64, 3>& slice_angles, // radians
             const Vec<f64, 2>& slice_spacing, // angstrom
             const Vec<f64, 2>& patch_center
@@ -78,27 +78,27 @@ namespace qn::ctf {
             return patch_center_z_um;
         }
 
-    private:
-        static auto patch_grid_1d_(i64 grid_size, i64 patch_size, i64 patch_step) -> std::vector<i64> {
-            // Arange:
-            const auto max = grid_size - patch_size - 1;
-            std::vector<i64> patch_origin;
-            for (i64 i{}; i < max; i += patch_step)
-                patch_origin.push_back(i);
+        [[nodiscard]] auto patch_z_offset(
+            const Vec<f64, 3>& slice_angles, // radians
+            const Vec<f64, 2>& slice_spacing, // angstrom
+            const Vec<f64, 2>& patch_center
+        ) const -> f64 {
+            const auto plane_rotation = (
+                ng::rotate_z(slice_angles[0]) *
+                ng::rotate_y(slice_angles[1]) *
+                ng::rotate_x(slice_angles[2])
+            );
+            const auto& [c, b, a] = plane_rotation * Vec{1., 0., 0.};
 
-            if (patch_origin.empty())
-                return patch_origin;
-
-            // Center:
-            const i64 end = patch_origin.back() + patch_size;
-            const i64 offset = (grid_size - end) / 2;
-            for (auto& origin: patch_origin)
-                origin += offset;
-
-            return patch_origin;
+            const auto slice_center = (slice_shape() / 2).vec.as<f64>();
+            const auto scale = slice_spacing * 1e-4; // pixels->micrometers
+            const auto patch_center_um = (patch_center - slice_center) * scale;
+            const auto patch_center_z_um = -(a * patch_center_um[1] + b * patch_center_um[0]) / c;
+            return patch_center_z_um;
         }
 
-        static auto patch_grid_1d_2(i64 grid_size, i64 patch_size, i64 patch_step) -> std::vector<i64> {
+    private:
+        static auto patch_grid_1d_(i64 grid_size, i64 patch_size, i64 patch_step) -> std::vector<i64> {
             // Arange:
             const auto n_patches = noa::divide_up(grid_size, patch_step);
             std::vector<i64> patch_origin;
@@ -119,10 +119,10 @@ namespace qn::ctf {
         }
 
     private:
-        Shape<i64, 2> m_slice_shape;
-        i64 m_patch_size;
-        i64 m_patch_step;
-        std::vector<Vec<i64, 2>> m_origins;
-        std::vector<Vec<f64, 2>> m_centers;
+        Shape<i64, 2> m_slice_shape{};
+        i64 m_patch_size{};
+        i64 m_patch_step{};
+        std::vector<Vec<i64, 2>> m_origins{};
+        std::vector<Vec<f64, 2>> m_centers{};
     };
 }

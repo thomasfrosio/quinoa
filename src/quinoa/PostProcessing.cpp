@@ -159,7 +159,7 @@ namespace {
 
         Filterer(
             StackLoader& loader,
-            const MetadataStack& metadata
+            const Metadata::Stack& metadata
         ) {
             Logger::trace(
                 "Filtering:\n"
@@ -177,16 +177,16 @@ namespace {
                 loader.read_slice(buffer.view().subregion(i++), slice.index_file);
             loader.clear_cache(); // remove stack saved on the host
 
-            nf::r2c(buffer, buffer_rfft);
-            ns::filter_spectrum_2d<"h2h">(buffer_rfft, buffer_rfft, buffer.shape(), FilterImages{});
-            nf::c2r(buffer_rfft, buffer);
+            // nf::r2c(buffer, buffer_rfft);
+            // ns::filter_spectrum_2d<"h2h">(buffer_rfft, buffer_rfft, buffer.shape(), FilterImages{});
+            // nf::c2r(buffer_rfft, buffer);
 
             m_images_filtered = buffer;
         }
 
         Filterer(
             StackLoader& loader,
-            const MetadataStack& metadata,
+            const Metadata::Stack& metadata,
             const CTFIsotropic64& ctf,
             f64 volume_thickness_nm,
             f64 z_step_nm,
@@ -304,30 +304,30 @@ namespace {
                 Vec<f64, 2>::from_values(top_right_edge[0], top_right_edge[1]),
             };
 
-            // Projection matrix to get the z-height of image coordinates in volume space.
-            // Note that the image shifts should not be applied; the CTF fitting is done on
-            // tiles extracted from the original images/frames.
+            // Image plane coefficients to get the z-offset at image coordinate.
             const auto angles = noa::deg2rad(image_angles);
-            const auto z_projection = (
-                ng::scale(Vec<f64, 3>::from_value(spacing_nm)) *
-                ng::rotate_x(angles[2]) *
+            const auto plane_rotation = ( // TODO check
+                ng::rotate_z(angles[0]) *
                 ng::rotate_y(angles[1]) *
-                ng::rotate_z(angles[0])
-            )[0];
+                ng::rotate_x(angles[2])
+            );
+            const auto [c, b, a] = plane_rotation * Vec{1., 0., 0.};
 
             // Compute the z-range within the image.
             auto minmax = Vec<f64, 2>{}; // in nm
             const auto image_center = (image_shape.vec / 2).as<f64>();
             for (const auto& image_edge: image_edges) {
-                const auto z_distance_nm = noa::dot(z_projection, (image_edge - image_center).push_front(0));
+                const auto coordinates = image_edge - image_center;
+                const auto z_distance = -(b * coordinates[0] + a * coordinates[1]) / c;
+                const auto z_distance_nm = z_distance * spacing_nm;
                 minmax[0] = std::min(minmax[0], z_distance_nm);
                 minmax[1] = std::max(minmax[1], z_distance_nm);
             }
 
             // Get the corresponding z-strips for that image.
-            auto first_strip_nm = noa::round(minmax[0] / z_step_nm) * z_step_nm;
-            auto last_strip_nm = noa::round(minmax[1] / z_step_nm) * z_step_nm;
-            auto n_strips = (last_strip_nm - first_strip_nm) / z_step_nm + 1;
+            const auto first_strip_nm = noa::round(minmax[0] / z_step_nm) * z_step_nm;
+            const auto last_strip_nm = noa::round(minmax[1] / z_step_nm) * z_step_nm;
+            const auto n_strips = (last_strip_nm - first_strip_nm) / z_step_nm + 1;
             return {first_strip_nm, static_cast<i64>(std::round(n_strips))};
         }
 
@@ -339,8 +339,8 @@ namespace {
             size_t n_bytes_free
         ) -> Tuple<i64, i64, bool> {
             // The strategy is the following:
-            //  1. If GPU memory is low, try 2 chunks. This should be enough for most cases and decreases the overall
-            //     memory needed (host and device). The overhead is minimal.
+            //  1. If GPU memory is low, try 2 chunks. This should be enough for most cases and
+            //     decreases the overall memory needed (host and device). The overhead is minimal.
             //  2. If this is still not enough, keep spectra on the host.
             //  3. If this is still not enough, divide in more chunks.
             const auto images_shape = image_shape.push_front(Vec{n_images, i64{1}});
@@ -362,7 +362,8 @@ namespace {
                 if (n_chunks <= 2) {
                     base += images_padded_bytes;
                 } else {
-                    // Before trying to divide into 3 chunks, try moving the spectra back to the host.
+                    // Before trying to divide into 3 chunks,
+                    // try moving the spectra back to the host.
                     if (keep_spectra_on_device)
                         n_chunks = 2;
                     keep_spectra_on_device = false;
@@ -382,7 +383,7 @@ namespace {
             StackLoader& loader,
             const Shape<i64, 2>& image_shape,
             const Shape<i64, 2>& image_padded_shape,
-            const MetadataStack& metadata,
+            const Metadata::Stack& metadata,
             bool keep_spectra_on_device,
             i64 chunk_size
         ) {
@@ -476,11 +477,6 @@ namespace {
             const f64 z_offset_section_center_nm =
                 (m_z_step_nm * static_cast<f64>(z) + m_z_step_nm / 2) - m_volume_z_center_nm;
 
-            auto& stream = Stream::current(m_images_padded_rfft.device());
-            auto start = noa::Event{};
-            auto end = noa::Event{};
-            start.record(stream);
-
             for (auto& slice: *m_metadata) {
                 // Compute defocus-strips.
                 const auto [z_offset_start_nm, n_strips] = divide_image_in_z_strips(
@@ -538,15 +534,11 @@ namespace {
                 }
             }
 
-            end.record(stream);
-            end.synchronize();
-            Logger::trace("took = {}", noa::Event::elapsed(start, end));
-
             return m_images_filtered.view();
         }
 
     public:
-        const MetadataStack* m_metadata{};
+        const Metadata::Stack* m_metadata{};
         const CTFIsotropic64* m_ctf{};
         f64 m_z_step_nm{};
         f64 m_volume_z_center_nm{};
@@ -565,7 +557,7 @@ namespace {
         Reconstructor(
             const Shape<i64, 2>& image_shape,
             const Shape<i64, 3>& volume_shape,
-            const MetadataStack& metadata,
+            const Metadata::Stack& metadata,
             const Device& device,
             bool oversample,
             bool correct_rotation,
@@ -624,11 +616,11 @@ namespace {
             const auto volume_center = (volume_shape.vec / 2).as<f64>();
             const auto forward_projection_matrices = Array<Mat<f64, 2, 4>>(nt);
             const auto forward_projection_matrices_1d = forward_projection_matrices.span_1d();
-            for (auto&& [slice, forward_projection_matrix]: noa::zip(metadata, forward_projection_matrices_1d)) {
-                const auto angles = noa::deg2rad(slice.angles);
+            for (auto&& [image, forward_projection_matrix]: noa::zip(metadata, forward_projection_matrices_1d)) {
+                const auto angles = noa::deg2rad(image.angles);
                 const auto final_rotation = correct_rotation ? 0. : angles[0];
                 forward_projection_matrix = (
-                    ng::translate((image_center + slice.shifts).push_front(0)) *
+                    ng::translate((image_center + image.shifts).push_front(0)) *
                     ng::rotate_z<true>(angles[0]) *
                     ng::rotate_y<true>(angles[1]) *
                     ng::rotate_x<true>(angles[2]) *
@@ -874,11 +866,9 @@ namespace {
                         const auto dst = m_subvolume_row.view().subregion(ni::Ellipsis{}, ni::Slice{x * sx, x * sx + sx});
 
                         auto src = subvolume.subregion(ni::Ellipsis{}, ni::Slice{0, dst.shape()[2]}, ni::Slice{0, dst.shape()[3]});
-                        // Logger::trace("y={}, x={}, src={}, dst={}", y, x, src.shape(), dst.shape());
 
                         src.to(dst);
                     }
-                    // panic();
                     auto dst = z_section.subregion(ni::Ellipsis{}, ni::Slice{y * sy, y * sy + sy}, ni::Full{});
                     m_subvolume_row.view().subregion(ni::Ellipsis{}, ni::Slice{0, dst.shape()[2]}, ni::Full{}).to(dst);
                 }
@@ -910,7 +900,7 @@ namespace {
 
     void reconstruct_tomogram(
         StackLoader& stack,
-        const MetadataStack& metadata,
+        const Metadata& metadata,
         const Path& filename,
         const PostProcessingTomogramParameters& parameters
     ) {
@@ -921,9 +911,9 @@ namespace {
         auto ctf = ns::CTFIsotropic<f64>({
             .pixel_size = spacing,
             .defocus = 0.,
-            .voltage = parameters.voltage,
-            .amplitude = parameters.amplitude,
-            .cs = parameters.cs,
+            .voltage = metadata.sample.voltage,
+            .amplitude = metadata.sample.amplitude,
+            .cs = metadata.sample.cs,
             .phase_shift = 0,
             .bfactor = 0,
             .scale = 1.,
@@ -938,8 +928,8 @@ namespace {
         // Get volume thickness and number of z-sections (of size z_step).
         // To guarantee that the volume center is at the center of a z-section,
         // make the volume thickness an odd multiple of z_step.
-        const f64 sample_thickness = parameters.sample_thickness_nm / spacing_nm;
-        const f64 z_padding = parameters.sample_thickness_nm * parameters.z_padding_percent / spacing_nm;
+        const f64 sample_thickness = metadata.sample.thickness / spacing_nm;
+        const f64 z_padding = metadata.sample.thickness * parameters.z_padding_percent / spacing_nm;
         auto volume_thickness = static_cast<i64>(std::round(sample_thickness + z_padding));
         volume_thickness = noa::next_multiple_of(volume_thickness, z_step);
         if (noa::is_even(volume_thickness / z_step))
@@ -954,20 +944,19 @@ namespace {
             "  thickness={:.3f}nm (specimen={:.3f}nm, z_padding={:.1f}pix)\n"
             "  shape={}",
             spacing_nm * 10, spacing_nm * 20,
-            static_cast<f64>(volume_thickness) * spacing_nm, parameters.sample_thickness_nm, z_padding,
+            static_cast<f64>(volume_thickness) * spacing_nm, metadata.sample.thickness, z_padding,
             volume_shape
         );
 
         const auto device = stack.compute_device();
         const auto bytes_start = Allocator::bytes_currently_allocated(device);
 
-        // Filtering.
-        auto filterer = not parameters.correct_ctf ? Filterer(stack, metadata) : Filterer(
-            stack, metadata, ctf, volume_thickness_nm, z_step_nm,
+        auto filterer = not parameters.correct_ctf ? Filterer(stack, metadata.stack) : Filterer(
+            stack, metadata.stack, ctf, volume_thickness_nm, z_step_nm,
             parameters.phase_flip_strength
         );
         auto reconstructor = Reconstructor(
-            image_shape, volume_shape, metadata, device,
+            image_shape, volume_shape, metadata.stack, device,
             parameters.oversample, parameters.correct_rotation, parameters.interp,
             spacing_nm, z_step_nm
         );
@@ -999,7 +988,10 @@ namespace {
         }
 
         nf::clear_cache(device);
-        noa::write(volume, Vec<f64, 3>::from_value(spacing_nm * 10), filename, {.dtype = parameters.dtype});
+        noa::write_image(volume, filename, {
+            .spacing = Vec<f64, 3>::from_value(spacing_nm * 10),
+            .dtype = parameters.dtype,
+        });
         Logger::trace("{} saved", filename);
     }
 }
@@ -1007,7 +999,7 @@ namespace {
 namespace qn {
     void post_processing(
         const Path& input_stack,
-        const MetadataStack& metadata,
+        const Metadata& metadata,
         const PostProcessingParameters& parameters,
         const PostProcessingStackParameters& stack_parameters,
         const PostProcessingTomogramParameters& tomogram_parameters
@@ -1032,17 +1024,15 @@ namespace qn {
             .zero_pad_to_square_shape = false,
         });
 
-        // Rescale to new spacing and make sure images are sorted by their tilt angles.
-        auto postprocessing_metadata = metadata;
-        postprocessing_metadata.rescale_shifts(loader.file_spacing(), loader.stack_spacing());
-        postprocessing_metadata.sort("tilt");
-        postprocessing_metadata.reset_indices();
+        auto meta = metadata;
+        meta.set_spacing(loader.stack_spacing());
+        meta.stack.sort("tilt").reset_indices();
 
         const auto basename = input_stack.stem().string();
 
         if (stack_parameters.save_aligned_stack) {
-            const auto filename = parameters.output_directory / fmt::format("{}_aligned.mrc", basename);
-            save_stack(loader, filename, postprocessing_metadata, {
+            const auto filename = parameters.output_directory / fmt::format("{}_stack.mrc", basename);
+            save_stack(loader, filename, meta.stack, {
                 .correct_rotation = stack_parameters.correct_rotation,
                 .cache_loader = tomogram_parameters.save_tomogram,
                 .interp = stack_parameters.interp,
@@ -1053,7 +1043,7 @@ namespace qn {
 
         if (tomogram_parameters.save_tomogram) {
             const auto filename = parameters.output_directory / fmt::format("{}_tomogram.mrc", basename);
-            reconstruct_tomogram(loader, postprocessing_metadata, filename, tomogram_parameters);
+            reconstruct_tomogram(loader, meta, filename, tomogram_parameters);
         }
     }
 }

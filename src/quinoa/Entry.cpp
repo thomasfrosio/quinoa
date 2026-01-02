@@ -12,6 +12,12 @@
 #include "quinoa/Thickness.hpp"
 #include "quinoa/PostProcessing.hpp"
 
+#include "quinoa/Tests.hpp"
+
+auto process_tilt_series() {
+
+}
+
 auto main(int argc, char* argv[]) -> int {
     using namespace qn;
 
@@ -19,6 +25,13 @@ auto main(int argc, char* argv[]) -> int {
         // Initialize the logger before doing anything else.
         Logger::initialize();
         auto timer = Logger::status_scope_time("Main");
+
+        // Logger::set_level("trace");
+        // tests::test_stage_leveling();
+        // return 0;
+        Logger::set_level("trace");
+        tests::test_frc();
+        return 0;
 
         // Parse the settings.
         auto settings = Settings{};
@@ -28,34 +41,45 @@ auto main(int argc, char* argv[]) -> int {
         // Adjust global settings.
         Logger::add_logfile(settings.files.output_directory / "quinoa.log");
         Logger::set_level(settings.compute.log_level);
-        noa::Session::set_gpu_lazy_loading();
-        noa::Session::set_thread_limit(settings.compute.n_threads);
+        Session::set_gpu_lazy_loading();
+        Session::set_thread_limit(settings.compute.n_threads);
 
-        // Create a user-async stream for the GPU, but ensure that the CPU stream is synchronous.
+        // Create a user-async stream for the GPU and ensure that the CPU stream is synchronous.
         if (settings.compute.device.is_gpu())
-            noa::Stream::set_current(noa::Stream(settings.compute.device, noa::Stream::ASYNC));
-        noa::Stream::set_current(noa::Stream({}, noa::Stream::DEFAULT));
+            Stream::set_current(Stream(settings.compute.device, Stream::DEFAULT)); // FIXME ASYNC
+        Stream::set_current(Stream({}, Stream::SYNC));
+
+
 
         // Initialize the metadata early in case the parsing fails.
-        auto metadata = MetadataStack::load_from_settings(settings);
+        auto metadata = Metadata::load_from_settings(settings);
         const auto basename = settings.files.stack_file.stem().string();
 
+        // tests::test_ctf_grid();
+        // tests::simulate_tilt_series();
+        // tests::test_stage_leveling();
+        // tests::test_find_shifts();
+        // tests::test_star_file();
+        // tests::test_common_fov2();
+        // tests::test_image_cross_correlation();
+        tests::test_frc();
+        return 0;
+
         // Register the input stack. The application loads the input stack many times. To save computation,
-        // load the input (and unspoiled) stack once and save it inside a static array. The StackLoader will
-        // check for it when needed. This is optional as the user may want to save memory...
+        // load the stack to memory once and save it inside a static array. The StackLoader will
+        // check for it next time it needs it.
         // TODO By default, register only if file.is_compressed?
         if (settings.compute.register_stack)
             StackLoader::register_input_stack(settings.files.stack_file);
 
-        // Preprocessing.
         if (settings.preprocessing.run) {
             auto scope_timer = Logger::status_scope_time("Preprocessing");
 
             if (not settings.preprocessing.exclude_stack_indices.empty()) {
                 Logger::info("Excluding views: {}", settings.preprocessing.exclude_stack_indices);
-                metadata.exclude_if([&](const MetadataSlice& slice) {
+                metadata.stack.exclude_if([&](const auto& image) {
                     for (i64 e: settings.preprocessing.exclude_stack_indices)
-                        if (e == slice.index)
+                        if (e == image.index)
                             return true;
                     return false;
                 });
@@ -65,7 +89,7 @@ auto main(int argc, char* argv[]) -> int {
 
             if (settings.preprocessing.exclude_blank_views) {
                 detect_and_exclude_blank_views(
-                    settings.files.stack_file, metadata, {
+                    settings.files.stack_file, metadata.stack, {
                         .compute_device = settings.compute.device,
                         .output_directory = settings.files.output_directory,
                     });
@@ -73,49 +97,28 @@ auto main(int argc, char* argv[]) -> int {
         }
 
         // Alignment.
-        const bool has_user_rotation = not noa::allclose(
-            settings.experiment.tilt_axis,
-            std::numeric_limits<f64>::max()
-        );
         if (settings.alignment.coarse_run or settings.alignment.ctf_run or settings.alignment.refine_run) {
             auto scope_timer = Logger::status_scope_time("Alignment");
 
-            // 1. Coarse alignment:
-            //  - Find the shifts, using the pairwise cosine-stretching alignment.
-            //  - Find/refine the rotation offset, using the common-line method.
-            //  - Find the tilt offset, using a pairwise cosine-stretching alignment.
             if (settings.alignment.coarse_run) {
                 coarse_alignment(
-                    settings.files.stack_file,
-                    metadata, // updated: .angles, .shifts
-                    {
+                    settings.files.stack_file, metadata, {
                         .compute_device = settings.compute.device,
                         .maximum_resolution = 12.,
+                        .check_rotation = settings.alignment.coarse_check_rotation,
                         .fit_rotation_offset = settings.alignment.coarse_fit_rotation,
                         .fit_tilt_offset = settings.alignment.coarse_fit_tilt,
                         .fit_pitch_offset = settings.alignment.coarse_fit_pitch,
-                        .has_user_rotation = has_user_rotation,
                         .output_directory = settings.files.output_directory,
                     }
                 );
             }
 
-            // 2. CTF alignment:
-            //  - Coarse: per-slice defocus, one average phase-shift.
-            //  - Refine: stage angles, per-slice defocus, tilt-resolved astigmatism and time-resolved phase shift.
             if (settings.alignment.ctf_run) {
                 ctf_alignment(
-                    settings.files.stack_file,
-                    metadata, // updated: .angles[1, 2], .shifts, .defocus, .phase_shift
-                    {
+                    settings.files.stack_file, metadata, {
                         .compute_device = settings.compute.device,
                         .output_directory = settings.files.output_directory,
-
-                        .voltage = settings.experiment.voltage,
-                        .cs = settings.experiment.cs,
-                        .amplitude = settings.experiment.amplitude,
-                        .phase_shift = settings.experiment.phase_shift,
-                        .thickness = settings.experiment.thickness,
 
                         .patch_size_ang = 680,
                         .n_images_in_initial_average = 3,
@@ -123,39 +126,31 @@ auto main(int argc, char* argv[]) -> int {
                         .fit_phase_shift = settings.alignment.ctf_fit_phase_shift,
                         .fit_astigmatism = settings.alignment.ctf_fit_astigmatism,
                         .fit_thickness = settings.alignment.ctf_fit_thickness,
+                        .check_rotation = settings.alignment.ctf_check_rotation,
 
-                        // Coarse:
-                        .has_user_rotation = has_user_rotation,
-
-                        // Refine:
-                        .fit_rotation = settings.alignment.ctf_fit_rotation, // false, // common-lines are more accurate
+                        .fit_rotation = settings.alignment.ctf_fit_rotation,
                         .fit_tilt = settings.alignment.ctf_fit_tilt,
                         .fit_pitch = settings.alignment.ctf_fit_pitch,
                     }
                 );
             }
 
-            // 3. Refine alignment.
-            //  - The sample thickness is estimated (which requires a horizontal specimen).
             if (settings.alignment.refine_run) {
-                settings.experiment.thickness = estimate_sample_thickness(
-                    settings.files.stack_file,
-                    metadata, // updated: .shifts
-                    {
-                        .resolution = 24,
+                refine_alignment(
+                    settings.files.stack_file, metadata, {
                         .compute_device = settings.compute.device,
-                        .allocator = Allocator::DEFAULT,
-                        .output_directory = settings.files.output_directory
-                    });
-
-                // TODO Add projection-matching
+                        .maximum_resolution = 12.,
+                        .fit_rotation_offset = settings.alignment.coarse_fit_rotation,
+                        .fit_tilt_offset = settings.alignment.coarse_fit_tilt,
+                        .output_directory = settings.files.output_directory,
+                    }
+                );
             }
 
             // Save the metadata.
-            const auto csv_filename = settings.files.output_directory / fmt::format("{}_aligned.csv", basename);
-            const auto input_file = noa::io::ImageFile(settings.files.stack_file, {.read = true});
-            metadata.save_csv(csv_filename, input_file.shape().pop_front<2>(), input_file.spacing().pop_front());
-            Logger::info("{} saved", csv_filename);
+            const auto star_filename = settings.files.output_directory / fmt::format("{}.star", basename);
+            metadata.save_star(star_filename);
+            Logger::info("{} saved", star_filename);
         }
 
         // Postprocessing.
@@ -176,11 +171,7 @@ auto main(int argc, char* argv[]) -> int {
                     .save_tomogram = settings.postprocessing.tomogram_run,
                     .correct_ctf = settings.postprocessing.tomogram_correct_ctf,
                     .phase_flip_strength = settings.postprocessing.tomogram_phase_flip_strength,
-                    .voltage = settings.experiment.voltage,
-                    .amplitude = settings.experiment.amplitude,
-                    .cs = settings.experiment.cs,
                     .defocus_step_nm = 15,
-                    .sample_thickness_nm = settings.experiment.thickness,
                     .z_padding_percent = settings.postprocessing.tomogram_z_padding_percent / 100,
                     .correct_rotation = settings.postprocessing.tomogram_correct_rotation,
                     .oversample = settings.postprocessing.tomogram_oversample,

@@ -8,10 +8,10 @@ namespace qn {
     struct CoarseAlignmentParameters {
         Device compute_device;
         f64 maximum_resolution;
+        bool check_rotation;
         bool fit_rotation_offset;
         bool fit_tilt_offset;
         bool fit_pitch_offset;
-        bool has_user_rotation;
         Path output_directory;
     };
 
@@ -19,21 +19,13 @@ namespace qn {
         Device compute_device;
         Path output_directory;
 
-        f64 voltage;
-        f64 cs;
-        f64 amplitude;
-        f64 phase_shift;
-        f64 thickness;
-
         f64 patch_size_ang;
         i64 n_images_in_initial_average;
         Vec<f64, 2> resolution_range;
         bool fit_phase_shift;
         bool fit_astigmatism;
         bool fit_thickness;
-
-        // Coarse:
-        bool has_user_rotation;
+        bool check_rotation;
 
         // Refine:
         bool fit_rotation;
@@ -41,15 +33,29 @@ namespace qn {
         bool fit_pitch;
     };
 
-    auto coarse_alignment(
-        const Path& stack_filename,
-        MetadataStack& metadata,
-        const CoarseAlignmentParameters& parameters
-    ) -> f64;
+    struct RefineAlignmentParameters {
+        Device compute_device;
+        f64 maximum_resolution;
+        bool fit_rotation_offset;
+        bool fit_tilt_offset;
+        Path output_directory;
+    };
 
-    auto ctf_alignment(
+    void coarse_alignment(
         const Path& stack_filename,
-        MetadataStack& metadata,
+        Metadata& metadata,
+        const CoarseAlignmentParameters& parameters
+    );
+
+    void ctf_alignment(
+        const Path& stack_filename,
+        Metadata& metadata,
         const CTFAlignmentParameters& parameters
-    ) -> ns::CTFIsotropic<f64>;
+    );
+
+    void refine_alignment(
+        const Path& stack_filename,
+        Metadata& metadata,
+        const RefineAlignmentParameters& parameters
+    );
 }

@@ -2,6 +2,8 @@
 #include <noa/Geometry.hpp>
 
 #include "quinoa/Thickness.hpp"
+
+#include "CommonFOV.hpp"
 #include "quinoa/Plot.hpp"
 #include "quinoa/Stack.hpp"
 
@@ -11,6 +13,7 @@ namespace {
     /// Index-wise reduction operator sampling the backprojected tomogram.
     struct TomogramVariance {
     public:
+        static constexpr f32 CYLINDER_FRACTION = 0.49f;
         static constexpr auto INTERP = noa::Interp::LINEAR;
         static constexpr auto BORDER = noa::Border::ZERO;
         using input_span_t = SpanContiguous<const f32, 3>;
@@ -21,24 +24,41 @@ namespace {
         interpolator_t images{}; // (n,h,w)
         matrices_span_t projection_matrices{}; // (n)
         f64 n_elements_per_image{};
-        // SpanContiguous<f32, 3> tomogram{};
+        SpanContiguous<f32, 3> tomo{}; // FIXME
+
+        Vec<f32, 2> offset;
+        // Vec<f32, 2> center;
+        // Vec<f32, 2> norm;
 
     public:
         [[nodiscard]] constexpr auto backproject(const Vec<i32, 3>& indices) const -> f32 {
-            const auto volume_coordinates = indices.as<f32>().push_back(1);
+            auto volume_coordinates = indices.as<f32>().push_back(1);
+            volume_coordinates[1] += offset[0];
+            volume_coordinates[2] += offset[1];
             f32 value{};
             for (i64 i{}; i < projection_matrices.ssize(); ++i) {
                 const auto image_coordinates = projection_matrices[i] * volume_coordinates;
                 value += images.interpolate_at(image_coordinates, i);
             }
-            // tomogram(indices) = value;
             return value;
         }
 
+        // TODO On top of masking, crop the compute grid.
+        // [[nodiscard]] constexpr auto is_within_cylinder_mask(const Vec<i32, 3>& indices) const -> bool {
+        //     const auto centered_indices_2d = (indices.pop_front().as<f32>() - center) * norm;
+        //     const auto distance_from_center = dot(centered_indices_2d, centered_indices_2d);
+        //     return distance_from_center <= (CYLINDER_FRACTION * CYLINDER_FRACTION);
+        // }
+
         constexpr void init(const Vec<i32, 3>& indices, f32& sum, f32& sum_sqd) const {
-            const auto v = backproject(indices);
-            sum += v;
-            sum_sqd += v * v;
+            f32 value{};
+            // if (is_within_cylinder_mask(indices))
+                value = backproject(indices);
+
+            tomo(indices) = value; // FIXME
+
+            sum += value;
+            sum_sqd += value * value;
         }
 
         static constexpr void join(const f32& isum, const f32& isum_sqd, f32& sum, f32& sum_sqd) {
@@ -52,53 +72,55 @@ namespace {
             variance = static_cast<f64>(sum_sqd) / n_elements_per_image - noa::abs_squared(mean);
         }
     };
-}
 
-namespace qn {
-    auto estimate_sample_thickness(
-        const Path& stack_filename,
-        MetadataStack& metadata,
-        const EstimateSampleThicknessParameters& parameters
-    ) -> f64 {
-        auto timer = Logger::info_scope_time("Thickness estimation");
+    void subtract_background(
+        const View<const f64>& input,
+        const View<f64>& output,
+        const Path& output_directory
+    ) {
+        check(not ni::are_overlapped(input, output));
 
-        auto stack_loader = StackLoader(stack_filename, {
-            .compute_device = parameters.compute_device,
-            .allocator = parameters.allocator,
-            .precise_cutoff = true, // enforce isotropic spacing
-            .rescale_target_resolution = parameters.resolution,
-            .rescale_min_size = 512,
-            .rescale_max_size = 1024,
-            .bandpass{
-                .highpass_cutoff = 0.02,
-                .highpass_width = 0.02,
-                .lowpass_cutoff = 0.49,
-                .lowpass_width = 0.01,
-            },
-            .bandpass_mirror_padding_factor = 0.5,
-            .normalize_and_standardize = true,
-            .smooth_edge_percent = 0.03,
-            .zero_pad_to_fast_fft_shape = false,
-            .zero_pad_to_square_shape = false,
+        // Compute the baseline.
+        constexpr auto SMOOTHING = GaussianSlider{
+            .peak_coordinate = 0.5,
+            .peak_value = 70'000,
+            .base_width = 0.25,
+            .base_value = 20'000,
+        };
+        asymmetric_least_squares_smoothing(input.span_1d(), output.span_1d(), {
+            .smoothing = SMOOTHING, .asymmetric_penalty = 0.0001, .relaxation = 0.8
         });
+        save_plot_xy({}, output, output_directory / "thickness_profile.txt", {.label = "baseline"});
 
-        const f64 stack_spacing_nm = 1e-1 * noa::mean(stack_loader.stack_spacing());
-        const f64 file_spacing_nm = 1e-1 * noa::mean(stack_loader.file_spacing());
-        auto rescaled_metadata = metadata;
-        rescaled_metadata.rescale_shifts(stack_loader.file_spacing(), stack_loader.stack_spacing());
+        // Subtract the baseline.
+        for (auto&& [in, out]: noa::zip(input.span_1d(), output.span_1d()))
+            out = in - out;
+        noa::normalize(output, output, {.mode = noa::Norm::MIN_MAX});
+        save_plot_xy({}, output, output_directory / "thickness_profile_bs.txt", {
+            .title = "Baseline-subtracted variance of each z-slice of the tomogram",
+            .x_name = "depth (in pixels)",
+            .y_name = "variance - baseline",
+        });
+    }
 
-        const auto input_images = stack_loader.read_stack(metadata);
+    auto estimate(
+        const View<f32>& input_images,
+        const Metadata::Stack& metadata,
+        f64 spacing_nm,
+        const Path& output_directory
+    ) {
         const auto n_images = input_images.shape()[0];
         const auto image_shape = input_images.shape().filter(2, 3);
 
         // Compute the volume depth.
         // 1. The backward projection can only reconstruct within a sphere of image_min_size diameter.
-        //    While the specimen is likely much thinner than this, this is our ultimate limit.
+        //    While the specimen is likely much thinner than this, this is our theoretical thickness limit.
         // 2. The actual limit is 500 nm (technically the algorithm can go above this), but we reconstruct
         //    at least twice as much to include the background from the backward-projection so that it can
-        //    be detected more easily (see below). This is also necessary in case the specimen is offset in Z.
+        //    be detected more easily (see baseline fitting below). This is also necessary in case the
+        //    specimen is offset in Z.
         const auto image_min_size = static_cast<f64>(noa::min(image_shape));
-        const auto maximum_specimen_thickness = std::min(500. / stack_spacing_nm, image_min_size);
+        const auto maximum_specimen_thickness = std::min(500. / spacing_nm, image_min_size);
         const auto volume_depth = static_cast<i64>(std::round(maximum_specimen_thickness * 3));
 
         const auto volume_shape = Shape{volume_depth, image_shape[0], image_shape[1]};
@@ -106,71 +128,64 @@ namespace qn {
         const auto volume_center = (volume_shape.vec / 2).as<f64>();
         const auto options = ArrayOption{.device = input_images.device(), .allocator = Allocator::MANAGED};
 
-        // TODO exclude edges? Like 10% crop.
-
         // Compute the projection matrices.
-        auto matrices = Array<Mat<f32, 2, 4>>(n_images, options);
-        for (auto&& [slice, matrix]: noa::zip(rescaled_metadata, matrices.span_1d())) {
-            auto angles = noa::deg2rad(slice.angles);
+        const auto matrices = Array<Mat<f32, 2, 4>>(n_images, options);
+        for (auto&& [image, matrix]: noa::zip(metadata, matrices.span_1d())) {
+            const auto angles = noa::deg2rad(image.angles);
             matrix = ( // (image->volume).inverse()
-                ng::translate(volume_center) * //  + Vec{0., 0., 40.}
+                ng::translate(volume_center) *
                 ng::rotate_z<true>(+angles[0]) *
                 ng::rotate_x<true>(-angles[2]) *
                 ng::rotate_y<true>(-angles[1]) *
                 ng::rotate_z<true>(-angles[0]) *
-                ng::translate(-(image_center + slice.shifts).push_front(0))
+                ng::translate(-(image_center + image.shifts).push_front(0))
             ).inverse().filter_rows(1, 2).as<f32>(); // (y, x)
         }
 
-        Logger::trace("Computing the variance each z-slice in the tomogram");
+        Logger::trace("Computing the variance each z-slice in the (virtual) tomogram");
+
         auto variances = noa::Array<f64>(volume_depth, options);
-        auto tomogram = noa::Array<f32>(volume_shape.push_front(1), options);
+        auto variances_bs = noa::like(variances);
+        auto debug_tomogram = noa::Array<f32>(volume_shape.push_front(1), options); // FIXME
+
         noa::reduce_axes_iwise( // (d,h,w) -> (d)
             volume_shape.as<i32>(), input_images.device(), noa::wrap(f32{0}, f32{0}), variances.flat(1),
-            TomogramVariance{
-                .images = TomogramVariance::interpolator_t(input_images.span().filter(0, 2, 3).as_contiguous(), image_shape),
-                .projection_matrices = matrices.span_1d(),
-                .n_elements_per_image = static_cast<f64>(image_shape.n_elements()),
-                // .tomogram = tomogram.span().filter(1, 2, 3).as_contiguous(), // FIXME
-            });
+                TomogramVariance{
+                    .images = TomogramVariance::interpolator_t(input_images.span().filter(0, 2, 3).as_contiguous(), image_shape),
+                    .projection_matrices = matrices.span_1d(),
+                    .n_elements_per_image = static_cast<f64>(image_shape.n_elements()),
+                    .tomo = debug_tomogram.span_contiguous<f32, 3>(),  // FIXME
+                });
+
+        auto tmp = noa::like(debug_tomogram);
+        auto kernel = ns::window_gaussian<f32>(11, 2, {.normalize = true}).to(tmp.options());
+        Logger::trace("kernel={::.3f}", kernel.span_1d());
+        ns::median_filter_2d(debug_tomogram, tmp, {.window_size = 11});
+        ns::convolve_separable(tmp, debug_tomogram, kernel, kernel, kernel, {}, {.border = noa::Border::ZERO});
+
+        noa::write_image(debug_tomogram, output_directory / "tomogram.mrc", {.dtype = "f16"}); // FIXME
+        noa::write_image(variances, output_directory / "variances.mrc"); // FIXME
+        panic();
+
+        // variances = noa::read_image<f64>(output_directory / "variances.mrc").data;
+
         variances = variances.reinterpret_as_cpu();
         noa::normalize(variances, variances, {.mode = noa::Norm::MIN_MAX});
-        save_plot_xy({}, variances.eval(), parameters.output_directory / "thickness_profile.txt", {
+        save_plot_xy({}, variances.eval(), output_directory / "thickness_profile.txt", {
             .title = "Variance of each z-slice of the tomogram",
             .x_name = "depth (in pixels)",
             .y_name = "variance",
             .label = "variance",
         });
 
-        // noa::write(tomogram, parameters.output_directory / "tomogram.mrc"); // FIXME
-
-        // Compute the baseline. As we get closer to the sample, the variance should progressively increase.
-        auto baseline = noa::like<f64>(variances);
-        constexpr auto SMOOTHING = GaussianSlider{
-            .peak_coordinate = 0.5,
-            .peak_value = 70'000,
-            .base_width = 0.25,
-            .base_value = 10'000,
-        };
-        asymmetric_least_squares_smoothing(variances.span_1d().as_const(), baseline.span_1d(), {
-            .smoothing = SMOOTHING, .asymmetric_penalty = 0.0001, .relaxation = 0.8
-        });
-        save_plot_xy({}, baseline, parameters.output_directory / "thickness_profile.txt", {.label = "baseline"});
-
-        // Subtract the baseline.
-        for (auto&& [v, b]: noa::zip(variances.span_1d(), baseline.span_1d()))
-            v -= b;
-        noa::normalize(variances, variances, {.mode = noa::Norm::MIN_MAX});
-        save_plot_xy({}, variances, parameters.output_directory / "thickness_profile_bs.txt", {
-            .title = "Baseline-subtracted variance of each z-slice of the tomogram",
-            .x_name = "depth (in pixels)",
-            .y_name = "variance - baseline",
-        });
+        // panic();
+        subtract_background(variances.view(), variances_bs.view(), output_directory);
 
         // Find the threshold between background noise and signal.
         const auto threshold = [&] {
-            f64 median = noa::median(variances);
-            f64 sum{}, sum_squares{};
+            const f64 median = noa::median(variances);
+            f64 sum{};
+            f64 sum_squares{};
             i64 count{};
             for (const auto& e: variances.span_1d()) {
                 if (e < median) {
@@ -191,6 +206,8 @@ namespace qn {
             // worked well, the background mean and variance should be close to zero. If not, we may want to add a
             // recovery loop to increase the smoothing of the baseline. However, I have never seen it fail, so for
             // now just give a warning.
+            // TODO If the background isn't close to zero, it could mean the baseline was too rigid and didn't follow
+            //      the data enough. So redo with a stronger smoothing. detect for threshold at 0.5 even.
             if (background_mean > 0.1 and background_stddev > 0.1) {
                 Logger::warn(
                     "Thickness background estimate is likely wrong. Please check and/or report this issue!\n"
@@ -200,13 +217,14 @@ namespace qn {
             }
             return signal_threshold;
         }();
+        panic();
 
         // Find the specimen window.
         const auto specimen_window = [&] {
-            const i64 smallest_window_size = static_cast<i64>(30 / stack_spacing_nm); // 0.03um
-            const i64 maximum_distance_between_windows = static_cast<i64>(50 / stack_spacing_nm);
-            const i64 biggest_window_size = static_cast<i64>(550 / stack_spacing_nm); // 0.03um
-            const i64 maximum_distance_from_center = static_cast<i64>(100 / stack_spacing_nm); // 0.1um
+            const i64 smallest_window_size = static_cast<i64>(30 / spacing_nm); // 0.03um
+            const i64 maximum_distance_between_windows = static_cast<i64>(50 / spacing_nm);
+            const i64 biggest_window_size = static_cast<i64>(550 / spacing_nm); // 0.03um
+            const i64 maximum_distance_from_center = static_cast<i64>(100 / spacing_nm); // 0.1um
 
             // First, collect the regions above the threshold.
             bool is_within_window{};
@@ -227,6 +245,7 @@ namespace qn {
             check(not possible_windows.empty(), "No possible windows found. Please report this issue");
 
             // Then, fuse windows that are close to each other.
+            // TODO
             for (size_t i{}; i < possible_windows.size() - 1; ++i) {
                 const i64 distance = possible_windows[i + 1][0] - possible_windows[i][1];
                 if (distance <= maximum_distance_between_windows) {
@@ -236,6 +255,7 @@ namespace qn {
             }
             std::erase_if(possible_windows, [](const auto& window) { return window[0] == -1; });
             Logger::trace("possible_windows={} (after fuse)", possible_windows);
+
 
             // Sanitize based on size and distance from the center.
             const i64 center = variances.ssize() / 2;
@@ -255,7 +275,11 @@ namespace qn {
                 "Since we can't really tell what is going on, it is best to stop here"
             );
 
-            // Get the largest window.
+            // TODO If sizes are within 25% of each other, select based on highest average variance?
+            //      and/or select based on how close from the current center we are! windows far from the center
+            //      are likely to be dust
+
+            // Get the largest and most centered window.
             auto best_window = Vec<i64, 2>{};
             for (const auto& window: possible_windows) {
                 const auto window_size = window[1] - window[0];
@@ -271,10 +295,10 @@ namespace qn {
         // Center on the specimen window.
         // TODO For the CTF correction, it may be better to center on the COM.
         const i64 specimen_window_size = specimen_window[1] - specimen_window[0];
-        const f64 specimen_window_size_nm = static_cast<f64>(specimen_window_size) * stack_spacing_nm;
+        const f64 specimen_window_size_nm = static_cast<f64>(specimen_window_size) * spacing_nm;
         const i64 specimen_window_center = specimen_window[0] + specimen_window_size / 2;
         const i64 specimen_offset_from_center = variances.ssize() / 2 - specimen_window_center; // FIXME
-        const f64 specimen_offset_from_center_nm = static_cast<f64>(specimen_offset_from_center) * stack_spacing_nm;
+        const f64 specimen_offset_from_center_nm = static_cast<f64>(specimen_offset_from_center) * spacing_nm;
         Logger::info(
             "specimen_window_size={} ({:.2f}nm)\n"
             "specimen_offset_from_center={} ({:.2f}nm)",
@@ -282,10 +306,77 @@ namespace qn {
             specimen_offset_from_center, specimen_offset_from_center_nm
         );
 
-        // Adjust the shifts to move the specimen to the tomogram center.
-        const f64 z_offset = specimen_offset_from_center_nm / file_spacing_nm;
-        metadata.add_volume_shift({-z_offset, 0., 0.});
+        return Pair{specimen_window_size_nm, specimen_offset_from_center_nm};
+    }
+}
 
+namespace qn {
+    auto estimate_sample_thickness(
+        const View<f32>& stack,
+        Metadata& metadata,
+        const EstimateSampleThicknessOptions& options
+    ) -> f64 {
+        auto timer = Logger::info_scope_time("Thickness estimation");
+
+        const auto spacing_nm = mean(metadata.spacing) * 1e-1;
+        const auto [specimen_window_size_nm, specimen_offset_from_center_nm] = estimate(
+            stack, metadata.stack, spacing_nm, options.output_directory
+        );
+
+        // Adjust the shifts to move the specimen to the tomogram center.
+        metadata.stack.add_volume_shift({-specimen_offset_from_center_nm * 1e1, 0., 0.});
+
+        metadata.sample.thickness = specimen_window_size_nm;
+        return specimen_window_size_nm;
+    }
+
+    auto estimate_sample_thickness(
+        const Path& stack_filename,
+        Metadata& metadata,
+        const EstimateSampleThicknessFromFileOptions& options
+    ) -> f64 {
+        auto timer = Logger::info_scope_time("Thickness estimation");
+
+        auto stack_loader = StackLoader(stack_filename, {
+            .compute_device = options.device,
+            .allocator = options.allocator,
+            .precise_cutoff = true, // enforce isotropic spacing
+            .rescale_target_resolution = options.resolution,
+            .rescale_min_size = 512,
+            .rescale_max_size = 1024,
+            .bandpass{
+                .highpass_cutoff = 0.1,
+                .highpass_width = 0.1,
+                .lowpass_cutoff = 0.49,
+                .lowpass_width = 0.01,
+            },
+            .bandpass_mirror_padding_factor = 0.5,
+            .normalize_and_standardize = true,
+            .smooth_edge_percent = 0.2,
+            .zero_pad_to_fast_fft_shape = false,
+            .zero_pad_to_square_shape = false,
+        });
+        //
+        const auto input_images = stack_loader.read_stack(metadata.stack);
+        const auto stack_spacing_nm = 1e-1 * noa::mean(stack_loader.stack_spacing());
+        //
+        const auto original_spacing = metadata.spacing;
+        metadata.set_spacing(stack_loader.stack_spacing());
+
+        save_stack(input_images.view(), metadata.spacing, metadata.stack, options.output_directory / "input_stack.mrc");
+
+        // auto input_images = noa::read_image<f32>(options.output_directory / "input_stack.mrc").data;
+        // auto stack_spacing_nm = 1.2;
+        // metadata.set_spacing(12.);
+        // const auto original_spacing = metadata.spacing;
+        const auto [specimen_window_size_nm, specimen_offset_from_center_nm] = estimate(
+            input_images.view(), metadata.stack, stack_spacing_nm, options.output_directory
+        );
+
+        // Adjust the shifts to move the specimen to the tomogram center.
+        metadata.stack.add_volume_shift({-specimen_offset_from_center_nm * 1e1, 0., 0.});
+
+        metadata.set_spacing(original_spacing);
         return specimen_window_size_nm;
     }
 

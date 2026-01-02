@@ -155,27 +155,30 @@ namespace qn::ctf {
         bool fit_phase_shift{};
         Path output_directory{};
     };
+    struct FitInitialResults {
+        f64 defocus;
+        f64 phase_shift;
+        Vec<f64, 2> fitting_range;
+    };
     auto initial_fit(
+        const Metadata& metadata,
         const Grid& grid,
         const Patches& patches,
-        const MetadataStack& metadata,
-        ns::CTFIsotropic<f64>& ctf, // .defocus and .phase_shift
         const FitInitialOptions& options
-    ) -> Vec<f64, 2>;
+    ) -> FitInitialResults;
 
     struct FitCoarseOptions {
         Vec<f64, 2> initial_fitting_range;
         bool exclude_bad_images{};
-        bool first_image_has_higher_exposure;
+        bool first_image_has_higher_exposure{};
         bool fit_phase_shift{};
-        bool has_user_rotation;
+        bool check_rotation{};
         Path output_directory{};
     };
     void coarse_fit(
+        Metadata& metadata,
         const Grid& grid,
-        Patches patches, // images can be removed
-        ns::CTFIsotropic<f64>& ctf, // .defocus (and .phase_shift) updated
-        MetadataStack& metadata, // images can be removed, .defocus (and .phase_shift) updated, angles[0] may be flipped
+        const Patches& patches,
         const FitCoarseOptions& options
     );
 
@@ -185,14 +188,12 @@ namespace qn::ctf {
         bool fit_pitch{};
         bool fit_phase_shift{};
         bool fit_astigmatism{};
-        f64 thickness{};
         Path output_directory{};
     };
     void refine_fit(
-        MetadataStack& metadata,
+        Metadata& metadata,
         const Grid& grid,
         const Patches& patches,
-        ns::CTFIsotropic<f64>& isotropic_ctf,
         const FitRefineOptions& fit
     );
 }

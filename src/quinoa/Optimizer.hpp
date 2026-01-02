@@ -25,11 +25,12 @@
 
 namespace qn {
     /// Thin wrapper of the NLopt library.
-    /// \note I prefer to use the C API over the C++ API because:
-    ///       1) The C++ API throws exceptions if the optimization failed.
-    ///       2) It is incomplete (e.g. result_to_string doesn't exist).
-    ///       3) It uses std::vector but in our case, a std::array would be more appropriate.
-    struct Optimizer {
+    class Optimizer {
+    public:
+        using functor_type = std::function<f64(u32, const f64*, f64*)>;
+
+    public:
+        Optimizer() = default;
         Optimizer(nlopt_algorithm algorithm, i64 n_variables) {
             pointer = nlopt_create(algorithm, noa::safe_cast<u32>(n_variables));
             check(pointer != nullptr, "Failed to create the optimizer");
@@ -54,13 +55,25 @@ namespace qn {
             check(result >= 0, "Failed to set the maximum number of evaluations");
         }
 
-        void set_max_objective(nlopt_func function, void* data = nullptr) const {
+        void set_max_objective(nlopt_func function, void* data) const {
             const nlopt_result result = nlopt_set_max_objective(pointer, function, data);
+            check(result >= 0, "Failed with status: {}", nlopt_result_to_string(result));
+        }
+        template<std::convertible_to<functor_type> T>
+        void set_max_objective(T&& function) {
+            functor = std::forward<T>(function);
+            const nlopt_result result = nlopt_set_max_objective(pointer, eval_, this);
             check(result >= 0, "Failed with status: {}", nlopt_result_to_string(result));
         }
 
         void set_min_objective(nlopt_func function, void* data = nullptr) const {
             const nlopt_result result = nlopt_set_min_objective(pointer, function, data);
+            check(result >= 0, "Failed with status: {}", nlopt_result_to_string(result));
+        }
+        template<std::convertible_to<functor_type> T>
+        void set_min_objective(T&& function) {
+            functor = std::forward<T>(function);
+            const nlopt_result result = nlopt_set_min_objective(pointer, eval_, this);
             check(result >= 0, "Failed with status: {}", nlopt_result_to_string(result));
         }
 
@@ -78,6 +91,19 @@ namespace qn {
             check(result >= 0, "Failed with status: {}", nlopt_result_to_string(result));
         }
 
+        template<nt::almost_same_as<Vec<f64, 2>>... T>
+        void set_bounds(T&&... ranges) {
+            buffer.clear();
+            (buffer.push_back(ranges[0]), ...);
+            nlopt_result result = nlopt_set_lower_bounds(pointer, buffer.data());
+            check(result >= 0, "Failed with status: {}", nlopt_result_to_string(result));
+
+            buffer.clear();
+            (buffer.push_back(ranges[1]), ...);
+            result = nlopt_set_upper_bounds(pointer, buffer.data());
+            check(result >= 0, "Failed with status: {}", nlopt_result_to_string(result));
+        }
+
         void set_initial_step(f64 dx) const {
             const nlopt_result result = nlopt_set_initial_step1(pointer, dx);
             check(result >= 0, "Failed with status: {}", nlopt_result_to_string(result));
@@ -90,6 +116,14 @@ namespace qn {
 
         void set_x_tolerance_abs(const f64* tolerance) const {
             const nlopt_result result = nlopt_set_xtol_abs(pointer, tolerance);
+            check(result >= 0, "Failed with status: {}", nlopt_result_to_string(result));
+        }
+
+        template<nt::same_as<f64>... T> requires (sizeof...(T) > 1)
+        void set_x_tolerance_abs(T&&... tolerances) {
+            buffer.clear();
+            (buffer.push_back(tolerances), ...);
+            const nlopt_result result = nlopt_set_xtol_abs(pointer, buffer.data());
             check(result >= 0, "Failed with status: {}", nlopt_result_to_string(result));
         }
 
@@ -124,7 +158,14 @@ namespace qn {
         }
 
     private:
+        static auto eval_(u32 n, const f64* p, f64* g, void* buffer) -> f64{
+            return static_cast<Optimizer*>(buffer)->functor(n, p, g);
+        }
+
+    private:
         nlopt_opt pointer;
+        std::vector<f64> buffer; // TODO C++26 inplace_vector
+        functor_type functor;
     };
 
     /// Memoize optimization steps, to save computation.

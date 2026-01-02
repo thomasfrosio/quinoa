@@ -21,7 +21,7 @@ namespace qn {
         ParallelogramMask(const vec_type& a, const vec_type& b, const vec_type& d, value_type smoothness) {
             const auto u = d - a;
             const auto v = b - a;
-            world2local = mat_type::from_rows(u, v).inverse();
+            world2local = mat_type::from_columns(u, v).inverse();
             local_smoothness[0] = smoothness / noa::norm(u);
             local_smoothness[1] = smoothness / noa::norm(v);
             origin = a;
@@ -87,21 +87,36 @@ namespace qn {
         /// Adds the shift offset to the mask.
         /// If true, the mask should be applied on the unaligned images.
         bool add_shifts{true};
+
+        /// Add the effect of the tilt and pitch to the mask.
+        bool add_tilt_and_pitch{true};
     };
 
     class CommonFOV {
     public:
         CommonFOV() = default;
+
+        /// Initializes with the full FOV.
+        explicit CommonFOV(const Shape<i64, 2>& shape) {
+            set_geometry(shape);
+        }
+
         CommonFOV(
             const Shape<i64, 2>& shape,
-            const MetadataStack& metadata
+            const Metadata::Stack& metadata
         ) {
             set_geometry(shape, metadata);
         }
 
+        void set_geometry(const Shape<i64, 2>& shape) {
+            m_shape = shape;
+            m_common_area_radius = shape.vec.as<f64>() / 2;
+            m_common_area_center = m_common_area_radius;
+        }
+
         void set_geometry(
             const Shape<i64, 2>& shape,
-            const MetadataStack& metadata
+            const Metadata::Stack& metadata
         ) {
             m_shape = shape;
 
@@ -112,23 +127,34 @@ namespace qn {
             }.as<f64>();
 
             Vec common_fov = initial_fov;
-            for (const auto& slice: metadata) {
+            for (const auto& image: metadata) {
                 // Center and stretch the image along its tilt-axis to compute its FOV.
-                const auto angles = noa::deg2rad(slice.angles);
-                const auto cos_scale = Vec{1 / noa::cos(angles.filter(2, 1))}; // 1 = cos(0)
+                const auto angles = noa::deg2rad(image.angles);
+                const auto plane_normal = (
+                    ng::rotate_z(angles[0]) *
+                    ng::rotate_y(angles[1]) *
+                    ng::rotate_x(angles[2])
+                ) * Vec{1., 0., 0.};
                 const auto to_0deg = (
-                    ng::rotate<true>(angles[0]) *
-                    ng::scale<true>(cos_scale) *
-                    ng::rotate<true>(-angles[0]) *
-                    ng::translate(-slice.shifts)
+                    ng::rotate_z<true>(+angles[0]) *
+                    ng::rotate_x<true>(-angles[2]) *
+                    ng::rotate_y<true>(-angles[1]) *
+                    ng::rotate_z<true>(-angles[0])
                 ).pop_back();
+
+                // Move the image FOV to volume space.
+                const auto transform = [&](Vec<f64, 2> v) {
+                    v -= image.shifts;
+                    const auto z = -(plane_normal[2] * v[1] + plane_normal[1] * v[0]) / plane_normal[0];
+                    return (to_0deg * Vec{z, v[0], v[1], 1.}).filter(1, 2);
+                };
 
                 // Compute the FOV of the current image.
                 auto image_fov = Vec{
-                    (to_0deg * Vec<f64, 3>{initial_fov[0], 0, 1})[0],
-                    (to_0deg * Vec<f64, 3>{initial_fov[1], 0, 1})[0],
-                    (to_0deg * Vec<f64, 3>{0, initial_fov[2], 1})[1],
-                    (to_0deg * Vec<f64, 3>{0, initial_fov[3], 1})[1],
+                    transform(Vec{initial_fov[0], 0.})[0],
+                    transform(Vec{initial_fov[1], 0.})[0],
+                    transform(Vec{0., initial_fov[2]})[1],
+                    transform(Vec{0., initial_fov[3]})[1],
                 };
 
                 // Restrain the FOV with what this image sees. Regions that this image doesn't see are removed.
@@ -153,15 +179,13 @@ namespace qn {
         }
 
         [[nodiscard]] auto set_fov(
-            const MetadataSlice& metadata,
+            const Metadata::Image& metadata,
             const FOVMaskOptions& options = {}
         ) const {
             check(noa::all(m_common_area_radius >= 0), "Common area geometry is not initialized");
 
-            const auto angles = noa::deg2rad(metadata.angles);
-            const auto scale = noa::cos(angles.filter(2, 1));
+            const auto angles = options.add_tilt_and_pitch ? noa::deg2rad(metadata.angles) : Vec{0., 0., 0.};
             const auto shifts = options.add_shifts ? metadata.shifts : Vec<f64, 2>{};
-
             const auto smoothness = smooth_edge(options.smooth_edge_percent);
 
             // Parallelogram, such as u=a->d, v=a->b.
@@ -169,28 +193,30 @@ namespace qn {
             auto b = a + Vec{0., m_common_area_radius[1] * 2};
             auto d = a + Vec{m_common_area_radius[0] * 2, 0.};
 
-            // Transform the basis to apply the shrinking caused by the tilt.
-            const auto matrix = (
-                ng::translate(m_common_area_center) *
-                ng::rotate<true>(angles[0]) *
-                ng::scale<true>(1 / scale) *
-                ng::rotate<true>(-angles[0]) *
-                ng::translate(-m_common_area_center - shifts)
-            ).inverse().pop_back();
-            a = matrix * a.push_back(1);
-            b = matrix * b.push_back(1);
-            d = matrix * d.push_back(1);
+            // Tilt/pitch the parallelogram and project along the z.
+            auto tilt_plane = (
+                ng::translate((m_common_area_center + shifts).push_front(0)) *
+                ng::rotate_z<true>(+angles[0]) *
+                ng::rotate_y<true>(+angles[1]) *
+                ng::rotate_x<true>(+angles[2]) *
+                ng::rotate_z<true>(-angles[0]) *
+                ng::translate(-m_common_area_center.push_front(0))
+            ).filter_rows(1, 2); // project z
+
+            a = tilt_plane * Vec{0., a[0], a[1], 1.};
+            b = tilt_plane * Vec{0., b[0], b[1], 1.};
+            d = tilt_plane * Vec{0., d[0], d[1], 1.};
 
             return ParallelogramMask(a.as<f32>(), b.as<f32>(), d.as<f32>(), static_cast<f32>(smoothness));
         }
 
         void set_fovs(
-            const MetadataStack& metadata,
+            const Metadata::Stack& metadata,
             const SpanContiguous<ParallelogramMask, 1>& parallelograms,
             const FOVMaskOptions& options = {}
         ) const {
-            for ( const auto& slice : metadata)
-                parallelograms.at(slice.index) = set_fov(slice, options);
+            for (const auto& image : metadata)
+                parallelograms.at(image.index) = set_fov(image, options);
         }
 
         void apply_fovs(
@@ -223,6 +249,45 @@ namespace qn {
                 .output_image = output.span().filter(2, 3).as_contiguous(),
                 .parallelogram = parallelogram,
             });
+        }
+
+        void apply_fovs(
+            const View<const f32>& input,
+            const View<f32>& output,
+            const Metadata::Stack& metadata,
+            const FOVMaskOptions& options = {}
+        ) const {
+            check(vall(noa::Equal{}, m_shape, input.shape().filter(2, 3)) and
+                  vall(noa::Equal{}, m_shape, output.shape().filter(2, 3)),
+                  "Shapes don't match");
+
+            auto parallelograms = Array<ParallelogramMask>(metadata.ssize());
+            set_fovs(metadata, parallelograms.span_1d(), options);
+            parallelograms = parallelograms.to({.device = output.device(), .allocator = Allocator::ASYNC});
+            const auto span = parallelograms.span_1d();
+
+            noa::iwise(output.shape().filter(0, 2, 3), output.device(), MaskFOVs{
+                .input_images = input.span().filter(0, 2, 3).as_contiguous(),
+                .output_images = output.span().filter(0, 2, 3).as_contiguous(),
+                .parallelograms = span,
+            }, std::move(parallelograms));
+        }
+
+        void apply_fov(
+            const View<const f32>& input,
+            const View<f32>& output,
+            const Metadata::Image& metadata,
+            const FOVMaskOptions& options = {}
+        ) const {
+            apply_fov(input, output, set_fov(metadata, options));
+        }
+
+        void apply_fov(
+            const View<f32>& image,
+            const Metadata::Image& metadata,
+            const FOVMaskOptions& options = {}
+        ) const {
+            apply_fov(image, image, set_fov(metadata, options));
         }
 
         [[nodiscard]] constexpr auto center() const noexcept -> const Vec2<f64>& { return m_common_area_center; }

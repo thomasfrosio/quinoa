@@ -49,8 +49,8 @@ namespace qn {
 
         /// Loads the slices in "stack" in the same order as the order of the slices in "metadata".
         /// The .index field of the slices in "metadata" are reset to the [0..n) range.
-        void read_stack(MetadataStack& metadata, const View<f32>& stack);
-        auto read_stack(MetadataStack& metadata) -> Array<f32>;
+        void read_stack(Metadata::Stack& metadata, const View<f32>& stack);
+        auto read_stack(Metadata::Stack& metadata) -> Array<f32>;
 
         [[nodiscard]] auto compute_device() const noexcept -> Device { return m_parameters.compute_device; }
         [[nodiscard]] auto allocator() const noexcept -> Allocator { return m_parameters.allocator; }
@@ -102,7 +102,7 @@ namespace qn {
     [[nodiscard]]
     inline auto load_stack(
         const Path& tilt_series_path,
-        MetadataStack& tilt_series_metadata,
+        Metadata::Stack& tilt_series_metadata,
         const LoadStackParameters& parameters
     ) -> LoadStackOutputs {
         auto stack_loader = StackLoader(tilt_series_path, parameters);
@@ -110,25 +110,37 @@ namespace qn {
         return {stack, stack_loader.stack_spacing(), stack_loader.file_spacing(), stack_loader.file_slice_shape()};
     }
 
+    [[nodiscard]]
+    inline auto load_stack(
+        const Path& tilt_series_path,
+        Metadata& tilt_series_metadata,
+        const LoadStackParameters& parameters
+    ) ->  Array<f32> {
+        auto stack_loader = StackLoader(tilt_series_path, parameters);
+        auto stack = stack_loader.read_stack(tilt_series_metadata.stack);
+        tilt_series_metadata.set_spacing(stack_loader.stack_spacing());
+        return stack;
+    }
+
     struct SaveStackParameters {
         bool correct_rotation{false};
         bool cache_loader{false};
         noa::Interp interp{noa::Interp::LINEAR};
         noa::Border border{noa::Border::ZERO};
-        noa::io::Encoding::Type dtype = noa::io::Encoding::F32;
+        noa::io::DataType dtype = noa::io::DataType::F32;
     };
 
     void save_stack(
         StackLoader& stack,
         const Path& filename,
-        const MetadataStack& metadata,
+        const Metadata::Stack& metadata,
         const SaveStackParameters& saving_parameters = {}
     );
 
     void save_stack(
         const View<const f32>& stack,
         const Vec<f64, 2>& spacing,
-        const MetadataStack& metadata,
+        const Metadata::Stack& metadata,
         const Path& filename,
         const SaveStackParameters& saving_parameters = {}
     );

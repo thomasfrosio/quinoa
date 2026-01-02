@@ -6,7 +6,7 @@
 #include "quinoa/Types.hpp"
 #include <noa/Array.hpp>
 
-namespace qn::guts {
+namespace qn::details {
     /// Band matrix solver
     template<typename T>
     class BandMatrix {
@@ -259,7 +259,7 @@ namespace qn {
                 // Set up the matrix and right-hand side of the equation system for the parameters b
                 const i64 n_upper = m_left == NOT_A_KNOT ? 2 : 1;
                 const i64 n_lower = m_right == NOT_A_KNOT ? 2 : 1;
-                auto A = guts::BandMatrix<value_type>(n, n_upper, n_lower);
+                auto A = details::BandMatrix<value_type>(n, n_upper, n_lower);
                 auto rhs = m_b; // use b_i as a temporary buffer
                 for (i64 i = 1; i < n - 1; i++) {
                     A(i, i - 1) = 1.0 / 3.0 * (m_x[i] - m_x[i - 1]);

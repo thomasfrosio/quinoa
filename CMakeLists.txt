@@ -43,20 +43,28 @@ target_compile_definitions(quinoa PRIVATE "$<$<CONFIG:DEBUG>:QN_DEBUG>")
 # Gather and link dependencies.
 include(${PROJECT_SOURCE_DIR}/cmake/ext/noa.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/spdlog.cmake)
-include(${PROJECT_SOURCE_DIR}/cmake/ext/yaml-cpp.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/nlopt.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/cxxopts.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/tomlplusplus.cmake)
+include(${PROJECT_SOURCE_DIR}/cmake/ext/eigen.cmake)
+
+FetchContent_Declare(
+    flux
+    GIT_REPOSITORY https://github.com/tcbrindle/flux.git
+    GIT_TAG main # Replace with a git commit id to fix a particular revision
+)
+FetchContent_MakeAvailable(flux)
+
 target_link_libraries(quinoa
     PRIVATE
     noa::noa
     noa::prj_compiler_warnings
     spdlog::spdlog
-    yaml-cpp::yaml-cpp
     nlopt
     cxxopts::cxxopts
     tomlplusplus::tomlplusplus
     Eigen3::Eigen
+    flux::flux
 )
 
 # In CUDA, allow extended lambdas. We use this feature in a few places.

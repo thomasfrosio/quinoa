@@ -18,7 +18,7 @@ namespace qn::ctf {
     public:
         static auto from_stack(
             StackLoader& stack_loader,
-            const MetadataStack& metadata,
+            const Metadata::Stack& metadata,
             const Grid& grid,
             const Vec<f64, 2>& resolution_range,
             i64 patch_size,

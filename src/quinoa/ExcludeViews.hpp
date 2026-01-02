@@ -15,7 +15,7 @@ namespace qn {
 
     void detect_and_exclude_blank_views(
         const Path& stack_filename,
-        MetadataStack& metadata,
+        Metadata::Stack& metadata,
         const DetectAndExcludeBlankViewsParameters& parameters
     );
 }

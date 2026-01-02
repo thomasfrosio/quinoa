@@ -1,29 +1,29 @@
 #include <noa/FFT.hpp>
 
 #include "quinoa/Alignment.hpp"
+#include "quinoa/AlignmentCoarse.hpp"
 #include "quinoa/CTF.hpp"
+#include "quinoa/Logger.hpp"
 #include "quinoa/PairwiseShift.hpp"
 #include "quinoa/ProjectionMatching.hpp"
 #include "quinoa/RotationOffset.hpp"
 #include "quinoa/Stack.hpp"
-#include "quinoa/StageLevel.hpp"
 #include "quinoa/Thickness.hpp"
 
 namespace qn {
-    auto coarse_alignment(
+    void coarse_alignment(
         const Path& stack_path,
-        MetadataStack& metadata,
+        Metadata& metadata,
         const CoarseAlignmentParameters& parameters
-    ) -> f64 {
-        auto timer = Logger::status_scope_time("Coarse alignment");
+    ) {
+        auto t0 = Logger::status_scope_time("Coarse alignment");
 
         // To keep it simple, work with the stack sorted with its tilt in ascending order.
         // The stage leveling relies on this and will throw an error if the stack isn't ordered.
-        metadata.sort("tilt").reset_indices();
+        metadata.stack.sort("tilt").reset_indices();
 
-        // These alignments are quite robust at low tilts.
         // Keep everything at low resolution, high frequencies are useless here.
-        const auto [tilt_series, stack_spacing, file_spacing, file_slice_shape] = load_stack(stack_path, metadata, {
+        const auto tilt_series = load_stack(stack_path, metadata, {
             .compute_device = parameters.compute_device,
             .allocator = Allocator::DEFAULT_ASYNC,
 
@@ -38,8 +38,8 @@ namespace qn {
             .bandpass{
                 .highpass_cutoff = 0.03, // FIXME use resolution2fftfreq with a min, check with size 670
                 .highpass_width = 0.03,
-                .lowpass_cutoff = 0.25,
-                .lowpass_width = 0.05,
+                .lowpass_cutoff = 0.35,
+                .lowpass_width = 0.15,
             },
             .bandpass_mirror_padding_factor = 0.5,
 
@@ -50,132 +50,96 @@ namespace qn {
             .zero_pad_to_square_shape = false,
         });
 
-        const auto basename = stack_path.stem().string();
-        auto extension = stack_path.extension().string();
-        if (not noa::io::ImageFile::is_supported_extension(extension))
-            extension = ".mrc";
-
-        if (Logger::is_debug()) {
-            const auto filename = parameters.output_directory / fmt::format("{}_preprocessed{}", basename, extension);
-            noa::write(tilt_series, stack_spacing, filename);
-            Logger::debug("{} saved", filename);
-        }
-
-        // Scale the metadata shifts to the current sampling rate.
-        metadata.rescale_shifts(file_spacing, stack_spacing);
-
-        auto shift_fitter = PairwiseShift(tilt_series.shape(), tilt_series.device());
-        auto shift_parameters = PairwiseShiftParameters{
-            .interp = noa::Interp::LINEAR_FAST,
-            .output_directory = parameters.output_directory,
-        };
-
-        auto rotation_parameters = RotationOffsetParameters{
-            .bandpass = {0., 0., 0.5, 0.}, // off
-            .output_directory = parameters.output_directory,
-        };
-
-        auto stage_parameters = StageLevelingParameters{};
+        auto aligner = AlignmentCoarse(tilt_series.shape(), tilt_series.device());
 
         // TODO Detect for view with huge shifts and remove them?
         //      Maybe only for higher tilts, e.g. >20deg, I don't want to remove valuable low tilts...
 
-        bool has_rotation = parameters.has_user_rotation;
-        bool has_stage{};
-        Vec<f64, 2> tilt_pitch_offset{};
-        for (auto smooth_edge_percent: std::array{0.08, 0.3, 0.3}) {
-            // First, get the large shifts out of the way. Once these are removed, focus on the center.
-            // If we have an estimate of the rotation from the user, use cosine-stretching but don't use
-            // area-matching yet in case of large shifts.
-            shift_parameters.cosine_stretch = has_rotation;
-            shift_parameters.area_match = false;
-            shift_parameters.smooth_edge_percent = smooth_edge_percent;
-            shift_parameters.max_shift_percent = 1;
-            shift_parameters.update_count = 5;
-            shift_fitter.update(tilt_series.view(), metadata, shift_parameters);
+        // We require the rotation angle from the mdoc, but we can check that this rotation matches the images.
+        // In this case, do a quick shift alignment and search for the rotation offset across the full angle range.
+        // The resulting angle isn't the most accurate but should be close enough (+-10deg) to the provided rotation.
+        if (parameters.check_rotation) {
+            auto t1 = Logger::info_scope_time("Rotation check");
+            t1.set_newline(false);
+            auto metadata_check = metadata.stack;
 
-            // Once we have estimates for the shifts, do the rotation search.
-            // If we don't have an initial rotation from the user, search the entire range.
-            // Otherwise, refine whatever rotation the user gave us.
-            if (parameters.fit_rotation_offset) {
-                rotation_parameters.reset_rotation = not has_rotation;
-                rotation_parameters.angle_range = not has_rotation ? 90. : 10.;
-                rotation_parameters.angle_step = not has_rotation ? 1. : 0.1;
-                find_rotation_offset(tilt_series.view(), metadata, rotation_parameters);
-                has_rotation = true;
+            for (auto i: noa::irange(2)) {
+                aligner.align_shifts(tilt_series.view(), metadata.stack, {
+                    .cosine_stretch = i > 0,
+                    .update_count = 1,
+                    .fov_mask = false,
+                    .smooth_edge_percent = 0.08,
+                    .max_shift_percent = 0.5,
+                    .output_directory = &parameters.output_directory,
+                });
+
+                find_rotation_offset(tilt_series.view(), metadata_check, {
+                    .check_rotation = true,
+                    .output_directory = &parameters.output_directory,
+                });
             }
 
-            // Once we have an estimate for the rotation, do the tilt search.
-            if (parameters.fit_tilt_offset or parameters.fit_pitch_offset) {
-                if (parameters.fit_tilt_offset) {
-                    stage_parameters.tilt_search_range = not has_stage ? 25. : 10.;
-                    stage_parameters.tilt_search_step = not has_stage ? 5. : 0.25;
-                }
-                if (parameters.fit_pitch_offset) {
-                    stage_parameters.pitch_search_range = not has_stage ? 25. : 10.;
-                    stage_parameters.pitch_search_step = not has_stage ? 5. : 0.25;
-                }
-                coarse_stage_leveling(tilt_series.view(), metadata, tilt_pitch_offset, stage_parameters);
-                has_stage = true;
-            }
-        }
-
-        // Once we have a first good estimate of the rotation and shifts, start again using the common area masks.
-        // At each iteration, the rotation should be better, improving the cosine stretching for the shifts.
-        // Similarly, the shifts should get better, allowing a better estimate of the common area and the rotation.
-        for (auto [angle_range, angle_step]: noa::zip(std::array{5., 2., 1.}, std::array{0.1, 0.02, 0.01})) {
-            shift_parameters.cosine_stretch = true;
-            shift_parameters.area_match = true;
-            shift_parameters.smooth_edge_percent = 0.3;
-            shift_parameters.max_shift_percent = 0.05;
-            shift_parameters.update_count = 10;
-            shift_fitter.update(tilt_series.view(), metadata, shift_parameters);
-
-            if (parameters.fit_rotation_offset) {
-                rotation_parameters.angle_range = angle_range;
-                rotation_parameters.angle_step = angle_step;
-                find_rotation_offset(tilt_series.view(), metadata, rotation_parameters);
-            }
-
-            if (parameters.fit_tilt_offset or parameters.fit_pitch_offset) {
-                if (parameters.fit_tilt_offset) {
-                    stage_parameters.tilt_search_range = 10.;
-                    stage_parameters.tilt_search_step = 0.1;
-                }
-                if (parameters.fit_pitch_offset) {
-                    stage_parameters.pitch_search_range = 10.;
-                    stage_parameters.pitch_search_step = 0.1;
-                }
-                coarse_stage_leveling(tilt_series.view(), metadata, tilt_pitch_offset, stage_parameters);
+            const auto expected_rotation = Metadata::Image::to_angle_range(metadata.stack[0].angles[0]);
+            const auto measured_rotation_1 = Metadata::Image::to_angle_range(metadata_check[0].angles[0]);
+            const auto measured_rotation_2 = Metadata::Image::to_angle_range(metadata_check[0].angles[0] + 180);
+            if (std::abs(expected_rotation - measured_rotation_1) > 10 and
+                std::abs(expected_rotation - measured_rotation_2) > 10) {
+                panic(
+                    "The tilt-axis from the mdoc file or the experiment.tilt_axis setting (rotation={:.2f}) does not "
+                    "seem to match the tilt images (rotation_estimate={:.2f}deg, or equivalently {:.2f}deg). Since "
+                    "this check is fairly reliable, the program will stop now. If you are certain that the provided "
+                    "tilt-axis is correct, this check can be turned off using alignment.coarse.check_rotation=false",
+                    expected_rotation, measured_rotation_1, measured_rotation_2
+                );
             }
         }
 
-        // Final shift alignment. We are done after that.
-        shift_parameters.update_count = 15;
-        shift_fitter.update(tilt_series.view(), metadata, shift_parameters);
-
-        save_stack(
-            tilt_series.view(), stack_spacing, metadata,
-            parameters.output_directory / fmt::format("{}_coarse_aligned{}", basename, extension), {
-                .correct_rotation = true,
-                .dtype = noa::io::Encoding::F16,
+        auto angle_offsets = Vec{0., 0., 0.};
+        for (i32 i: noa::irange(4)) {
+            aligner.align_shifts(tilt_series.view(), metadata.stack, {
+                .cosine_stretch = i != 0,
+                .update_count = i > 2 ? 5 : 10,
+                .fov_mask = i > 2,
+                .smooth_edge_percent = i == 0 ? 0.08 : 0.3,
+                .max_shift_percent = i == 0 ? 0.5 : 0.1,
+                .output_directory = &parameters.output_directory,
             });
 
-        // Scale the metadata back to the original resolution.
-        metadata.rescale_shifts(stack_spacing, file_spacing);
+            if (parameters.fit_rotation_offset) {
+                find_rotation_offset(tilt_series.view(), metadata.stack, angle_offsets, {
+                    .check_rotation = false,
+                    .angle_range = i > 2 ? 10. : 5.,
+                    .output_directory = &parameters.output_directory,
+                });
+            }
 
-        const Path csv_filename = parameters.output_directory / fmt::format("{}_coarse_aligned.csv", basename);
-        metadata.save_csv(csv_filename, file_slice_shape, file_spacing);
-        Logger::info("{} saved", csv_filename);
+            if (parameters.fit_tilt_offset or parameters.fit_pitch_offset) {
+                aligner.level_stage(tilt_series.view(), metadata.stack, angle_offsets, {
+                    .tilt_search_range = not parameters.fit_tilt_offset ? 0. : i == 0 ? 20. : 5.,
+                    .pitch_search_range = not parameters.fit_pitch_offset ? 0. : i == 0 ? 10. : 5.,
+                    .fov_mask = i > 2,
+                    .smooth_edge_percent = i == 0 ? 0.08 : 0.3,
+                    .max_shift_percent = i == 0 ? 0.5 : 0.1,
+                    .output_directory = &parameters.output_directory,
+                });
+            }
+        }
 
-        return noa::mean(stack_spacing);
+        aligner.align_shifts(tilt_series.view(), metadata.stack, {
+            .cosine_stretch = true,
+            .update_count = 15,
+            .fov_mask = true,
+            .smooth_edge_percent = 0.1,
+            .max_shift_percent = 0.1,
+            .output_directory = &parameters.output_directory,
+        });
     }
 
-    auto ctf_alignment(
+    void ctf_alignment(
         const Path& stack_filename,
-        MetadataStack& metadata,
+        Metadata& metadata,
         const CTFAlignmentParameters& parameters
-    ) -> ns::CTFIsotropic<f64> {
+    ) {
         auto timer = Logger::status_scope_time("CTF alignment");
 
         auto stack_loader = StackLoader(stack_filename, {
@@ -202,25 +166,15 @@ namespace qn {
             .zero_pad_to_square_shape = false,
         });
 
-        auto input_ctf = ns::CTFAnisotropic<f64>({
-            .pixel_size = stack_loader.stack_spacing(),
-            .defocus = {0., 0., 0.},
-            .voltage = parameters.voltage,
-            .amplitude = parameters.amplitude,
-            .cs = parameters.cs,
-            .phase_shift = parameters.phase_shift,
-            .bfactor = 0,
-            .scale = 1.,
-        });
-        auto ctf = ns::CTFIsotropic(input_ctf);
+        metadata.set_spacing(stack_loader.stack_spacing());
+        const auto spacing = mean(metadata.spacing);
 
         // Patch size.
-        // It should be big enough so there's sufficient signal and the Thon rings are somewhat visible in a single
+        // It should be big enough to have sufficient signal and the Thon rings are somewhat visible in a single
         // patch, but it shouldn't be too big otherwise the defocus range within one patch at high tilt becomes too
         // big resulting in less Thon rings.
-        const auto spacing = mean(stack_loader.stack_spacing()); // assume isotropic spacing by this point
         i64 patch_size = static_cast<i64>(std::round(parameters.patch_size_ang / spacing));
-        patch_size = noa::fft::next_fast_size(noa::clamp(patch_size, 512, 1024)); // TODO Document 300 is unnecessary small?
+        patch_size = nf::next_fast_size(noa::clamp(patch_size, 512, 1024)); // TODO Document 300 is unnecessary small?
 
         // The patches are Fourier cropped to fftfreq_range[1] and zero-padded to this size to increase the sampling.
         // At this point, we don't know what defocus to expect, but this should be enough to get us started and
@@ -231,13 +185,13 @@ namespace qn {
 
         // Load and process images in the same order they were collected.
         // TODO This may cause issues for cases where highest tilts are collected first.
-        metadata.sort("time").reset_indices();
+        metadata.stack.sort("time").reset_indices();
 
         // If the exposure of the first image is significantly higher than the second and third, it may also
         // be collected at a much lower defocus (see TYGRESS-like schemes), so keep track of this.
         const bool first_image_has_higher_exposure = [&] {
             // The first image that was collected should be the lowest tilt.
-            auto metadata_time_sorted = metadata;
+            auto metadata_time_sorted = metadata.stack;
             metadata_time_sorted.sort("time");
             if (metadata_time_sorted.find_lowest_tilt_index() != 0)
                 return false;
@@ -255,47 +209,54 @@ namespace qn {
             return false;
         }();
 
-        // Get an initial CTF based on the first few images.
-        // This will be used to compute the aliasing-free size of the patches.
+        // Get an initial defocus, phase-shift and fitting-range based on the first few images.
         auto metadata_initial = metadata;
-        metadata_initial.exclude_if([&](auto& s) {
+        metadata_initial.stack.exclude_if([&](auto& s) {
             return (first_image_has_higher_exposure and s.index == 0) or
                    s.index >= parameters.n_images_in_initial_average;
         });
         auto patches = ctf::Patches::from_stack(
-            stack_loader, metadata_initial, grid, parameters.resolution_range,
+            stack_loader, metadata_initial.stack, grid, parameters.resolution_range,
             patch_size, patch_size_padded
         );
-        auto fitting_range = ctf::initial_fit(
-            grid, patches, metadata_initial, ctf, {
+        const auto initial_fit = ctf::initial_fit(
+            metadata_initial, grid, patches, {
                 .n_slices_to_average = parameters.n_images_in_initial_average,
                 .fit_phase_shift = parameters.fit_phase_shift,
                 .output_directory = parameters.output_directory,
             });
 
-        // Using the initial defocus estimate of the stack, we can compute an estimate of the aliasing-free size.
-        const auto estimated_max_defocus = ctf.defocus() + 0.5;
-        auto target_ctf = ctf;
-        target_ctf.set_defocus(estimated_max_defocus);
-        i64 aliasing_free_size = ctf::aliasing_free_size(target_ctf, patches.rho_vec());
-        constexpr i64 MAX_PADDED_SIZE = 2048;
-        patch_size_padded = noa::clamp(aliasing_free_size, patch_size, MAX_PADDED_SIZE);
-        patch_size_padded = noa::fft::next_fast_size(patch_size_padded);
-        Logger::trace(
-            "Aliasing-free size:\n"
-            "  estimated_max_defocus={:.2f}\n"
-            "  aliasing_free_size={}\n"
-            "  padded_size={} (clamped between [{}, {}]\n",
-            estimated_max_defocus, aliasing_free_size, patch_size_padded,
-            patch_size, MAX_PADDED_SIZE
-        );
+        for (auto& image: metadata.stack) {
+            image.defocus.value = initial_fit.defocus;
+            image.phase_shift = initial_fit.phase_shift;
+        }
+
+        {
+            // Using the initial defocus estimate, we can compute an estimate of the aliasing-free size.
+            const auto estimated_max_defocus = initial_fit.defocus + 0.5;
+            auto target_ctf = metadata.empty_ctf();
+            target_ctf.set_defocus(estimated_max_defocus);
+            const i64 aliasing_free_size = ctf::aliasing_free_size(target_ctf, patches.rho_vec());
+            constexpr i64 MAX_PADDED_SIZE = 2048;
+            patch_size_padded = noa::clamp(aliasing_free_size, patch_size, MAX_PADDED_SIZE);
+            patch_size_padded = nf::next_fast_size(patch_size_padded);
+
+            Logger::trace(
+                "Aliasing-free size:\n"
+                "  estimated_max_defocus={:.2f}\n"
+                "  aliasing_free_size={}\n"
+                "  padded_size={} (clamped between [{}, {}]\n",
+                estimated_max_defocus, aliasing_free_size, patch_size_padded,
+                patch_size, MAX_PADDED_SIZE
+            );
+        }
 
         // Extract the entire stack and sample the patches using the aliasing-free size.
-        metadata.sort("tilt").reset_indices();
+        metadata.stack.sort("tilt").reset_indices();
         const auto bin_angle = parameters.fit_astigmatism ? 3 : -1;
         patches = ctf::Patches{}; // erase initial patches
         patches = ctf::Patches::from_stack(
-            stack_loader, metadata, grid, parameters.resolution_range,
+            stack_loader, metadata.stack, grid, parameters.resolution_range,
             patch_size, patch_size_padded, bin_angle
         );
         stack_loader = StackLoader{}; // erase buffers
@@ -304,11 +265,11 @@ namespace qn {
         // This is a simple alignment of the patches near the tilt-axis to get initial per-image
         // estimates of the defocus and to check that the per-image defocus gradient matches the tilt geometry.
         ctf::coarse_fit(
-            grid, patches, ctf, metadata, { // ctf.defocus|phase_shift and metadata.defocus|phase_shift are updated
-                .initial_fitting_range = fitting_range,
+            metadata, grid, patches, { // ctf.defocus|phase_shift and metadata.defocus|phase_shift are updated
+                .initial_fitting_range = initial_fit.fitting_range,
                 .first_image_has_higher_exposure = first_image_has_higher_exposure,
                 .fit_phase_shift = parameters.fit_phase_shift,
-                .has_user_rotation = parameters.has_user_rotation,
+                .check_rotation = parameters.check_rotation,
                 .output_directory = parameters.output_directory,
             });
 
@@ -316,13 +277,12 @@ namespace qn {
         // While we technically could fit the thickness from the spectrum like in CTFFIND5, using the tomogram
         // seems more reliable. The thickness value we get here can then be plugged into the CTF model for the
         // final refine fit.
-        f64 specimen_thickness_nm{};
         if (parameters.fit_thickness) {
             // To fit the thickness from the tomogram, we first need to find the stage angles.
             // Since we don't need to be very accurate here, turning off the astigmatism for significantly
             // faster compute time should be fine.
             ctf::refine_fit(
-                metadata, grid, patches, ctf, {
+                metadata, grid, patches, {
                     .fit_rotation = parameters.fit_rotation,
                     .fit_tilt = parameters.fit_tilt,
                     .fit_pitch = parameters.fit_pitch,
@@ -330,11 +290,11 @@ namespace qn {
                     .fit_astigmatism = false,
                     .output_directory = parameters.output_directory,
                 });
-            specimen_thickness_nm = estimate_sample_thickness(
-                stack_filename, metadata, /* updated: .shifts */ {
-                    .resolution = 24,
-                    .compute_device = parameters.compute_device,
+            metadata.sample.thickness = estimate_sample_thickness(
+                stack_filename, metadata, {
+                    .device = parameters.compute_device,
                     .allocator = Allocator::DEFAULT,
+                    .resolution = 24,
                     .output_directory = parameters.output_directory
                 });
         }
@@ -342,16 +302,123 @@ namespace qn {
         // Final CTF alignment where the tilt-resolved astigmatism can be fitted.
         // Fitting the astigmatism is the slowest step of the CTF alignment, by far.
         ctf::refine_fit(
-            metadata, grid, patches, ctf, {
+            metadata, grid, patches, {
                 .fit_rotation = parameters.fit_rotation,
                 .fit_tilt = parameters.fit_tilt,
                 .fit_pitch = parameters.fit_pitch,
                 .fit_phase_shift = parameters.fit_phase_shift,
                 .fit_astigmatism = parameters.fit_astigmatism,
-                .thickness = specimen_thickness_nm * 1e-3, // um
                 .output_directory = parameters.output_directory,
             });
+    }
 
-        return ctf;
+    void refine_alignment(
+        const Path& stack_filename,
+        Metadata& metadata,
+        const RefineAlignmentParameters& parameters
+    ) {
+        auto timer = Logger::status_scope_time("Refine alignment");
+
+        metadata.stack.sort("tilt").reset_indices();
+        const auto tilt_series = load_stack(stack_filename, metadata, {
+            .compute_device = parameters.compute_device,
+            .allocator = Allocator::MANAGED,
+
+            // Fourier cropping:
+            .precise_cutoff = true, // ensure isotropic spacing
+            .rescale_target_resolution = parameters.maximum_resolution,
+            .rescale_min_size = 512,
+
+            // Signal processing after cropping:
+            .exposure_filter = false,
+            .bandpass{
+                .highpass_cutoff = 0.02,
+                .highpass_width = 0.02,
+                .lowpass_cutoff = 0.5,
+                .lowpass_width = 0.05,
+            },
+            .bandpass_mirror_padding_factor = 0.5,
+
+            // Image processing after cropping:
+            .normalize_and_standardize = true,
+            .smooth_edge_percent = 0.03,
+            .zero_pad_to_fast_fft_shape = true,
+            .zero_pad_to_square_shape = false,
+        });
+
+        const auto stack_spacing = mean(metadata.spacing);
+        const auto thickness_parameters = EstimateSampleThicknessFromFileOptions{
+            .device = parameters.compute_device,
+            .allocator = Allocator::ASYNC,
+            .resolution = 24.,
+            .output_directory = parameters.output_directory / "thickness",
+        };
+
+        auto rotation_parameters = RotationOffsetParameters{
+            .bandpass = {0., 0., 0.5, 0.}, // off
+            .angle_range = 4,
+            .output_directory = &parameters.output_directory,
+        };
+
+        const auto image_shape = tilt_series.shape().filter(2, 3);
+        const auto projection_matcher = ProjectionMatcher(metadata.stack.ssize(), image_shape, tilt_series.device());
+
+        // Set up the Fourier insertion.
+        const f64 virtual_volume_size = static_cast<f64>(projection_matcher.spectrum_size()); // FIXME
+        const f64 fftfreq_sinc = 1 / virtual_volume_size;
+        const f64 fftfreq_blackman = 8 * fftfreq_sinc;
+        Logger::trace(
+            "Fourier insertion bounds:\n"
+            "  fftfreq_sinc={:.4f}\n"
+            "  fftfreq_blackman={:.4f}",
+            fftfreq_sinc, fftfreq_blackman
+        );
+
+        // save_stack(tilt_series.view(), stack_spacing, metadata, parameters.output_directory / "projection_matching" / "stack_coarse.mrc");
+
+        // for (auto &s: metadata)
+            // s.shifts += {noa::random_value(noa::Uniform{-10., 10.}), noa::random_value(noa::Uniform{-10., 10.})};
+
+        // auto shift_fitter = PairwiseShift(tilt_series.shape(), tilt_series.device());
+        // auto shift_parameters = PairwiseShiftParameters{.output_directory = &parameters.output_directory};
+
+        for (auto i: noa::irange(1)) {
+            // shift_parameters.cosine_stretch = true;
+            // shift_parameters.smooth_edge_percent = 0.08;
+            // shift_parameters.max_shift_percent = 0.15;
+            // shift_parameters.area_match = true;
+            // shift_parameters.update_count = 15;
+            // shift_fitter.update(tilt_series.view(), metadata.stack, shift_parameters);
+
+            f64 thickness_nm = 220; // estimate_sample_thickness(stack_filename, metadata.stack, thickness_parameters) - 40;
+            Logger::trace("thickness={:.1f}nm", thickness_nm);
+            metadata.sample.thickness = thickness_nm;
+
+            const f64 thickness_estimate_pixels = thickness_nm / (stack_spacing * 1e-1);
+            const f64 fftfreq_z_sinc = 1 / thickness_estimate_pixels;
+            const f64 fftfreq_z_blackman = 8 * fftfreq_z_sinc;
+            Logger::trace(
+                "Fourier extraction bounds:\n"
+                "  fftfreq_sinc={:.4f} (sample_thickness={}pixels)\n"
+                "  fftfreq_blackman={:.4f} (window_size=~{}pixels)",
+                fftfreq_z_sinc, std::round(thickness_estimate_pixels), fftfreq_z_blackman,
+                std::round(fftfreq_z_blackman * virtual_volume_size * 2 + 1)
+            );
+
+            projection_matcher.update_shifts(tilt_series.view(), metadata.stack, {
+                .shift_tolerance = 0.005,
+                .max_tilt_difference = 120.,
+                .smooth_edge_percent = 0.1,
+
+                .insertion_sinc = {fftfreq_sinc, fftfreq_blackman},
+                .extraction_sinc = {fftfreq_z_sinc, fftfreq_z_blackman},
+                .bandpass = {0., 0., 0.5, 0.},
+                .debug_directory = parameters.output_directory / "projection_matching",
+            });
+
+            find_rotation_offset(tilt_series.view(), metadata.stack, rotation_parameters);
+        }
+        // save_stack(tilt_series.view(), metadata.spacing, metadata.stack, parameters.output_directory / "projection_matching" / "stack_refine.mrc");
+        // panic();
     }
 }
