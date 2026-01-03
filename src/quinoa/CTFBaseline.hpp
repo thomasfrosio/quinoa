@@ -1,6 +1,6 @@
 #pragma once
 
-#include <noa/Array.hpp>
+#include <noa/Runtime.hpp>
 #include "quinoa/Types.hpp"
 
 namespace qn::ctf {
@@ -44,7 +44,7 @@ namespace qn::ctf {
         static auto best_baseline_fitting_range(
             SpanContiguous<const f32> spectrum,
             const Vec<f64, 2>& fftfreq_range,
-            const ns::CTFIsotropic<f64>& ctf
+            const CTFIsotropic64& ctf
         ) -> Vec<f64, 2>;
 
     public:
@@ -57,7 +57,7 @@ namespace qn::ctf {
 
         /// Fits a smooth baseline through the spectrum.
         /// Uses the CTF to find the best fitting range.
-        void fit(SpanContiguous<const f32> spectrum, const Vec<f64, 2>& fftfreq_range, const ns::CTFIsotropic<f64>& ctf) {
+        void fit(SpanContiguous<const f32> spectrum, const Vec<f64, 2>& fftfreq_range, const CTFIsotropic64& ctf) {
             auto fitting_range = best_baseline_fitting_range(spectrum, fftfreq_range, ctf);
             fit(spectrum, fftfreq_range, fitting_range);
         }
@@ -72,7 +72,7 @@ namespace qn::ctf {
         [[nodiscard]] auto tune_fitting_range(
             SpanContiguous<const f32> spectrum,
             const Vec<f64, 2>& fftfreq_range,
-            const ns::CTFIsotropic<f64>& ctf,
+            const CTFIsotropic64& ctf,
             const BaselineTuningOptions& options = {}
         ) const -> Vec<f64, 2>;
 
@@ -80,7 +80,7 @@ namespace qn::ctf {
         auto fit_and_tune_fitting_range(
             SpanContiguous<const f32> spectrum,
             const Vec<f64, 2>& fftfreq_range,
-            const ns::CTFIsotropic<f64>& ctf,
+            const CTFIsotropic64& ctf,
             const BaselineTuningOptions& options = {}
         ) -> Vec<f64, 2> {
             fit(spectrum, fftfreq_range, ctf);
@@ -113,14 +113,14 @@ namespace qn::ctf {
         /// Values outside the spectrum frequency-range are extrapolated.
         /// The extrapolation is set to preserve the spline slope at the edges.
         [[nodiscard]] auto sample_at(f64 fftfreq) const -> f64 {
-            const i64 n = m_a.ssize();
-            const i64 last_index = n - 1;
+            const isize n = m_a.ssize();
+            const isize last_index = n - 1;
             if (n == 0)
                 return 0;
 
             // Denormalize fftfreq back to frequencies.
             const f64 frequency = (fftfreq - m_fftfreq_start) / m_fftfreq_step;
-            const i64 index = static_cast<i64>(std::floor(frequency));
+            const isize index = static_cast<isize>(std::floor(frequency));
             const f64 fraction = frequency - noa::clamp(std::floor(frequency), 0, static_cast<f64>(last_index));
 
             // Polynomial evaluation (Horner's scheme) - interpolation.
@@ -133,13 +133,13 @@ namespace qn::ctf {
         }
 
     private:
-        void allocate_(i64 n) {
-            const i64 n_to_allocate = n * 4;
+        void allocate_(isize n) {
+            const isize n_to_allocate = n * 4;
             if (m_buffer == nullptr or n_allocated < n_to_allocate) {
                 // Allocate a bit more to increase the chance of reusing the buffer
                 // when the fitting is done with slightly different fitting ranges.
                 n_allocated = n_to_allocate + 20 * 4;
-                m_buffer = std::make_unique<f64[]>(static_cast<size_t>(n_allocated));
+                m_buffer = std::make_unique<f64[]>(static_cast<usize>(n_allocated));
             }
             m_a = SpanContiguous(m_buffer.get() + n * 0, n);
             m_b = SpanContiguous(m_buffer.get() + n * 1, n);
@@ -149,7 +149,7 @@ namespace qn::ctf {
 
     private:
         std::unique_ptr<f64[]> m_buffer; // (n*4)
-        i64 n_allocated{};
+        isize n_allocated{};
 
         // Cubic spline expressed as a set of cubic polynomials.
         // f(x) = a_x + b_x + c_x^2 + d_x^3, where a_x = y_x, and x is uniform [0 to n-1].

@@ -1,8 +1,7 @@
-#include <noa/Array.hpp>
+#include <noa/Runtime.hpp>
 #include <noa/Signal.hpp>
-#include <noa/Geometry.hpp>
+#include <noa/Xform.hpp>
 #include <noa/FFT.hpp>
-#include <noa/Utils.hpp>
 #include <noa/IO.hpp>
 
 #include "Logger.hpp"
@@ -15,22 +14,22 @@
 namespace {
     using namespace qn;
 
-    template<size_t N = 160>
+    template<usize N = 160>
     struct BitMask {
         static_assert(noa::is_multiple_of(N, 8));
-        static constexpr size_t WORD_COUNT = 32;
-        static constexpr size_t N_WORDS = N / 32;
+        static constexpr usize WORD_COUNT = 32;
+        static constexpr usize N_WORDS = N / 32;
         u32 buffer[N_WORDS]{};
 
         constexpr BitMask() = default;
         constexpr explicit BitMask(const std::vector<bool>& mask) {
-            for (size_t i{}; i < mask.size(); ++i)
+            for (usize i{}; i < mask.size(); ++i)
                 if (mask[i])
                     buffer[i / 32] |= 1 << (i % 32);
         }
 
         constexpr auto operator[](nt::integer auto i) const -> bool {
-            ni::bounds_check(N, i);
+            noa::bounds_check(N, i);
             const u32 data = buffer[i / 32];
             const u32 mask = 1 << (i % 32);
             return data & mask;
@@ -43,7 +42,7 @@ namespace {
         SpanContiguous<const ParallelogramMask, 1> parallelograms;
         SpanContiguous<const i32, 1> input_indices;
 
-        NOA_HD void operator()(i64 i, i64 h, i64 w) const {
+        NOA_HD void operator()(isize i, isize h, isize w) const {
             auto value = parallelograms[i](h, w);
             if (value > 1e-6f)
                 value *= input_images(input_indices[i], h, w);
@@ -56,7 +55,7 @@ namespace {
         SpanContiguous<f32, 2> output;
         ParallelogramMask parallelogram;
 
-        NOA_HD void operator()(i64 h, i64 w) const {
+        NOA_HD void operator()(isize h, isize w) const {
             auto value = parallelogram(h, w);
             if (value > 1e-6f)
                 value *= input(h, w);
@@ -65,7 +64,7 @@ namespace {
     };
 
     struct FilterImages {
-        NOA_HD auto operator()(const Vec<f32, 2>& fftfreq_2d, i64) const -> f32 {
+        NOA_HD auto operator()(const Vec<f32, 2>& fftfreq_2d, isize) const -> f32 {
             // Directly from Aretomo3.
             const auto fftfreq = noa::sqrt(noa::dot(fftfreq_2d, fftfreq_2d));
             return 2.f * fftfreq * (0.55f + 0.45f * noa::cos(6.2831852f * fftfreq));
@@ -78,7 +77,7 @@ namespace {
         using index_type = i32;
         using coord_3d_type = Vec<f32, 3>;
         using input_span_type = SpanContiguous<const f32, 3, index_type>;
-        using interpolator_type = noa::Interpolator<2, noa::Interp::LINEAR, noa::Border::ZERO, input_span_type>;
+        using interpolator_type = nx::Interpolator<2, nx::Interp::LINEAR, noa::Border::ZERO, input_span_type>;
 
         interpolator_type input_images;
         SpanContiguous<const Mat<f32, 2, 4>> backward_matrices;
@@ -164,7 +163,7 @@ namespace {
         Array<i32> m_reference_indices;
         Array<f32> m_volume;
 
-        Projector(i64 maximum_number_of_images, Device device) {
+        Projector(isize maximum_number_of_images, Device device) {
             // m_backward_matrices = Array<Mat<f32, 2, 4>>(maximum_number_of_images, options);
             // m_forward_matrices = Array<Mat<f32, 3, 4>>(maximum_number_of_images, options);
         }
@@ -174,7 +173,7 @@ namespace {
             const Metadata::Stack& input_metadata,
             const View<f32>& output_image,
             const Metadata::Image& output_metadata,
-            i64 volume_thickness
+            isize volume_thickness
         ) const {
             noa::fill(output_image, 0);
 
@@ -185,26 +184,26 @@ namespace {
             const auto n_inputs = input_metadata.ssize();
 
             // Backward projection matrices.
-            auto backward_matrices = m_backward_matrices.span_1d().subregion(ni::Slice{0, n_inputs});
+            auto backward_matrices = m_backward_matrices.span_1d().subregion(Slice{0, n_inputs});
             for (auto&& [backward_matrix, slice]: noa::zip(backward_matrices, input_metadata)) {
                 const auto angles = noa::deg2rad(slice.angles);
                 backward_matrix = (
-                    ng::translate((volume_center.pop_front() + slice.shifts).push_front(0)) *
-                    ng::rotate_z<true>(angles[0]) *
-                    ng::rotate_y<true>(angles[1]) *
-                    ng::rotate_x<true>(angles[2]) *
-                    ng::translate(-volume_center)
+                    nx::translate((volume_center.pop_front() + slice.shifts).push_front(0)) *
+                    nx::rotate_z<true>(angles[0]) *
+                    nx::rotate_y<true>(angles[1]) *
+                    nx::rotate_x<true>(angles[2]) *
+                    nx::translate(-volume_center)
                 ).inverse().filter_rows(1, 2).as<f32>();
             }
-            // ng::backward_project_3d(input_images, m_volume, m_backward_matrices.flat(0).subregion(ni::Slice{0, n_inputs}));
+            // nx::backward_project_3d(input_images, m_volume, m_backward_matrices.flat(0).subregion(ni::Slice{0, n_inputs}));
 
             // Forward projection matrices.
             const auto forward_matrix = (
-                ng::translate((volume_center.pop_front() + output_metadata.shifts).push_front(0)) *
-                ng::rotate_z<true>(noa::deg2rad(output_metadata.angles[0])) *
-                ng::rotate_y<true>(noa::deg2rad(output_metadata.angles[1])) *
-                ng::rotate_x<true>(noa::deg2rad(output_metadata.angles[2])) *
-                ng::translate(-volume_center)
+                nx::translate((volume_center.pop_front() + output_metadata.shifts).push_front(0)) *
+                nx::rotate_z<true>(noa::deg2rad(output_metadata.angles[0])) *
+                nx::rotate_y<true>(noa::deg2rad(output_metadata.angles[1])) *
+                nx::rotate_x<true>(noa::deg2rad(output_metadata.angles[2])) *
+                nx::translate(-volume_center)
             ).pop_back().as<f32>();
 
             const auto projection_window = BackwardForwardProject::forward_projection_window_size(
@@ -251,13 +250,13 @@ namespace {
             auto start = noa::Event{};
             auto end = noa::Event{};
 
-            for (i64 i{1}; i < metadata.ssize(); ++i) {
+            for (isize i{1}; i < metadata.ssize(); ++i) {
                 // Set up the references and target metadata.
                 references.images.push_back(metadata[i - 1]);
                 for (auto&& [reference, index]: noa::zip(references, m_reference_indices.span_1d()))
                     index = reference.index;
 
-                auto reference_images = m_reference_images.view().subregion(ni::Slice{0, references.ssize()});
+                auto reference_images = m_reference_images.view().subregion(Slice{0, references.ssize()});
 
                 // Mask the references.
                 start.record(stream);

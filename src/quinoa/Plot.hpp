@@ -1,7 +1,6 @@
 #pragma once
 
 #include <noa/IO.hpp>
-#include <noa/Utils.hpp>
 
 #include "quinoa/Metadata.hpp"
 #include "quinoa/Logger.hpp"
@@ -14,7 +13,7 @@ namespace qn::details {
 namespace qn {
     template<typename Real>
     void save_vector_to_text(View<Real> x, const Path& filename) {
-        check(noa::indexing::is_contiguous_vector_batched_strided(x));
+        check(noa::is_contiguous_vector_batched_strided(x));
 
         // Make sure it is dereferenceable and ready to read.
         Array<std::remove_const_t<Real>> x_cpu;

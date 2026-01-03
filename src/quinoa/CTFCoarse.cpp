@@ -1,4 +1,4 @@
-#include <noa/Geometry.hpp>
+#include <noa/Xform.hpp>
 
 #include "quinoa/CTF.hpp"
 #include "quinoa/GridSearch.hpp"
@@ -39,7 +39,7 @@ namespace {
         // 2. The tilt angles and shifts are not used.
         // As such, we select the same patches for every slice in the stack.
         Array<i32> indices = [&] {
-            const auto image_rotation = ng::rotate(noa::deg2rad(-rotation_offset));
+            const auto image_rotation = nx::rotate(noa::deg2rad(-rotation_offset));
             const auto image_shape = grid.slice_shape().vec;
             const auto image_center = (image_shape / 2).as<f64>();
             const auto image_size = noa::mean(image_shape.as<f64>());
@@ -67,9 +67,9 @@ namespace {
         }();
 
         // Reduce: (n,p,w) -> (n,1,w).
-        const i64 n = spectra.shape()[0];
-        const i64 p = indices.ssize();
-        const i64 w = spectra.shape()[3];
+        const isize n = spectra.shape()[0];
+        const isize p = indices.ssize();
+        const isize w = spectra.shape()[3];
 
         // For every slice, average the 1d spectra that are near the tilt-axis.
         auto spectra_average = Array<f32>({n, 1, 1, w}, {.device = device, .allocator = Allocator::MANAGED});
@@ -90,7 +90,7 @@ namespace {
         SpanContiguous<const f32> spectrum,
         const Vec<f64, 2>& fftfreq_range,
         const Vec<f64, 2>& fitting_range,
-        ns::CTFIsotropic<f64>& ctf,
+        CTFIsotropic64& ctf,
         const Vec<f64, 3>& phase_shift_range,
         const Vec<f64, 3>& defocus_range,
         B&& baseline = B{}
@@ -130,7 +130,7 @@ namespace {
         SpanContiguous<const f32> spectrum,
         const Vec<f64, 2>& fftfreq_range,
         Vec<f64, 2>& fitting_range,
-        ns::CTFIsotropic<f64>& ctf,
+        CTFIsotropic64& ctf,
         Baseline& baseline,
         const RefineGridSearchOptions& options
     ) -> f64 {
@@ -173,7 +173,7 @@ namespace {
     auto fit_spectrum_from_scratch(
         const SpanContiguous<const f32, 1>& spectrum,
         const Vec<f64, 2>& fftfreq_range,
-        ns::CTFIsotropic<f64>& ctf, // unset defocus and phase-shift
+        CTFIsotropic64& ctf, // unset defocus and phase-shift
         bool fit_phase_shift,
         const Path& baseline_plot_filename
     ) -> Vec<f64, 2> {
@@ -228,7 +228,7 @@ namespace {
 
     void rotation_check(
         Metadata::Stack& metadata,
-        const ns::CTFIsotropic<f64>& average_ctf,
+        const CTFIsotropic64& average_ctf,
         const Grid& grid,
         const View<const f32>& spectra, // (n,p,1,w)
         const Vec<f64, 2>& fftfreq_range,
@@ -240,15 +240,15 @@ namespace {
 
         const auto options_managed = ArrayOption{.device = spectra.device(), .allocator = Allocator::MANAGED};
         const auto buffer = Array<f32>({n + 2, 1, 1, w}, options_managed);
-        const auto ctfs_per_patch = Array<ns::CTFIsotropic<f64>>(p, options_managed);
-        const auto ctfs_per_image = Array<ns::CTFIsotropic<f64>>(n);
+        const auto ctfs_per_patch = Array<CTFIsotropic64>(p, options_managed);
+        const auto ctfs_per_image = Array<CTFIsotropic64>(n);
         const auto spacing = Vec<f64, 2>::from_value(average_ctf.pixel_size());
 
         auto baseline = Baseline{};
         auto run = [&](f64 rotation) {
             auto spectrum = buffer.view().subregion(0);
             auto spectrum_weights = buffer.view().subregion(1);
-            auto spectra_n = buffer.view().subregion(ni::Offset(2));
+            auto spectra_n = buffer.view().subregion(Offset(2));
 
             f64 ncc{};
             for (auto&& [image, ictf]: noa::zip(metadata, ctfs_per_image.span_1d())) {
@@ -271,7 +271,7 @@ namespace {
                 const auto image_spectra_pw = image_spectra.span().filter(0, 3).as_contiguous();
                 const auto image_spectrum = spectra_n.subregion(image.index);
                 const auto image_spectrum_w = image_spectrum.span_1d();
-                ng::fuse_spectra( // (p,1,1,w) -> (1,1,1,w)
+                nx::fuse_spectra( // (p,1,1,w) -> (1,1,1,w)
                     image_spectra, fftfreq_linspace, ctfs_per_patch,
                     image_spectrum, fftfreq_linspace, ictf, spectrum_weights
                 );
@@ -288,7 +288,7 @@ namespace {
 
                 // NCC between spectrum and simulated CTF of every patch.
                 f64 incc{};
-                for (i64 b{}; auto& pctf: ctfs_per_patch.span_1d())
+                for (isize b{}; auto& pctf: ctfs_per_patch.span_1d())
                     incc += zero_normalized_cross_correlation(
                         image_spectra_pw[b++], pctf, fftfreq_range, fitting_range, baseline);
                 ncc += (incc / static_cast<f64>(p) * weight);
@@ -306,10 +306,10 @@ namespace {
             auto buffer_cpu = buffer.view().reinterpret_as_cpu();
             spectrum = buffer_cpu.view().subregion(0);
             spectrum_weights = buffer_cpu.view().subregion(1);
-            spectra_n = buffer_cpu.view().subregion(ni::Offset(2));
+            spectra_n = buffer_cpu.view().subregion(Offset(2));
 
             // Fuse the baseline-subtracted spectrum of every image into a single spectrum.
-            ng::fuse_spectra( // (n,1,1,w) -> (1,1,1,w)
+            nx::fuse_spectra( // (n,1,1,w) -> (1,1,1,w)
                 spectra_n, fftfreq_linspace, ctfs_per_image,
                 spectrum, fftfreq_linspace, average_ctf,
                 spectrum_weights
@@ -323,7 +323,7 @@ namespace {
             // Tune low-frequency range and plot for diagnostics.
             auto fitting_range = baseline.tune_fitting_range(spectrum.span_1d(), fftfreq_range, average_ctf);
             auto [start_index, start_fftfreq] = nearest_integer_fftfreq(w, fftfreq_range, fitting_range[0]);
-            auto new_spectrum = spectrum.subregion(ni::Ellipsis{}, ni::Slice{start_index});
+            auto new_spectrum = spectrum.subregion(Ellipsis{}, Slice{start_index});
             save_plot_xy(
                 noa::Linspace{start_fftfreq, fftfreq_range[1], true}, new_spectrum,
                 output_directory / "rotation_check.txt", {
@@ -390,8 +390,8 @@ namespace qn::ctf {
         const auto average_spectrum_w = average_spectrum.span_1d();
         const auto spectra_per_image_bw = spectra_per_image.span().filter(0, 3).as_contiguous();
         const auto norm = 1 / static_cast<f32>(options.n_slices_to_average);
-        for (i64 i{}; i < options.n_slices_to_average; ++i) {
-            for (i64 j{}; f32 e: spectra_per_image_bw[i])
+        for (isize i{}; i < options.n_slices_to_average; ++i) {
+            for (isize j{}; f32 e: spectra_per_image_bw[i])
                 average_spectrum_w[j++] += e * norm;
         }
 
@@ -466,7 +466,7 @@ namespace qn::ctf {
             // Instead, use the phase-shift from the initial reference as first approximation.
             // TODO Maybe fitting the phase-shift could be useful here?
             meta.sort("tilt");
-            auto fit_spectrum = [&](i64 i, Vec<f64, 2>& ifitting_range, CTFIsotropic64& ictf, Baseline& baseline) {
+            auto fit_spectrum = [&](isize i, Vec<f64, 2>& ifitting_range, CTFIsotropic64& ictf, Baseline& baseline) {
                 refine_grid_search(
                     spectra[meta[i].index], patches.rho_vec(), ifitting_range, ictf, baseline, {
                         .initial_defocus_range = 0.6,
@@ -487,14 +487,14 @@ namespace qn::ctf {
                 auto ictf = ctf;
                 auto ifitting_range = options.initial_fitting_range;
                 Baseline baseline{};
-                for (i64 i = pivot; i < meta.ssize(); ++i) // towards positive tilts
+                for (isize i = pivot; i < meta.ssize(); ++i) // towards positive tilts
                     fit_spectrum(i, ifitting_range, ictf, baseline);
             });
             auto _1 = pool.enqueue([&] () mutable {
                 auto ictf = ctf;
                 auto ifitting_range = options.initial_fitting_range;
                 Baseline baseline{};
-                for (i64 i = pivot - 1; i >= 0; --i) // towards negative tilts
+                for (isize i = pivot - 1; i >= 0; --i) // towards negative tilts
                     fit_spectrum(i, ifitting_range, ictf, baseline);
             });
         }

@@ -45,7 +45,7 @@ namespace qn {
         /// If the file doesn't exist, it will throw an exception.
         StackLoader(const Path& filename, const LoadStackParameters& parameters);
 
-        void read_slice(const View<f32>& output_slice, i64 file_slice_index, bool cache = false);
+        void read_slice(const View<f32>& output_slice, isize file_slice_index, bool cache = false);
 
         /// Loads the slices in "stack" in the same order as the order of the slices in "metadata".
         /// The .index field of the slices in "metadata" are reset to the [0..n) range.
@@ -54,35 +54,35 @@ namespace qn {
 
         [[nodiscard]] auto compute_device() const noexcept -> Device { return m_parameters.compute_device; }
         [[nodiscard]] auto allocator() const noexcept -> Allocator { return m_parameters.allocator; }
-        [[nodiscard]] auto file_spacing() const noexcept -> Vec2<f64> { return m_input_spacing; }
-        [[nodiscard]] auto file_slice_shape() const noexcept -> Shape2<i64> { return m_input_slice_shape; }
-        [[nodiscard]] auto stack_spacing() const noexcept -> Vec2<f64> { return m_output_spacing; }
-        [[nodiscard]] auto slice_shape() const noexcept -> Shape2<i64> { return m_output_slice_shape; }
-        [[nodiscard]] auto n_slices_in_file() const noexcept -> i64 { return m_file_slice_count; }
+        [[nodiscard]] auto file_spacing() const noexcept -> Vec<f64, 2> { return m_input_spacing; }
+        [[nodiscard]] auto file_slice_shape() const noexcept -> Shape2 { return m_input_slice_shape; }
+        [[nodiscard]] auto stack_spacing() const noexcept -> Vec<f64, 2> { return m_output_spacing; }
+        [[nodiscard]] auto slice_shape() const noexcept -> Shape2 { return m_output_slice_shape; }
+        [[nodiscard]] auto n_slices_in_file() const noexcept -> isize { return m_file_slice_count; }
 
         [[nodiscard]] static auto registered_stack() noexcept -> View<const f32> { return s_input_stack.view(); }
 
         void clear_cache() { m_cache.clear(); }
 
     private:
-        void read_slice_and_precision_pad_(i64 file_slice_index, const View<f32>& padded_slice);
+        void read_slice_and_precision_pad_(isize file_slice_index, const View<f32>& padded_slice);
 
     private:
         static Array<f32> s_input_stack; // register the input stack
 
         noa::io::ImageFile m_file{};
-        i64 m_file_slice_count{};
+        isize m_file_slice_count{};
         LoadStackParameters m_parameters{};
 
-        Shape2<i64> m_input_slice_shape{};
-        Shape2<i64> m_padded_slice_shape{};
-        Shape2<i64> m_cropped_slice_shape{};
-        Shape2<i64> m_bandpass_slice_shape{};
-        Shape2<i64> m_output_slice_shape{};
+        Shape2 m_input_slice_shape{};
+        Shape2 m_padded_slice_shape{};
+        Shape2 m_cropped_slice_shape{};
+        Shape2 m_bandpass_slice_shape{};
+        Shape2 m_output_slice_shape{};
 
-        Vec2<f64> m_input_spacing{};
-        Vec2<f64> m_output_spacing{};
-        Vec2<f64> m_rescale_shift{};
+        Vec<f64, 2> m_input_spacing{};
+        Vec<f64, 2> m_output_spacing{};
+        Vec<f64, 2> m_rescale_shift{};
 
         Array<f32> m_input_slice{}; // empty if no padding
         Array<f32> m_input_slice_io{}; // empty if compute is on the cpu, otherwise, this is cpu array
@@ -94,9 +94,9 @@ namespace qn {
 
     struct LoadStackOutputs {
         Array<f32> stack;
-        Vec2<f64> stack_spacing;
-        Vec2<f64> file_spacing;
-        Shape2<i64> file_slice_shape;
+        Vec<f64, 2> stack_spacing;
+        Vec<f64, 2> file_spacing;
+        Shape2 file_slice_shape;
     };
 
     [[nodiscard]]
@@ -125,7 +125,7 @@ namespace qn {
     struct SaveStackParameters {
         bool correct_rotation{false};
         bool cache_loader{false};
-        noa::Interp interp{noa::Interp::LINEAR};
+        nx::Interp interp{nx::Interp::LINEAR};
         noa::Border border{noa::Border::ZERO};
         noa::io::DataType dtype = noa::io::DataType::F32;
     };

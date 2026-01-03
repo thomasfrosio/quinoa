@@ -1,6 +1,6 @@
 #pragma once
 
-#include <noa/Array.hpp>
+#include <noa/Runtime.hpp>
 #include <noa/Signal.hpp>
 
 #include "quinoa/Types.hpp"

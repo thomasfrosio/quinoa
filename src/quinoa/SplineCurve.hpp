@@ -2,9 +2,9 @@
 
 #include <cmath>
 #include <vector>
+#include <noa/Runtime.hpp>
 
 #include "quinoa/Types.hpp"
-#include <noa/Array.hpp>
 
 namespace qn::details {
     /// Band matrix solver
@@ -14,7 +14,7 @@ namespace qn::details {
         using value_type = T;
 
     public:
-        BandMatrix(i64 dim, i64 n_u, i64 n_l) {
+        BandMatrix(isize dim, isize n_u, isize n_l) {
             m_upper.resize(static_cast<size_t>(n_u + 1));
             m_lower.resize(static_cast<size_t>(n_l + 1));
             for (auto& i: m_upper)
@@ -23,7 +23,7 @@ namespace qn::details {
                 i.resize(static_cast<size_t>(dim));
         }
 
-        [[nodiscard]] auto dim() const -> i64 { // matrix dimension
+        [[nodiscard]] auto dim() const -> isize { // matrix dimension
             if (not m_upper.empty())
                 return std::ssize(m_upper[0]);
             return 0;
@@ -31,9 +31,9 @@ namespace qn::details {
 
         // defines the new operator (), so that we can access the elements
         // by A(i,j), index going from i=0,...,dim()-1
-        auto operator()(i64 i, i64 j) -> value_type& {
-            ni::bounds_check(dim(), i);
-            ni::bounds_check(dim(), j);
+        auto operator()(isize i, isize j) -> value_type& {
+            noa::bounds_check(dim(), i);
+            noa::bounds_check(dim(), j);
 
             auto k = j - i; // what band is the entry
             check(-num_lower() <= k and k <= num_upper());
@@ -43,25 +43,25 @@ namespace qn::details {
                 return m_upper[static_cast<size_t>(k)][static_cast<size_t>(i)];
             return m_lower[static_cast<size_t>(-k)][static_cast<size_t>(i)];
         }
-        auto operator()(i64 i, i64 j) const -> const value_type& {
+        auto operator()(isize i, isize j) const -> const value_type& {
             return const_cast<BandMatrix&>(*this)(i, j);
         }
 
         // we can store an additional diagonal (in m_lower)
         // second diag (used in LU decomposition), saved in m_lower
-        auto saved_diag(i64 i) const -> const value_type& {
-            ni::bounds_check(dim(), i);
+        auto saved_diag(isize i) const -> const value_type& {
+            noa::bounds_check(dim(), i);
             return m_lower[0][static_cast<size_t>(i)];
         }
-        auto saved_diag(i64 i) -> value_type& {
-            ni::bounds_check(dim(), i);
+        auto saved_diag(isize i) -> value_type& {
+            noa::bounds_check(dim(), i);
             return m_lower[0][static_cast<size_t>(i)];
         }
 
-        [[nodiscard]] auto num_upper() const -> i64 {
+        [[nodiscard]] auto num_upper() const -> isize {
             return std::ssize(m_upper) - 1;
         }
-        [[nodiscard]] auto num_lower() const -> i64 {
+        [[nodiscard]] auto num_lower() const -> isize {
             return std::ssize(m_lower) - 1;
         }
 
@@ -71,25 +71,25 @@ namespace qn::details {
 
             // preconditioning
             // normalize column i so that a_ii=1
-            for (i64 i{}; i < dim(); ++i) {
+            for (isize i{}; i < dim(); ++i) {
                 check(self(i, i) != 0.0);
                 saved_diag(i) = 1.0 / self(i, i);
-                const i64 j_min = std::max(i64{}, i - num_lower());
-                const i64 j_max = std::min(dim() - 1, i + num_upper());
-                for (i64 j = j_min; j <= j_max; ++j)
+                const isize j_min = std::max(isize{}, i - num_lower());
+                const isize j_max = std::min(dim() - 1, i + num_upper());
+                for (isize j = j_min; j <= j_max; ++j)
                     self(i, j) *= saved_diag(i);
                 self(i, i) = 1.0; // prevents rounding errors
             }
 
             // Gauss LR-Decomposition
-            for (i64 k{}; k < dim(); ++k) {
-                const i64 i_max = std::min(dim() - 1, k + num_lower()); // num_lower not a mistake!
-                for (i64 i = k + 1; i <= i_max; ++i) {
+            for (isize k{}; k < dim(); ++k) {
+                const isize i_max = std::min(dim() - 1, k + num_lower()); // num_lower not a mistake!
+                for (isize i = k + 1; i <= i_max; ++i) {
                     check(self(k, k) != 0.0);
                     const value_type x = -self(i, k) / self(k, k);
                     self(i, k) = -x; // assembly part of L
-                    const i64 j_max = std::min(dim() - 1, k + num_upper());
-                    for (i64 j = k + 1; j <= j_max; ++j) {
+                    const isize j_max = std::min(dim() - 1, k + num_upper());
+                    for (isize j = k + 1; j <= j_max; ++j) {
                         // assembly part of R
                         self(i, j) = self(i, j) + x * self(k, j);
                     }
@@ -103,9 +103,9 @@ namespace qn::details {
             SpanContiguous<value_type> x
         ) const {
             check(dim() == std::ssize(b) and dim() == std::ssize(x));
-            for (i64 i{}; i < dim(); ++i) {
+            for (isize i{}; i < dim(); ++i) {
                 value_type sum{};
-                for (i64 j = std::max(i64{}, i - num_lower()); j < i; ++j)
+                for (isize j = std::max(isize{}, i - num_lower()); j < i; ++j)
                     sum += (*this)(i, j) * x[j];
                 x[i] = b[i] * saved_diag(i) - sum;
             }
@@ -117,9 +117,9 @@ namespace qn::details {
             SpanContiguous<value_type> x
         ) const {
             check(dim() == std::ssize(b) and dim() == std::ssize(x));
-            for (i64 i = dim() - 1; i >= 0; --i) {
+            for (isize i = dim() - 1; i >= 0; --i) {
                 value_type sum{};
-                for (i64 j = i + 1; j <= std::min(dim() - 1, i + num_upper()); ++j)
+                for (isize j = i + 1; j <= std::min(dim() - 1, i + num_upper()); ++j)
                     sum += (*this)(i, j) * x[j];
                 x[i] = (b[i] - sum) / (*this)(i, i);
             }
@@ -193,7 +193,7 @@ namespace qn {
         /// Allocates n elements now.
         /// Future calls to fit(...) or set_points(...) will not need to allocate
         /// if called with vectors of fewer or as many elements.
-        void reserve(i64 n) {
+        void reserve(isize n) {
             allocate_(n, true);
         }
 
@@ -231,7 +231,7 @@ namespace qn {
 
             // Check the strict monotonicity of input vector x.
             bool is_monotonic{true};
-            for (i64 i{}; i < n - 1; i++) {
+            for (isize i{}; i < n - 1; i++) {
                 if (x[i] >= x[i + 1]) {
                     is_monotonic = false;
                     break;
@@ -241,14 +241,14 @@ namespace qn {
 
             // Allocate and save inputs.
             allocate_(n);
-            for (i64 i{}; i < n; ++i) {
+            for (isize i{}; i < n; ++i) {
                 m_x[i] = x[i];
                 m_y[i] = y[i];
             }
 
             if (m_type == LINEAR) {
                 // linear interpolation
-                for (i64 i{}; i < n - 1; i++)
+                for (isize i{}; i < n - 1; i++)
                     m_b[i] = (m_y[i + 1] - m_y[i]) / (m_x[i + 1] - m_x[i]);
                 m_b[n - 1] = m_b[n - 2]; // ignore boundary conditions, set slope equal to the last segment
 
@@ -257,11 +257,11 @@ namespace qn {
                 // This requires solving an equation system.
 
                 // Set up the matrix and right-hand side of the equation system for the parameters b
-                const i64 n_upper = m_left == NOT_A_KNOT ? 2 : 1;
-                const i64 n_lower = m_right == NOT_A_KNOT ? 2 : 1;
+                const isize n_upper = m_left == NOT_A_KNOT ? 2 : 1;
+                const isize n_lower = m_right == NOT_A_KNOT ? 2 : 1;
                 auto A = details::BandMatrix<value_type>(n, n_upper, n_lower);
                 auto rhs = m_b; // use b_i as a temporary buffer
-                for (i64 i = 1; i < n - 1; i++) {
+                for (isize i = 1; i < n - 1; i++) {
                     A(i, i - 1) = 1.0 / 3.0 * (m_x[i] - m_x[i - 1]);
                     A(i, i + 0) = 2.0 / 3.0 * (m_x[i + 1] - m_x[i - 1]);
                     A(i, i + 1) = 1.0 / 3.0 * (m_x[i + 1] - m_x[i]);
@@ -314,7 +314,7 @@ namespace qn {
                 A.lu_solve(rhs, m_d, m_c); // use d_i as a temporary buffer
 
                 // Calculate parameters b and d based on c.
-                for (i64 i{}; i < n - 1; i++) {
+                for (isize i{}; i < n - 1; i++) {
                     m_d[i] = 1.0 / 3.0 * (m_c[i + 1] - m_c[i]) / (m_x[i + 1] - m_x[i]);
                     m_b[i] = (m_y[i + 1] - m_y[i]) / (m_x[i + 1] - m_x[i]) -
                              1.0 / 3.0 * (2.0 * m_c[i] + m_c[i + 1]) * (m_x[i + 1] - m_x[i]);
@@ -335,7 +335,7 @@ namespace qn {
                 // (here we use 3-point finite differences)
 
                 // Set b to match 1st order derivative finite difference.
-                for (i64 i = 1; i < n - 1; i++) {
+                for (isize i = 1; i < n - 1; i++) {
                     const auto h = m_x[i + 1] - m_x[i];
                     const auto hl = m_x[i] - m_x[i - 1];
                     m_b[i] = -h / (hl * (hl + h)) * m_y[i - 1] +
@@ -390,14 +390,14 @@ namespace qn {
         /// \returns false if no adjustments have been made, true otherwise
         bool make_monotonic() {
             bool modified = false;
-            const i64 n = m_x.ssize();
+            const isize n = m_x.ssize();
 
             // Check:
             //  input data monotonic increasing --> b_i>=0
             //  input data monotonic decreasing --> b_i<=0
-            for (i64 i{}; i < n; i++) {
-                const i64 im1 = std::max(i - 1, i64{0});
-                const i64 ip1 = std::min(i + 1, n - 1);
+            for (isize i{}; i < n; i++) {
+                const isize im1 = std::max(i - 1, isize{0});
+                const isize ip1 = std::min(i + 1, n - 1);
                 if ((m_y[im1] <= m_y[i] and m_y[i] <= m_y[ip1] and m_b[i] < 0.0) or
                     (m_y[im1] >= m_y[i] and m_y[i] >= m_y[ip1] and m_b[i] > 0.0)) {
                     modified = true;
@@ -408,7 +408,7 @@ namespace qn {
             // If input data is monotonic (b[i], b[i+1], avg have all the same sign)
             // ensure a sufficient criteria for the monotonicity to be satisfied:
             //      sqrt(b[i]^2+b[i+1]^2) <= 3 |avg|, with avg=(y[i+1]-y[i])/h,
-            for (i64 i{}; i < n - 1; i++) {
+            for (isize i{}; i < n - 1; i++) {
                 const auto h = m_x[i + 1] - m_x[i];
                 const auto avg = (m_y[i + 1] - m_y[i]) / h;
 
@@ -445,8 +445,8 @@ namespace qn {
             //   - Clenshaw
             //   - Even-Odd method by A.C.R. Newbery
             //   - Compensated Horner Scheme
-            const i64 n = m_x.ssize();
-            const i64 idx = find_closest_(x);
+            const isize n = m_x.ssize();
+            const isize idx = find_closest_(x);
             const auto h = x - m_x[idx];
 
             if (x < m_x[0]) // extrapolation to the left
@@ -461,8 +461,8 @@ namespace qn {
 
         /// Evaluates the spline's derivative at point x.
         [[nodiscard]] constexpr auto derive_at(i32 order, value_type x) const -> value_type {
-            const i64 n = m_x.ssize();
-            const i64 idx = find_closest_(x);
+            const isize n = m_x.ssize();
+            const isize idx = find_closest_(x);
             const auto h = x - m_x[idx];
 
             if (x < m_x[0]) { // extrapolation to the left
@@ -494,9 +494,9 @@ namespace qn {
         [[nodiscard]] auto is_empty() const -> bool { return m_buffer == nullptr; }
 
     private:
-        void allocate_(i64 n, bool reserve_only = false) {
+        void allocate_(isize n, bool reserve_only = false) {
             // Reuse the buffer if you can.
-            const i64 n_to_allocate = n * 5;
+            const isize n_to_allocate = n * 5;
             if (m_buffer == nullptr or n_allocated < n_to_allocate) {
                 n_allocated = n_to_allocate;
                 m_buffer = std::make_unique<value_type[]>(static_cast<size_t>(n_allocated));
@@ -514,7 +514,7 @@ namespace qn {
 
         // Calculate c_i and d_i from b_i.
         void set_coeffs_from_b_() {
-            for (i64 i{}; i < m_x.ssize() - 1; i++) {
+            for (isize i{}; i < m_x.ssize() - 1; i++) {
                 const auto h = m_x[i + 1] - m_x[i];
                 // from continuity and differentiability condition
                 m_c[i] = (3.0 * (m_y[i + 1] - m_y[i]) / h - (2.0 * m_b[i] + m_b[i + 1])) / h;
@@ -527,17 +527,17 @@ namespace qn {
         }
 
         // Closest idx so that m_x[idx] <= x.
-        [[nodiscard]] constexpr auto find_closest_(value_type x) const -> i64 {
+        [[nodiscard]] constexpr auto find_closest_(value_type x) const -> isize {
             // x is sorted, so stop when we passed x.
-            for (i64 i{}; i < m_x.ssize(); ++i)
+            for (isize i{}; i < m_x.ssize(); ++i)
                 if (m_x[i] > x)
-                    return std::max(i - 1, i64{0});
+                    return std::max(i - 1, isize{0});
             return m_x.ssize() - 1;
         }
 
     private:
         std::unique_ptr<value_type[]> m_buffer;
-        i64 n_allocated{};
+        isize n_allocated{};
 
         // interpolation parameters
         // f(x) = a_i + b_i*(x-x_i) + c_i*(x-x_i)^2 + d_i*(x-x_i)^3
@@ -565,7 +565,7 @@ namespace qn {
         Op&& op = Op{}
     ) {
         const f64 norm = 1 / static_cast<f64>(output.ssize() - 1);
-        for (i64 i{}; i < output.ssize(); ++i) {
+        for (isize i{}; i < output.ssize(); ++i) {
             const f64 coordinate = static_cast<f64>(i) * norm; // [0,1]
             output[i] = static_cast<T>(op(spline.interpolate_at(coordinate)));
         }

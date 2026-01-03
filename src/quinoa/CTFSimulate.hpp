@@ -8,7 +8,7 @@ namespace qn::ctf {
     /// at these locations.
     class Simulate {
     public:
-        constexpr static size_t SIMULATED_LOGICAL_SIZE = 8192;
+        constexpr static usize SIMULATED_LOGICAL_SIZE = 8192;
         constexpr static f64 SIMULATED_FREQ_STEP = 1 / static_cast<f64>(SIMULATED_LOGICAL_SIZE);
     public:
         /// Sample the spectrum at the given fftfreq.
@@ -20,12 +20,12 @@ namespace qn::ctf {
             const auto spectrum_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum.ssize() - 1);
             const auto spectrum_frequency = (fftfreq - fftfreq_range[0]) / spectrum_step;
             const auto floored_f64 = std::floor(spectrum_frequency);
-            const auto floored_i64 = static_cast<i64>(floored_f64);
+            const auto floored_i64 = static_cast<isize>(floored_f64);
             const auto fraction = spectrum_frequency - floored_f64;
 
             // Lerp.
-            const auto index_0 = ni::index_at<noa::Border::REFLECT>(floored_i64 + 0, spectrum.ssize());
-            const auto index_1 = ni::index_at<noa::Border::REFLECT>(floored_i64 + 1, spectrum.ssize());
+            const auto index_0 = noa::index_at<noa::Border::REFLECT>(floored_i64 + 0, spectrum.ssize());
+            const auto index_1 = noa::index_at<noa::Border::REFLECT>(floored_i64 + 1, spectrum.ssize());
             const auto interpolated =
                 static_cast<f64>(spectrum[index_0]) * (1 - fraction) +
                 static_cast<f64>(spectrum[index_1]) * fraction;
@@ -34,11 +34,11 @@ namespace qn::ctf {
 
     public:
         constexpr explicit Simulate(
-            const ns::CTFIsotropic<f64>& ctf,
+            const CTFIsotropic64& ctf,
             const Vec<f64, 2>& fftfreq_range
         ) :
             m_ctf{&ctf},
-            m_simulated_range_index{noa::round(fftfreq_range * SIMULATED_LOGICAL_SIZE).as<i64>()}
+            m_simulated_range_index{noa::round(fftfreq_range * SIMULATED_LOGICAL_SIZE).as<isize>()}
         {}
 
     public: // range-for loop support
@@ -73,12 +73,12 @@ namespace qn::ctf {
             }
 
         public: // minimal range-for support
-            constexpr explicit Iterator(const Simulate* parent, i64 index) noexcept: m_parent{parent}, m_index{index} {
-                circular_buffer_next_(std::max(i64{0}, m_index - 1)); // prevent negative frequencies
+            constexpr explicit Iterator(const Simulate* parent, isize index) noexcept: m_parent{parent}, m_index{index} {
+                circular_buffer_next_(std::max(isize{0}, m_index - 1)); // prevent negative frequencies
                 circular_buffer_next_(m_index);
                 circular_buffer_next_(m_index + 1);
             }
-            constexpr bool operator!=(const i64& end) const noexcept { return m_index != end; }
+            constexpr bool operator!=(const isize& end) const noexcept { return m_index != end; }
             constexpr auto operator*() const noexcept -> const Iterator& { return *this; }
             constexpr Iterator& operator++() noexcept {
                 ++m_index;
@@ -92,29 +92,29 @@ namespace qn::ctf {
 
         private:
             const Simulate* m_parent;
-            i64 m_index;
+            isize m_index;
 
             // Circular buffer.
-            constexpr static i64 CIRCULAR_BUFFER_SIZE = 3;
+            constexpr static isize CIRCULAR_BUFFER_SIZE = 3;
             Vec<f64, CIRCULAR_BUFFER_SIZE> m_circular_buffer{};
-            i64 m_circular_index{};
+            isize m_circular_index{};
 
-            constexpr void circular_buffer_next_(i64 simulated_index) {
+            constexpr void circular_buffer_next_(isize simulated_index) {
                 const auto fftfreq = static_cast<f64>(simulated_index) * SIMULATED_FREQ_STEP;
                 m_circular_index = (m_circular_index + 1) % CIRCULAR_BUFFER_SIZE;
-                m_circular_buffer[static_cast<size_t>(m_circular_index)] = std::abs(m_parent->m_ctf->value_at(fftfreq));
+                m_circular_buffer[static_cast<usize>(m_circular_index)] = std::abs(m_parent->m_ctf->value_at(fftfreq));
             }
-            [[nodiscard]] constexpr auto circular_buffer_get_(i64 offset) const -> f64 {
+            [[nodiscard]] constexpr auto circular_buffer_get_(isize offset) const -> f64 {
                 auto current = (m_circular_index + CIRCULAR_BUFFER_SIZE + offset) % CIRCULAR_BUFFER_SIZE;
-                return m_circular_buffer[static_cast<size_t>(current)];
+                return m_circular_buffer[static_cast<usize>(current)];
             }
         };
 
         [[nodiscard]] constexpr auto begin() const -> Iterator { return Iterator(this, m_simulated_range_index[0]); }
-        [[nodiscard]] constexpr auto end() const -> i64 { return m_simulated_range_index[1]; }
+        [[nodiscard]] constexpr auto end() const -> isize { return m_simulated_range_index[1]; }
 
     private:
-        const ns::CTFIsotropic<f64>* m_ctf{};
-        Vec<i64, 2> m_simulated_range_index{};
+        const CTFIsotropic64* m_ctf{};
+        Vec<isize, 2> m_simulated_range_index{};
     };
 }

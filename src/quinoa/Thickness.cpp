@@ -1,5 +1,5 @@
-#include <noa/Array.hpp>
-#include <noa/Geometry.hpp>
+#include <noa/Runtime.hpp>
+#include <noa/Xform.hpp>
 
 #include "quinoa/Thickness.hpp"
 
@@ -14,10 +14,10 @@ namespace {
     struct TomogramVariance {
     public:
         static constexpr f32 CYLINDER_FRACTION = 0.49f;
-        static constexpr auto INTERP = noa::Interp::LINEAR;
+        static constexpr auto INTERP = nx::Interp::LINEAR;
         static constexpr auto BORDER = noa::Border::ZERO;
         using input_span_t = SpanContiguous<const f32, 3>;
-        using interpolator_t = noa::Interpolator<2, INTERP, BORDER, input_span_t>;
+        using interpolator_t = nx::Interpolator<2, INTERP, BORDER, input_span_t>;
         using matrices_span_t = SpanContiguous<const Mat<f32, 2, 4>>;
 
     public:
@@ -78,7 +78,7 @@ namespace {
         const View<f64>& output,
         const Path& output_directory
     ) {
-        check(not ni::are_overlapped(input, output));
+        check(not noa::are_overlapped(input, output));
 
         // Compute the baseline.
         constexpr auto SMOOTHING = GaussianSlider{
@@ -133,12 +133,12 @@ namespace {
         for (auto&& [image, matrix]: noa::zip(metadata, matrices.span_1d())) {
             const auto angles = noa::deg2rad(image.angles);
             matrix = ( // (image->volume).inverse()
-                ng::translate(volume_center) *
-                ng::rotate_z<true>(+angles[0]) *
-                ng::rotate_x<true>(-angles[2]) *
-                ng::rotate_y<true>(-angles[1]) *
-                ng::rotate_z<true>(-angles[0]) *
-                ng::translate(-(image_center + image.shifts).push_front(0))
+                nx::translate(volume_center) *
+                nx::rotate_z<true>(+angles[0]) *
+                nx::rotate_x<true>(-angles[2]) *
+                nx::rotate_y<true>(-angles[1]) *
+                nx::rotate_z<true>(-angles[0]) *
+                nx::translate(-(image_center + image.shifts).push_front(0))
             ).inverse().filter_rows(1, 2).as<f32>(); // (y, x)
         }
 

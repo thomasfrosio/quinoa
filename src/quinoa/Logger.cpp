@@ -1,6 +1,6 @@
 #include "quinoa/Logger.hpp"
 
-#include <noa/core/math/Distribution.hpp>
+#include <noa/runtime/core/Random.hpp>
 
 // Include this after our Logger.hpp to properly set the spdlog levels.
 #include <spdlog/sinks/stdout_color_sinks.h>

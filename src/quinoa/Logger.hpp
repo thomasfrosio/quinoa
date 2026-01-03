@@ -4,7 +4,6 @@
 #include <spdlog/common.h>
 #include <spdlog/spdlog.h>
 
-#include <noa/Utils.hpp>
 #include <quinoa/Types.hpp>
 
 namespace qn {

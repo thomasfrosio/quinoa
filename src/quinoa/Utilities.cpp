@@ -1,5 +1,5 @@
 // Suppress Eigen warnings...
-#include <noa/core/Config.hpp>
+#include <noa/base/Config.hpp>
 #if defined(NOA_COMPILER_GCC) || defined(NOA_COMPILER_CLANG)
 #   pragma GCC diagnostic push
 #   pragma GCC diagnostic ignored "-Wsign-conversion"
@@ -176,7 +176,7 @@ namespace qn {
             for (i64 y{-BLOCK_RADIUS}; y <= BLOCK_RADIUS; ++y) {
                 for (i64 x{-BLOCK_RADIUS}; x <= BLOCK_RADIUS; ++x) {
                     const auto indices = block_center + Vec{y, x};
-                    if (ni::is_inbound(data.shape(), indices)) {
+                    if (noa::is_inbound(data.shape(), indices)) {
                         const auto& value = data(indices);
                         if (max_value < value) {
                             max_value = value;
@@ -195,7 +195,7 @@ namespace qn {
             for (i64 y{-1}; y <= 1; ++y) {
                 for (i64 x{-1}; x <= 1; ++x) {
                     const auto indices = position + Vec{y, x};
-                    if (ni::is_inbound(data.shape(), indices)) {
+                    if (noa::is_inbound(data.shape(), indices)) {
                         if (value < data(indices))
                             return false;
                     }
@@ -223,7 +223,7 @@ namespace qn {
                     f32 base{};
                     for (i64 x{-1}; x <= 1; ++x) {
                         auto position = peak_position + Vec{y * direction, x};
-                        position = ni::index_at<noa::Border::REFLECT>(position, data.shape());
+                        position = noa::index_at<noa::Border::REFLECT>(position, data.shape());
                         base += data(position);
                     }
                     base /= 3;
@@ -249,10 +249,10 @@ namespace qn {
                 Vec<f32, 3> buffer{};
                 for (i64 j{}; j < 3; ++j) {
                     auto indices = peak_position;
-                    indices[i] = ni::index_at<noa::Border::REFLECT>(peak_position[i] + j - 1, data.shape()[i]);
+                    indices[i] = noa::index_at<noa::Border::REFLECT>(peak_position[i] + j - 1, data.shape()[i]);
                     buffer[j] = data(indices);
                 }
-                noa::tie(peak_offset[i], peak_value[i]) = noa::lstsq_fit_quadratic_vertex_3points(
+                noa::tie(peak_offset[i], peak_value[i]) = ns::details::lstsq_fit_quadratic_vertex_3points(
                     buffer[0], buffer[1], buffer[2]
                 );
             }

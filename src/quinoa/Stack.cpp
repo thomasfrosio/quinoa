@@ -1,7 +1,6 @@
-#include <noa/Array.hpp>
+#include <noa/Runtime.hpp>
 #include <noa/FFT.hpp>
-#include <noa/Geometry.hpp>
-#include <noa/Utils.hpp>
+#include <noa/Xform.hpp>
 
 #include "quinoa/Logger.hpp"
 #include "quinoa/Stack.hpp"
@@ -19,10 +18,10 @@ namespace {
     ///          we also return this shift for the caller to apply to keep the centers aligned.
     struct FourierCropDimensions {
         /// Shape of the padded input. If no padding was required, padded_shape == input_shape.
-        Shape<i64, 2> padded_shape;
+        Shape2 padded_shape;
 
         /// Logical shape of the Fourier-cropped spectrum.
-        Shape<i64, 2> cropped_shape;
+        Shape2 cropped_shape;
 
         /// Actual spacing after Fourier cropping the (possibly padded) input.
         Vec<f64, 2> cropped_spacing;
@@ -46,26 +45,26 @@ namespace {
     /// \param target_min_size          Minimum tolerable size. It is used to ensure a minimum output.cropped_shape.
     /// \param target_max_size          Maximum tolerable size. It is used to ensure a maximum output.cropped_shape.
     auto fourier_crop_dimensions(
-        Shape<i64, 2> current_shape,
+        Shape2 current_shape,
         Vec<f64, 2> current_spacing,
         Vec<f64, 2> target_spacing,
         f64 maximum_relative_error = 5e-4,
-        i64 target_min_size = 0,
-        i64 target_max_size = 0
+        isize target_min_size = 0,
+        isize target_max_size = 0
     ) -> FourierCropDimensions {
-        qn::check(noa::all(current_spacing > 0 and target_spacing >= 0));
+        check(current_spacing > 0 and target_spacing >= 0);
 
         // Disallow Fourier padding.
         // Note that if the current spacing is anisotropic, the target is set to be isotropic, since it is
         // often simpler to handle and the caller might expect the output spacing to be isotropic too.
-        if (noa::any(current_spacing > target_spacing))
+        if (current_spacing.any_gt(target_spacing))
             target_spacing = noa::max(current_spacing);
 
         // Clamp the target spacing to the maximum spacing corresponding to the minimum allowed size.
         if (target_min_size > 0 and target_min_size < min(current_shape)) {
             const auto target_max_spacing = noa::min(
                 current_spacing * current_shape.vec.as<f64>() / static_cast<f64>(target_min_size));
-            if (noa::any(target_max_spacing < target_spacing))
+            if (target_spacing.any_gt(target_max_spacing))
                 target_spacing = target_max_spacing;
         }
 
@@ -73,7 +72,7 @@ namespace {
         if (target_max_size > 0 and target_max_size < min(current_shape)) {
             const auto target_min_spacing = noa::max(
                 current_spacing * current_shape.vec.as<f64>() / static_cast<f64>(target_max_size));
-            if (noa::any(target_spacing < target_min_spacing))
+            if (target_spacing.any_lt(target_min_spacing))
                 target_spacing = target_min_spacing;
         }
 
@@ -82,8 +81,8 @@ namespace {
         // the target spacing isotropic within a maximum_relative_error.
         auto pad_to_align_cutoff = [maximum_relative_error](i64 i_size, f64 i_spacing, f64 o_spacing) -> i64
         {
-            i64 MAXIMUM_SIZE = i_size + 256; // in all tested cases, we stop way before that (~0 to 6)
-            i64 best_size = i_size;
+            isize MAXIMUM_SIZE = i_size + 256; // in all tested cases, we stop way before that (~0 to 6)
+            isize best_size = i_size;
             f64 best_error = std::numeric_limits<f64>::max();
             while (i_size < MAXIMUM_SIZE) {
                 const auto new_size = std::round(static_cast<f64>(i_size) * i_spacing / o_spacing);
@@ -117,7 +116,7 @@ namespace {
         // We'll need to recompute the actual frequency after rounding, but of course,
         // this new frequency should be within a "maximum_relative_error" from the target spacing.
         new_shape_f64 = noa::round(new_shape_f64);
-        const auto new_shape = Shape{new_shape_f64.as<i64>()};
+        const auto new_shape = Shape{new_shape_f64.as<isize>()};
         const auto new_spacing = current_spacing * current_shape_f64 / new_shape_f64;
 
         // To preserve the image center, we may need to shift the Fourier-cropped image.
@@ -192,7 +191,7 @@ namespace qn {
         // Reading the file.
         const auto input_shape = m_input_slice_shape.push_front<2>(1);
         const bool use_gpu = parameters.compute_device.is_gpu();
-        const bool has_initial_padding = noa::any(m_input_slice_shape != m_padded_slice_shape);
+        const bool has_initial_padding = m_input_slice_shape != m_padded_slice_shape;
         const bool has_register = not s_input_stack.is_empty();
         if (not has_register and use_gpu)
             m_input_slice_io = Array<f32>(input_shape);
@@ -219,7 +218,7 @@ namespace qn {
         m_bandpass_slice_shape = m_cropped_slice_shape;
         if (parameters.bandpass_mirror_padding_factor > 0) {
             auto padding = m_bandpass_slice_shape.vec.as<f64>() * parameters.bandpass_mirror_padding_factor;
-            m_bandpass_slice_shape += Shape{noa::round(padding).as<i64>()};
+            m_bandpass_slice_shape += Shape{noa::round(padding).as<isize>()};
             m_bandpass_slice_shape = noa::max(2 * m_cropped_slice_shape, nf::next_fast_shape(m_bandpass_slice_shape));
             m_bandpass_slice_rfft = Array<c32>(m_bandpass_slice_shape.push_front<2>(1).rfft(), options);
         }
@@ -259,9 +258,9 @@ namespace qn {
         );
     }
 
-    void StackLoader::read_slice(const View<f32>& output_slice, i64 file_slice_index, bool cache) {
+    void StackLoader::read_slice(const View<f32>& output_slice, isize file_slice_index, bool cache) {
         check(output_slice.device() == compute_device());
-        check(noa::all(output_slice.shape() == m_output_slice_shape.push_front<2>(1)));
+        check(output_slice.shape() == m_output_slice_shape.push_front<2>(1));
         check(file_slice_index < m_file_slice_count,
               "Slice index is invalid. This happened because the file and the metadata don't match. "
               "Trying to access slice index {}, but the file stack has a total of {} slices",
@@ -285,17 +284,17 @@ namespace qn {
 
         const bool needs_mirror_pad = not m_bandpass_slice_rfft.is_empty();
         const bool needs_smooth_edge = m_parameters.smooth_edge_percent > 0;
-        const bool needs_final_zero_pad = noa::any(m_cropped_slice_shape != m_output_slice_shape);
+        const bool needs_final_zero_pad = m_cropped_slice_shape != m_output_slice_shape;
 
         // Read the slice, transfer to the compute device, and precision pad if necessary.
         read_slice_and_precision_pad_(file_slice_index, padded_slice);
 
         // Fourier-space cropping.
         nf::r2c(padded_slice, padded_slice_rfft);
-        nf::resize<"h2h">(padded_slice_rfft, padded_shape, cropped_slice_rfft, cropped_shape);
-        ns::phase_shift_2d<"h2h">(cropped_slice_rfft, cropped_slice_rfft, cropped_shape, m_rescale_shift.as<f32>());
+        nf::resize<"h">(padded_slice_rfft, padded_shape, cropped_slice_rfft, cropped_shape);
+        ns::phase_shift_2d<"h">(cropped_slice_rfft, cropped_slice_rfft, cropped_shape, m_rescale_shift.as<f32>());
         if (not needs_mirror_pad) // no padding was asked for the bandpass, so we can do it here
-            ns::bandpass<"h2h">(cropped_slice_rfft, cropped_slice_rfft, cropped_shape, m_parameters.bandpass);
+            ns::bandpass<"h">(cropped_slice_rfft, cropped_slice_rfft, cropped_shape, m_parameters.bandpass);
         nf::c2r(cropped_slice_rfft, cropped_slice);
 
         // Optimize resizes and transfers as much as possible.
@@ -318,7 +317,7 @@ namespace qn {
 
             noa::resize(cropped_slice, bandpass_slice, noa::Border::REFLECT);
             nf::r2c(bandpass_slice, bandpass_slice_rfft);
-            ns::bandpass<"h2h">(bandpass_slice_rfft, bandpass_slice_rfft, bandpass_shape, m_parameters.bandpass);
+            ns::bandpass<"h">(bandpass_slice_rfft, bandpass_slice_rfft, bandpass_shape, m_parameters.bandpass);
             nf::c2r(bandpass_slice_rfft, bandpass_slice);
             noa::resize(bandpass_slice, direct_bandpass_to_output ? output_slice : cropped_slice);
         }
@@ -336,7 +335,7 @@ namespace qn {
                 static_cast<f64>(noa::max(cropped_shape.filter(2, 3))) *
                 m_parameters.smooth_edge_percent;
 
-            ng::draw(input_slice, tapered_slice, ng::Rectangle{
+            nx::draw(input_slice, tapered_slice, nx::Rectangle{
                 .center = center,
                 .radius = radius - smooth_edge_size,
                 .smoothness = smooth_edge_size,
@@ -362,7 +361,7 @@ namespace qn {
     // This function could be simpler, but here I'm willing to pay the price of complexity
     // to gain performance and reduce the memory usage.
     void StackLoader::read_slice_and_precision_pad_(i64 file_slice_index, const View<f32>& padded_slice) {
-        const bool has_initial_padding = noa::any(m_input_slice_shape != m_padded_slice_shape);
+        const bool has_initial_padding = m_input_slice_shape != m_padded_slice_shape;
         const bool is_gpu = compute_device().is_gpu();
 
         // Load the input slice to the compute device.
@@ -406,7 +405,7 @@ namespace qn {
     }
 
     auto StackLoader::read_stack(Metadata::Stack& metadata) -> Array<f32> {
-        const auto shape = slice_shape().push_front(Vec{metadata.ssize(), i64{1}});
+        const auto shape = slice_shape().push_front(Vec{metadata.ssize(), isize{1}});
         auto stack = noa::Array<f32>(shape, {.device = compute_device(), .allocator = Allocator::DEFAULT_ASYNC});
         read_stack(metadata, stack.view());
         return stack;
@@ -422,29 +421,29 @@ namespace qn {
 
         // Output buffer.
         const auto center = (stack.slice_shape().vec / 2).as<f64>();
-        auto output = Array<f32>(stack.slice_shape().push_front(Vec<i64, 2>{2, 1}), {
+        auto output = Array<f32>(stack.slice_shape().push_front(Vec<isize, 2>{2, 1}), {
             .device = stack.compute_device(),
             .allocator = Allocator::MANAGED
         });
 
         // Set up the output file.
         auto output_file = noa::io::ImageFile(filename, {.write = true}, {
-            .shape = stack.slice_shape().push_front(Vec{metadata.ssize(), i64{1}}),
+            .shape = stack.slice_shape().push_front(Vec{metadata.ssize(), isize{1}}),
             .spacing = stack.stack_spacing().push_front(1),
             .dtype = saving_parameters.dtype,
         });
 
         // Slices will be saved in the same order as in the metadata.
-        for (i64 i{}; const auto& image: metadata) {
+        for (isize i{}; const auto& image: metadata) {
             const auto rotation = saving_parameters.correct_rotation ? noa::deg2rad(image.angles[0]) : 0;
             const auto inverse_transform = (
-                ng::translate(center) *
-                ng::rotate<true>(-rotation) *
-                ng::translate(-center - image.shifts)
+                nx::translate(center) *
+                nx::rotate<true>(-rotation) *
+                nx::translate(-center - image.shifts)
             ).inverse().as<f32>();
 
             stack.read_slice(output.view().subregion(0), image.index_file, saving_parameters.cache_loader);
-            ng::transform_2d(output.view().subregion(0), output.view().subregion(1), inverse_transform, {
+            nx::transform_2d(output.view().subregion(0), output.view().subregion(1), inverse_transform, {
                 .interp = saving_parameters.interp,
                 .border = saving_parameters.border,
             });
@@ -485,12 +484,12 @@ namespace qn {
         for (i64 i{}; const auto& image: metadata) {
             const auto rotation = saving_parameters.correct_rotation ? noa::deg2rad(image.angles[0]) : 0;
             const auto inverse_transform = (
-                ng::translate(center) *
-                ng::rotate<true>(-rotation) *
-                ng::translate(-center - image.shifts)
+                nx::translate(center) *
+                nx::rotate<true>(-rotation) *
+                nx::translate(-center - image.shifts)
             ).inverse().as<f32>();
 
-            ng::transform_2d(stack.subregion(image.index), output.view(), inverse_transform, {
+            nx::transform_2d(stack.subregion(image.index), output.view(), inverse_transform, {
                 .interp = saving_parameters.interp,
                 .border = saving_parameters.border,
             });

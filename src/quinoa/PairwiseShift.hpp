@@ -1,6 +1,6 @@
 #pragma once
 
-#include <noa/Array.hpp>
+#include <noa/Runtime.hpp>
 #include <noa/Signal.hpp>
 
 #include "quinoa/CommonFOV.hpp"
@@ -10,7 +10,7 @@
 namespace qn {
     struct PairwiseShiftParameters {
         ns::Bandpass bandpass{0, 0, 0.5, 0};
-        noa::Interp interp{noa::Interp::LINEAR_FAST};
+        nx::Interp interp{nx::Interp::LINEAR_FAST};
         const Path* output_directory{};
 
         bool cosine_stretch{};
@@ -26,7 +26,7 @@ namespace qn {
     public:
         PairwiseShift() = default;
         PairwiseShift(
-            const Shape4<i64>& shape,
+            const Shape4& shape,
             Device compute_device
         );
 
@@ -42,7 +42,7 @@ namespace qn {
             Metadata::Image reference_image,
             const Metadata::Image& target_image,
             const PairwiseShiftParameters& parameters
-        ) const -> Vec2<f64>;
+        ) const -> Vec<f64, 2>;
 
     private:
         Array<f32> m_buffer;
@@ -56,7 +56,7 @@ namespace qn {
     public:
         PairwiseShift2() = default;
         PairwiseShift2(
-            const Shape4<i64>& shape,
+            const Shape4& shape,
             Device compute_device
         );
 
@@ -71,18 +71,18 @@ namespace qn {
             View<f32> stack,
             const Metadata::Stack& metadata,
             const PairwiseShiftParameters& parameters
-        ) -> Pair<Vec2<f64>, f64>;
+        ) -> Pair<Vec<f64, 2>, f64>;
 
         [[nodiscard]] auto buffer(std::integral auto start, std::integral auto end) {
             auto n_targets = m_xmap_centered.shape()[0];
-            return m_buffer.subregion(ni::Slice{start * n_targets, end * n_targets});
+            return m_buffer.subregion(Slice{start * n_targets, end * n_targets});
         }
         [[nodiscard]] auto buffer(std::integral auto i) {
             return buffer(i, i + 1);
         }
         [[nodiscard]] auto buffer_rfft(std::integral auto start, std::integral auto end) {
             auto n_targets = m_xmap_centered.shape()[0];
-            return m_buffer_rfft.view().subregion(ni::Slice{start * n_targets, end * n_targets});
+            return m_buffer_rfft.view().subregion(Slice{start * n_targets, end * n_targets});
         }
         [[nodiscard]] auto buffer_rfft(std::integral auto i) {
             return buffer_rfft(i, i + 1);

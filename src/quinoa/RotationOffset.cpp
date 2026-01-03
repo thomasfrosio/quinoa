@@ -1,6 +1,6 @@
-#include <noa/Array.hpp>
+#include <noa/Runtime.hpp>
 #include <noa/FFT.hpp>
-#include <noa/Geometry.hpp>
+#include <noa/Xform.hpp>
 #include <noa/Signal.hpp>
 
 #include "quinoa/Optimizer.hpp"
@@ -15,13 +15,13 @@ namespace {
 
     struct ReduceHeight {
         using span_t = SpanContiguous<const f32, 3>;
-        using interp_t = noa::Interpolator<2, noa::Interp::LINEAR, noa::Border::ZERO, span_t>;
+        using interp_t = nx::Interpolator<2, nx::Interp::LINEAR, noa::Border::ZERO, span_t>;
 
         interp_t images{};
         SpanContiguous<const Mat<f32, 2, 3>> matrices{};
         SpanContiguous<const ParallelogramMask> fov_masks{};
 
-        NOA_HD void init(i64 i, i64 h, i64 w, f32& sum) const {
+        NOA_HD void init(isize i, isize h, isize w, f32& sum) const {
             const auto image_coordinates = matrices[i] * Vec<f32, 3>::from_values(h, w, 1);
             const auto mask = fov_masks[i](image_coordinates);
 
@@ -41,7 +41,7 @@ namespace {
         f64 sum_lhs_lhs{};
         f64 sum_rhs_rhs{};
         f64 sum_lhs_rhs{};
-        for (i64 i{}; i < lhs.ssize(); ++i) {
+        for (isize i{}; i < lhs.ssize(); ++i) {
             const auto lhs_ = static_cast<f64>(lhs[i]);
             const auto rhs_ = static_cast<f64>(rhs[i]);
             sum_lhs += lhs_;
@@ -92,7 +92,7 @@ namespace qn {
         // To make sure the image doesn't go out-of-bound when rotating, we need to zero-pad appropriately.
         const auto image_shape = stack.shape().filter(2, 3);
         const auto n_images = stack.shape()[0];
-        const auto line_size = static_cast<i64>(std::sqrt(2) * static_cast<f64>(noa::max(image_shape)) + max_shift);
+        const auto line_size = static_cast<isize>(std::sqrt(2) * static_cast<f64>(noa::max(image_shape)) + max_shift);
 
         const auto image_padded_shape = Shape{line_size, line_size};
         const auto image_padded_center = (image_padded_shape.vec / 2).as<f64>();
@@ -123,10 +123,10 @@ namespace qn {
             for (auto&& [image, matrix]: noa::zip(meta, matrices.span_1d())) {
                 const auto rotation = noa::deg2rad(image.angles[0]);
                 matrix = (
-                    ng::translate(image_padded_center) *
-                    ng::rotate<true>(noa::deg2rad(-90.)) * // align tilt-axis on x-axis
-                    ng::rotate<true>(-rotation) *
-                    ng::translate(-image_center - image.shifts)
+                    nx::translate(image_padded_center) *
+                    nx::rotate<true>(noa::deg2rad(-90.)) * // align tilt-axis on x-axis
+                    nx::rotate<true>(-rotation) *
+                    nx::translate(-image_center - image.shifts)
                 ).inverse().pop_back().as<f32>();
             }
 
@@ -152,7 +152,7 @@ namespace qn {
             f64 zncc{};
             const auto reference = lines.eval().span().subregion(pivot).as_1d();
             const auto targets = lines.span().filter(0, 3).as_contiguous();
-            for (i64 i{}; i < n_images; ++i)
+            for (isize i{}; i < n_images; ++i)
                 if (i != pivot)
                     zncc += zero_normalized_cross_correlation(reference, targets[i]);
             zncc /= static_cast<f64>(n_images - 1);

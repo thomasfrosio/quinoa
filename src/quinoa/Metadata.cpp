@@ -1,5 +1,5 @@
 #include <noa/Core.hpp>
-#include <noa/Utils.hpp>
+#include <noa/IO.hpp>
 #include <forward_list>
 
 #pragma GCC diagnostic push
@@ -105,7 +105,7 @@ namespace qn {
         auto frame_path = Path{};
         bool has_rotation{}, has_tilt{}, has_exposure{}, has_datetime{};
         while (file.next_line_or_throw(line)) {
-            std::string_view trimmed = noa::string::trim(line);
+            std::string_view trimmed = noa::details::trim(line);
 
             // Create a new image.
             if (trimmed.starts_with("[ZValue =")) {
@@ -129,26 +129,26 @@ namespace qn {
 
             // "key = value" -> "value"
             auto get_substring = [&trimmed] {
-                return noa::string::trim_left(trimmed.substr(trimmed.find_first_of('=') + 1));
+                return noa::details::trim_left(trimmed.substr(trimmed.find_first_of('=') + 1));
             };
 
             if (trimmed.starts_with("RotationAngle")) {
                 auto substring = get_substring();
-                auto result = noa::string::parse<f64>(substring);
+                auto result = noa::details::parse<f64>(substring);
                 check(result, "Could not parse RotationAngle = {}", substring);
                 images.back().angles[0] = *result;
                 has_rotation = true;
 
             } else if (trimmed.starts_with("TiltAngle")) {
                 auto substring = get_substring();
-                auto result = noa::string::parse<f64>(substring);
+                auto result = noa::details::parse<f64>(substring);
                 check(result, "Could not parse TiltAngle = {}", substring);
                 images.back().angles[1] = *result;
                 has_tilt = true;
 
             } else if (trimmed.starts_with("ExposureDose")) {
                 auto substring = get_substring();
-                auto result = noa::string::parse<f64>(substring);
+                auto result = noa::details::parse<f64>(substring);
                 check(result, "Could not parse ExposureDose = {}", substring);
                 images.back().exposure[1] = *result;
                 has_exposure = true;
@@ -202,11 +202,11 @@ namespace qn {
         auto parse_key_value = []<typename T>(std::string_view line, std::string_view name, T& value, bool& has_field) {
             if (line.starts_with(name)) {
                 line.remove_prefix(name.size());
-                line = noa::string::trim_left(line);
-                auto result = noa::string::parse<T>(line);
+                line = noa::details::trim_left(line);
+                auto result = noa::details::parse<T>(line);
                 check(result.has_value(),
                       "Failed to get the value of {}. {} could not be parsed to type {}",
-                      name, line, noa::string::stringify<T>());
+                      name, line, noa::details::stringify<T>());
                 check(not has_field, "{} is specified more than once", name);
                 value = result.value();
                 has_field = true;
@@ -216,7 +216,7 @@ namespace qn {
         };
 
         auto parse_value = []<typename T>(std::string_view str, T& value) {
-            auto result = noa::string::parse<T>(str);
+            auto result = noa::details::parse<T>(str);
             check(result.has_value());
             value = result.value();
         };
@@ -239,7 +239,7 @@ namespace qn {
                     panic("{}. Failed to read a line", filename);
                 } else {
                     line_number += 1;
-                    line = noa::string::trim(buffer);
+                    line = noa::details::trim(buffer);
                     if (line.starts_with("#") or line.empty())
                         continue;
                     return true;
@@ -312,7 +312,7 @@ namespace qn {
                     auto offset = line.find_first_of('#');
                     if (offset != std::string_view::npos) {
                         line = line.substr(0, offset);
-                        line = noa::string::trim_right(line);
+                        line = noa::details::trim_right(line);
                     }
 
                     bool is_field{};
@@ -461,7 +461,7 @@ namespace qn {
     }
 
     auto Metadata::Stack::sort(std::string_view key, bool ascending) -> Metadata::Stack& {
-        std::string lower_key = noa::string::to_lower(key);
+        std::string lower_key = noa::details::to_lower(key);
         if (lower_key == "index") {
             stdr::stable_sort(
                 images, [ascending](const Image& lhs, const Image& rhs) {
@@ -499,7 +499,7 @@ namespace qn {
         return *this;
     }
 
-    auto Metadata::Stack::find_lowest_tilt_index() const -> i64 {
+    auto Metadata::Stack::find_lowest_tilt_index() const -> isize {
         const auto iter = stdr::min_element(
             images, [](const auto& lhs, const auto& rhs) {
                 return std::abs(lhs.angles[1]) < std::abs(rhs.angles[1]);

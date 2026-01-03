@@ -11,7 +11,7 @@
 namespace qn::ctf {
     /// Computes the minimum logical size necessary for the Thon-rings to not alias.
     constexpr auto aliasing_free_size(
-        const ns::CTFIsotropic<f64>& ctf,
+        const CTFIsotropic64& ctf,
         const Vec<f64, 2>& fftfreq_range,
         f64 minimum_pixels_between_vertexes = 1.8
     ) -> i64 {
@@ -42,7 +42,7 @@ namespace qn::ctf {
     }
 
     constexpr auto power_spectrum_bfactor_at(
-        ns::CTFIsotropic<f64> ctf,
+        CTFIsotropic64 ctf,
         f64 fftfreq,
         f64 weight
     ) {
@@ -62,7 +62,7 @@ namespace qn::ctf {
     template<nt::almost_any_of<f32, f64> T, typename B = Empty, typename M = Empty>
     constexpr auto zero_normalized_cross_correlation(
         SpanContiguous<T> spectrum,
-        const ns::CTFIsotropic<f64>& ctf,
+        const CTFIsotropic64& ctf,
         const Vec<f64, 2>& fftfreq_range,
         const Vec<f64, 2>& fitting_range,
         const B& baseline = B{},

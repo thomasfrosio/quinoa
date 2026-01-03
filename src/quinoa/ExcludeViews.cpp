@@ -1,5 +1,5 @@
-#include <noa/Array.hpp>
-#include <noa/Geometry.hpp>
+#include <noa/Runtime.hpp>
+#include <noa/Xform.hpp>
 
 #include "quinoa/ExcludeViews.hpp"
 #include "quinoa/Plot.hpp"

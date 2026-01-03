@@ -1,6 +1,6 @@
 #pragma once
 
-#include <noa/Array.hpp>
+#include <noa/Runtime.hpp>
 
 #include "quinoa/CTFGrid.hpp"
 #include "quinoa/Stack.hpp"
@@ -21,26 +21,26 @@ namespace qn::ctf {
             const Metadata::Stack& metadata,
             const Grid& grid,
             const Vec<f64, 2>& resolution_range,
-            i64 patch_size,
-            i64 patch_padded_size,
+            isize patch_size,
+            isize patch_padded_size,
             f64 target_bin_angle = 0,
-            i64 target_phi_size = 1024,
-            noa::Interp polar_interp = noa::Interp::CUBIC_BSPLINE
+            isize target_phi_size = 1024,
+            nx::Interp polar_interp = nx::Interp::CUBIC_BSPLINE
         ) -> Patches;
 
     public:
         Patches() = default;
         [[nodiscard]] auto view() const noexcept { return m_polar.view(); }
-        [[nodiscard]] auto patches(i64 index) const noexcept {
+        [[nodiscard]] auto patches(isize index) const noexcept {
             return m_polar.view().subregion(index).permute({1, 0, 2, 3});
         }
 
         [[nodiscard]] auto view_batched() const noexcept {
             return m_polar.view().reshape({n_patches_total(), 1, height(), width()});
         }
-        [[nodiscard]] auto chunk(i64 index) const noexcept {
-            const i64 start = index * n_patches_per_image();
-            return ni::Slice{start, start + n_patches_per_image()};
+        [[nodiscard]] auto chunk(isize index) const noexcept {
+            const isize start = index * n_patches_per_image();
+            return Slice{start, start + n_patches_per_image()};
         }
 
         [[nodiscard]] auto phi() const noexcept { return m_phi_range; }
@@ -50,11 +50,11 @@ namespace qn::ctf {
         [[nodiscard]] auto phi_step() const noexcept -> f64 { return phi().for_size(height()).step; }
         [[nodiscard]] auto rho_step() const noexcept -> f64 { return rho().for_size(width()).step; }
 
-        [[nodiscard]] auto n_images() const noexcept -> i64 { return m_polar.shape().batch(); }
-        [[nodiscard]] auto n_patches_per_image() const noexcept -> i64 { return m_polar.shape().depth(); }
-        [[nodiscard]] auto n_patches_total() const noexcept -> i64 { return n_images() * n_patches_per_image(); }
-        [[nodiscard]] auto height() const noexcept -> i64 { return m_polar.shape().height(); }
-        [[nodiscard]] auto width() const noexcept -> i64 { return m_polar.shape().width(); }
+        [[nodiscard]] auto n_images() const noexcept -> isize { return m_polar.shape().batch(); }
+        [[nodiscard]] auto n_patches_per_image() const noexcept -> isize { return m_polar.shape().depth(); }
+        [[nodiscard]] auto n_patches_total() const noexcept -> isize { return n_images() * n_patches_per_image(); }
+        [[nodiscard]] auto height() const noexcept -> isize { return m_polar.shape().height(); }
+        [[nodiscard]] auto width() const noexcept -> isize { return m_polar.shape().width(); }
 
     private:
         Array<value_type> m_polar{}; // (n,p,phi,rho)

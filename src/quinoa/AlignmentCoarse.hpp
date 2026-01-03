@@ -1,6 +1,6 @@
 #pragma once
 
-#include <noa/Array.hpp>
+#include <noa/Runtime.hpp>
 
 #include "quinoa/CommonFOV.hpp"
 #include "quinoa/Metadata.hpp"
@@ -32,7 +32,7 @@ namespace qn {
     class AlignmentCoarse {
     public:
         AlignmentCoarse(
-            const Shape4<i64>& shape,
+            const Shape4& shape,
             Device device
         );
 
@@ -59,18 +59,18 @@ namespace qn {
             const Path* output_dir,
             bool cosine_stretch,
             bool need_score
-        ) -> Pair<Vec2<f64>, f64>;
+        ) -> Pair<Vec<f64, 2>, f64>;
 
         [[nodiscard]] auto buffer(nt::integer auto start, nt::integer auto end) const {
             auto n_targets = m_xmap_centered.shape()[0];
-            return m_buffer.subregion(ni::Slice{start * n_targets, end * n_targets});
+            return m_buffer.subregion(Slice{start * n_targets, end * n_targets});
         }
         [[nodiscard]] auto buffer(nt::integer auto i) const {
             return buffer(i, i + 1);
         }
         [[nodiscard]] auto buffer_rfft(nt::integer auto start, nt::integer auto end) const {
             auto n_targets = m_xmap_centered.shape()[0];
-            return m_buffer_rfft.view().subregion(ni::Slice{start * n_targets, end * n_targets});
+            return m_buffer_rfft.view().subregion(Slice{start * n_targets, end * n_targets});
         }
         [[nodiscard]] auto buffer_rfft(nt::integer auto i) const {
             return buffer_rfft(i, i + 1);

@@ -1,26 +1,26 @@
 #pragma once
 
-#include <noa/core/Interpolation.hpp>
-#include <noa/Utils.hpp>
+#include <noa/Core.hpp>
+#include <noa/Base.hpp>
 
 #include "quinoa/Types.hpp"
 
 namespace qn::details {
-    template<typename T, size_t N>
+    template<typename T, usize N>
     struct SplineGridSpanLike {
-        Shape<i64, N> m_shape;
+        Shape<isize, N> m_shape;
         Vec<i64, N> m_node_index;
 
-        SplineGridSpanLike(Shape<i64, N> shape, Vec<i64, N> node_index) : m_shape{shape}, m_node_index{node_index} {}
+        SplineGridSpanLike(Shape<isize, N> shape, Vec<isize, N> node_index) : m_shape{shape}, m_node_index{node_index} {}
 
-        constexpr auto shape() const -> const Shape<i64, N>& { return m_shape; }
-        constexpr auto ssize() const -> i64 { return m_shape.n_elements(); }
+        constexpr auto shape() const -> const Shape<isize, N>& { return m_shape; }
+        constexpr auto ssize() const -> isize { return m_shape.n_elements(); }
 
-        constexpr auto operator[](i64 index) const requires (N > 1) {
+        constexpr auto operator[](isize index) const requires (N > 1) {
             return SplineGridSpanLike(m_shape.filter(index), m_node_index.filter(index));
         }
 
-        constexpr auto operator[](i64 index) const -> T requires (N == 1) {
+        constexpr auto operator[](isize index) const -> T requires (N == 1) {
             return static_cast<T>(m_node_index[0] == index);
         }
     };
@@ -34,23 +34,23 @@ namespace qn {
     ///   from [0, 1] along each grid dimension, so it is independent of the number of nodes.
     /// - The grid is a simple view of the actual nodes values and doesn't own any data.
     /// - The interpolation can be CUBIC_BSPLINE or CUBIC.
-    template<typename T, size_t N, noa::Interp INTERP = noa::Interp::CUBIC_BSPLINE>
+    template<typename T, usize N, nx::Interp INTERP = nx::Interp::CUBIC_BSPLINE>
     class SplineGrid {
     public:
         static_assert(N == 1 or N == 2);
         static_assert(nt::real_or_complex<T>);
-        static_assert(INTERP.is_any(noa::Interp::CUBIC_BSPLINE, noa::Interp::CUBIC));
+        static_assert(INTERP.is_any(nx::Interp::CUBIC_BSPLINE, nx::Interp::CUBIC));
 
         using value_type = T;
         using mutable_value_type = std::remove_const_t<T>;
         using const_value_type = std::add_const_t<mutable_value_type>;
         using weight_type = nt::value_type_t<mutable_value_type>;
         using span_type = SpanContiguous<value_type, N>;
-        using shape_type = Shape<i64, N>;
+        using shape_type = Shape<isize, N>;
         using vec_type = Vec<value_type, N>;
 
         using coord_type = f64;
-        using cubic_indices_type = Vec<i64, 4>;
+        using cubic_indices_type = Vec<isize, 4>;
 
     public:
         span_type span;
@@ -63,12 +63,12 @@ namespace qn {
 
     public:
         [[nodiscard]] constexpr auto shape() const noexcept -> const shape_type& { return span.shape(); }
-        [[nodiscard]] constexpr auto ssize() const noexcept -> i64 { return span.ssize(); }
-        [[nodiscard]] constexpr auto size() const noexcept -> size_t { return span.size(); }
+        [[nodiscard]] constexpr auto ssize() const noexcept -> isize { return span.ssize(); }
+        [[nodiscard]] constexpr auto size() const noexcept -> usize { return span.size(); }
 
         /// Updates the nodes of a given channel with the provided values.
         constexpr void update_from_span(const SpanContiguous<const_value_type, N>& values) noexcept {
-            check(noa::vall(noa::Equal{}, shape(), values.shape()));
+            check(shape() == values.shape());
             for (auto&& [i, o]: noa::zip(span.as_1d(), values.as_1d()))
                 i = o;
         }
@@ -85,7 +85,7 @@ namespace qn {
 
             // Check that it cannot be simplified to 1d case.
             if constexpr (N == 2) {
-                if (noa::any(shape() == 1)) {
+                if (shape() == 1) {
                     const auto dim = static_cast<i32>(shape()[0] == 1);
                     return interpolate_at_(normalized_coordinate.filter(dim), span[dim].as_const()); // 1d
                 }
@@ -104,17 +104,17 @@ namespace qn {
         /// Note that the coordinate should be normalized between [0,1].
         [[nodiscard]] static constexpr auto weight_at(
             const Vec<f64, N>& normalized_coordinate,
-            const Vec<i64, N>& node_index,
-            const Shape<i64, N>& shape
+            const Vec<isize, N>& node_index,
+            const Shape<isize, N>& shape
         ) noexcept -> T {
-            check(ni::is_inbound(shape, node_index));
+            check(noa::is_inbound(shape, node_index));
 
             if (shape.n_elements() == 1)
                 return 1;
 
             // Check that it cannot be simplified to 1d case.
             if constexpr (N == 2) {
-                if (noa::any(shape == 1)) {
+                if (shape.any_eq(1)) {
                     const auto dim = static_cast<i32>(shape[0] == 1);
                     auto data = details::SplineGridSpanLike<weight_type, 1>(shape.filter(dim), node_index.filter(dim));
                     return weight_at_(normalized_coordinate.filter(dim), data);
@@ -127,31 +127,31 @@ namespace qn {
 
         [[nodiscard]] constexpr auto weight_at(
             const Vec<f64, N>& normalized_coordinate,
-            const Vec<i64, N>& point_index
+            const Vec<isize, N>& point_index
         ) const noexcept -> mutable_value_type {
             return weight_at(normalized_coordinate, point_index, shape());
         }
 
     private:
         // Switch coordinate from range [0, 1] to range [0, resolution-1].
-        template<size_t S>
+        template<usize S>
         [[nodiscard]] static constexpr auto denormalize_coordinates_(
             const Vec<f64, S>& normalized_coordinate,
-            const Vec<i64, S>& resolution
+            const Vec<isize, S>& resolution
         ) noexcept {
             return noa::clamp(normalized_coordinate, 0., 1.) * (resolution - 1).template as<f64>();
         }
 
         // Compute the interpolation indices: coordinate -> [p0, p1, p2, p3]
         // The interpolation window is positioned so that the indices are always in the range [-1, size].
-        template<size_t S>
+        template<usize S>
         [[nodiscard]] static constexpr auto coordinates_to_interp_indices_(
             const Vec<f64, S>& coordinate,
-            const Vec<i64, S>& resolution
+            const Vec<isize, S>& resolution
         ) noexcept {
-            Vec<Vec<i64, 4>, S> indices;
-            for (size_t i = 0; i < S; ++i) {
-                indices[i][1] = static_cast<i64>(noa::floor(coordinate[i]));
+            Vec<Vec<isize, 4>, S> indices;
+            for (usize i = 0; i < S; ++i) {
+                indices[i][1] = static_cast<isize>(noa::floor(coordinate[i]));
 
                 // Only allow one element in the window to be out of bound.
                 // FIXME -1 shouldn't be possible here, but check anyway.
@@ -169,13 +169,13 @@ namespace qn {
 
         // Given the 4 values [p0, p1, p2, p3], the interpolation fraction is the value
         // in range [0, 1] covering the position interval between p1 and p2.
-        template<size_t S>
+        template<usize S>
         [[nodiscard]] static constexpr auto coordinates_to_interp_fraction_(
             const Vec<f64, S>& coordinate,
-            const Vec<Vec<i64, 4>, S>& indices
+            const Vec<Vec<isize, 4>, S>& indices
         ) noexcept {
             Vec<f64, S> fraction;
-            for (size_t i = 0; i < S; ++i)
+            for (usize i = 0; i < S; ++i)
                 fraction[i] = coordinate[i] - static_cast<f64>(indices[i][1]);
             return fraction;
         }
@@ -183,12 +183,12 @@ namespace qn {
         // Get the value at a given index. The index must be within [-1, size].
         // If the index is out of bound, i.e. equal to -1 or size, the value
         // is extrapolated using the local gradient.
-        template<typename U, size_t S>
+        template<typename U, usize S>
         static constexpr auto get_values_or_extrapolate_(
             U&& data,
-            Vec<Vec<i64, 4>, S> indices
+            Vec<Vec<isize, 4>, S> indices
         ) noexcept {
-            auto get = [](const auto& span, i64 index) {
+            auto get = [](const auto& span, isize index) {
                 if (index == -1) {
                     // i(0)=5, i(1)=7 -> i(-1)=3
                     // i(0)=7, i(1)=5 -> i(-1)=9
@@ -208,7 +208,7 @@ namespace qn {
 
             if constexpr (S == 1) {
                 Vec<mutable_value_type, 4> values;
-                for (i64 i = 0; i < 4; ++i)
+                for (isize i = 0; i < 4; ++i)
                     values[i] = get(data, indices[0][i]);
                 return values;
 
@@ -216,23 +216,23 @@ namespace qn {
                 Vec<Vec<mutable_value_type, 4>, 4> values;
 
                 // Compute every possible row.
-                for (i64 r = 0; r < 4; ++r) {
-                    const i64 i = indices[0][r];
+                for (isize r = 0; r < 4; ++r) {
+                    const isize i = indices[0][r];
                     if (i >= 0 and i < data.shape()[0]) {
-                        for (i64 c = 0; c < 4; ++c)
+                        for (isize c = 0; c < 4; ++c)
                             values[r][c] = get(data[i], indices[1][c]);
                     }
                 }
                 // Now fill the gaps...
                 if (indices[0][0] == -1) { // first row is out
-                    for (i64 c = 0; c < 4; ++c) {
+                    for (isize c = 0; c < 4; ++c) {
                         const auto first = values[1][c];
                         const auto second = values[2][c];
                         values[0][c] = first - (second - first);
                     }
                 }
                 if (indices[0][3] == data.shape()[0]) { // last row is out
-                    for (i64 c = 0; c < 4; ++c) {
+                    for (isize c = 0; c < 4; ++c) {
                         const auto last = values[2][c];
                         const auto before_last = values[1][c];
                         values[3][c] = last + (last - before_last);
@@ -242,28 +242,28 @@ namespace qn {
             }
         }
 
-        template<size_t S, typename U>
+        template<usize S, typename U>
         static constexpr auto interpolate_at_(
             const Vec<f64, S>& normalized_coordinate,
             const U data
         ) {
-            const Vec<i64, S> resolution = data.shape().vec;
+            const Vec<isize, S> resolution = data.shape().vec;
             const Vec<f64, S> coordinates = denormalize_coordinates_(normalized_coordinate, resolution);
-            const Vec<Vec<i64, 4>, S> indices = coordinates_to_interp_indices_(coordinates, resolution);
+            const Vec<Vec<isize, 4>, S> indices = coordinates_to_interp_indices_(coordinates, resolution);
             const Vec<f64, S> fraction = coordinates_to_interp_fraction_(coordinates, indices);
-            const Vec<Vec<f64, S>, 4> weights = noa::interpolation_weights<INTERP, Vec<f64, S>>(fraction);
+            const Vec<Vec<f64, S>, 4> weights = nx::interpolation_weights<INTERP, Vec<f64, S>>(fraction);
 
             const auto values = get_values_or_extrapolate_(data, indices);
 
             mutable_value_type interpolant{};
             if constexpr (S == 1) {
-                for (i64 i = 0; i < 4; ++i)
+                for (isize i = 0; i < 4; ++i)
                     interpolant += values[i] * weights[i][0];
 
             } else if constexpr (S == 2) {
-                for (i64 y = 0; y < 4; ++y) {
+                for (isize y = 0; y < 4; ++y) {
                     mutable_value_type interpolant_y{};
-                    for (i64 x = 0; x < 4; ++x)
+                    for (isize x = 0; x < 4; ++x)
                         interpolant_y += values[y][x] * weights[x][1];
                     interpolant += interpolant_y * weights[y][0];
                 }
@@ -274,11 +274,11 @@ namespace qn {
         }
     };
 
-    template<typename T, size_t N>
-    using SplineGridCubic = SplineGrid<T, N, noa::Interp::CUBIC>;
+    template<typename T, usize N>
+    using SplineGridCubic = SplineGrid<T, N, nx::Interp::CUBIC>;
 
-    template<typename T, size_t N>
-    using SplineGridCubicBSpline = SplineGrid<T, N, noa::Interp::CUBIC_BSPLINE>;
+    template<typename T, usize N>
+    using SplineGridCubicBSpline = SplineGrid<T, N, nx::Interp::CUBIC_BSPLINE>;
 
     // template<nt::real T, typename Op = noa::Copy>
     // void sample_cubic_bspline_1d(

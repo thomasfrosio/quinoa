@@ -1,8 +1,7 @@
 #include <noa/IO.hpp>
-#include <noa/Geometry.hpp>
+#include <noa/Xform.hpp>
 #include <noa/FFT.hpp>
 #include <noa/Signal.hpp>
-#include <noa/Utils.hpp>
 
 #include "quinoa/PairwiseShift.hpp"
 #include "quinoa/Plot.hpp"
@@ -179,9 +178,9 @@ namespace {
         for (size_t i{}; i < n; ++i) {
             const auto angles = noa::deg2rad(metadata[i].angles);
             const auto volume2image = (
-                ng::rotate_z(angles[0]) *
-                ng::rotate_y(angles[1]) *
-                ng::rotate_x(angles[2])
+                nx::rotate_z(angles[0]) *
+                nx::rotate_y(angles[1]) *
+                nx::rotate_x(angles[2])
             ).filter_rows(1, 2);
             global_shifts[i] = volume2image * global_shifts[i].push_front(0);
         }
@@ -212,9 +211,9 @@ namespace {
         for (size_t i{}; i < n; ++i) {
             const auto angles = noa::deg2rad(metadata[i].angles);
             const auto volume2image = (
-                ng::rotate_z(angles[0]) *
-                ng::rotate_y(angles[1]) *
-                ng::rotate_x(angles[2])
+                nx::rotate_z(angles[0]) *
+                nx::rotate_y(angles[1]) *
+                nx::rotate_x(angles[2])
             ).filter_rows(1, 2);
             global_shifts[i] = volume2image * global_shifts[i].push_front(0);
         }
@@ -373,9 +372,9 @@ namespace qn {
 
         // Compute the reference plane-coefficients to get the z image-coordinates of the reference.
         const auto reference_plane_rotation = (
-            ng::rotate_z(reference_angles[0]) *
-            ng::rotate_y(reference_angles[1]) *
-            ng::rotate_x(reference_angles[2])
+            nx::rotate_z(reference_angles[0]) *
+            nx::rotate_y(reference_angles[1]) *
+            nx::rotate_x(reference_angles[2])
         );
         const auto reference_plane_coefficients = [&] {
             const auto [c, b, a] = reference_plane_rotation * Vec{1., 0., 0.}; // plane normal
@@ -386,14 +385,14 @@ namespace qn {
 
         // Compute the transformation to project the target onto the reference.
         const auto reference2target = (
-            ng::translate(image_center.push_front(0) + target_image.shifts.push_front(0)) *
-            ng::rotate_z<true>(+target_angles[0]) *
-            ng::rotate_y<true>(+target_angles[1]) *
-            ng::rotate_x<true>(+target_angles[2]) *
-            ng::rotate_x<true>(-reference_angles[2]) *
-            ng::rotate_y<true>(-reference_angles[1]) *
-            ng::rotate_z<true>(-reference_angles[0]) *
-            ng::translate(-image_center.push_front(0) - reference_image.shifts.push_front(0))
+            nx::translate(image_center.push_front(0) + target_image.shifts.push_front(0)) *
+            nx::rotate_z<true>(+target_angles[0]) *
+            nx::rotate_y<true>(+target_angles[1]) *
+            nx::rotate_x<true>(+target_angles[2]) *
+            nx::rotate_x<true>(-reference_angles[2]) *
+            nx::rotate_y<true>(-reference_angles[1]) *
+            nx::rotate_z<true>(-reference_angles[0]) *
+            nx::translate(-image_center.push_front(0) - reference_image.shifts.push_front(0))
         );
 
         // Get the views from the buffer.
@@ -415,20 +414,20 @@ namespace qn {
             const auto indices = std::array{reference_image.index, target_image.index};
             noa::copy_batches(stack, reference_and_target, View(indices.data(), 2));
 
-            const auto mask = ng::Rectangle{
+            const auto mask = nx::Rectangle{
                 .center = image_center,
                 .radius = image_center - smooth_edge_size,
                 .smoothness = smooth_edge_size,
             }.draw<f32>();
             const Mat33<f64> target2reference =
-                ng::translate(image_center + reference_image.shifts) *
-                ng::rotate<true>(reference_angles[0]) *
-                ng::rotate<true>(-target_angles[0]) *
-                ng::translate(-image_center - target_image.shifts);
+                nx::translate(image_center + reference_image.shifts) *
+                nx::rotate<true>(reference_angles[0]) *
+                nx::rotate<true>(-target_angles[0]) *
+                nx::translate(-image_center - target_image.shifts);
             const auto fwd_target2reference = target2reference.as<f32>();
             const auto inv_target2reference = target2reference.inverse().as<f32>();
-            ng::draw(reference_and_target, reference_and_target, mask, fwd_target2reference);
-            ng::draw(reference_and_target, reference_and_target, mask, inv_target2reference);
+            nx::draw(reference_and_target, reference_and_target, mask, fwd_target2reference);
+            nx::draw(reference_and_target, reference_and_target, mask, inv_target2reference);
         }
 
         // Compute the stretched target.
@@ -493,9 +492,9 @@ namespace qn {
 
         // Transform the shifts to volume-space.
         const auto reference2volume = (
-            ng::rotate_x<true>(-reference_angles[2]) *
-            ng::rotate_y<true>(-reference_angles[1]) *
-            ng::rotate_z<true>(-reference_angles[0])
+            nx::rotate_x<true>(-reference_angles[2]) *
+            nx::rotate_y<true>(-reference_angles[1]) *
+            nx::rotate_z<true>(-reference_angles[0])
         ).filter_rows(1, 2);
         auto shift = reference2volume * Vec{z, projected_shift[0], projected_shift[1], 1.};
 
@@ -746,9 +745,9 @@ namespace qn {
             // Compute the plane coefficients of the reference.
             const auto reference_angles = noa::deg2rad(reference.angles);
             const auto reference_plane_rotation = (
-                ng::rotate_z(reference_angles[0]) *
-                ng::rotate_y(reference_angles[1]) *
-                ng::rotate_x(reference_angles[2])
+                nx::rotate_z(reference_angles[0]) *
+                nx::rotate_y(reference_angles[1]) *
+                nx::rotate_x(reference_angles[2])
             );
             const auto [c, b, a] = reference_plane_rotation * Vec{1., 0., 0.}; // plane normal
             const auto reference_center = image_center + reference.shifts;
@@ -758,14 +757,14 @@ namespace qn {
             // Compute the reference->target transformation.
             const auto target_angles = noa::deg2rad(target.angles);
             projection_matrix = (
-                ng::translate(image_center.push_front(0) + target.shifts.push_front(0)) *
-                ng::rotate_z<true>(+target_angles[0]) *
-                ng::rotate_y<true>(+target_angles[1]) *
-                ng::rotate_x<true>(+target_angles[2]) *
-                ng::rotate_x<true>(-reference_angles[2]) *
-                ng::rotate_y<true>(-reference_angles[1]) *
-                ng::rotate_z<true>(-reference_angles[0]) *
-                ng::translate(-image_center.push_front(0) - reference.shifts.push_front(0))
+                nx::translate(image_center.push_front(0) + target.shifts.push_front(0)) *
+                nx::rotate_z<true>(+target_angles[0]) *
+                nx::rotate_y<true>(+target_angles[1]) *
+                nx::rotate_x<true>(+target_angles[2]) *
+                nx::rotate_x<true>(-reference_angles[2]) *
+                nx::rotate_y<true>(-reference_angles[1]) *
+                nx::rotate_z<true>(-reference_angles[0]) *
+                nx::translate(-image_center.push_front(0) - reference.shifts.push_front(0))
             ).filter_rows(1, 2).as<f32>(); // project along z-axis
 
             fov_mask = common_fov.set_fov(reference, {
@@ -879,9 +878,9 @@ namespace qn {
             // Compute the reference-plane coefficients.
             const auto reference_angles = noa::deg2rad(reference.angles);
             const auto reference_plane_rotation = (
-                ng::rotate_z(reference_angles[0]) *
-                ng::rotate_y(reference_angles[1]) *
-                ng::rotate_x(reference_angles[2])
+                nx::rotate_z(reference_angles[0]) *
+                nx::rotate_y(reference_angles[1]) *
+                nx::rotate_x(reference_angles[2])
             );
 
             // Compute the z-coordinate at the image shift.
@@ -891,9 +890,9 @@ namespace qn {
 
             // Transform the shifts to volume-space.
             const auto reference2volume = (
-                ng::rotate_x<true>(-reference_angles[2]) *
-                ng::rotate_y<true>(-reference_angles[1]) *
-                ng::rotate_z<true>(-reference_angles[0])
+                nx::rotate_x<true>(-reference_angles[2]) *
+                nx::rotate_y<true>(-reference_angles[1]) *
+                nx::rotate_z<true>(-reference_angles[0])
             ).filter_rows(1, 2);
             auto shift = reference2volume * Vec{z, projected_shift[0], projected_shift[1], 1.};
 

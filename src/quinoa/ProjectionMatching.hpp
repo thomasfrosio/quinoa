@@ -1,6 +1,6 @@
 #pragma once
 
-#include <noa/Array.hpp>
+#include <noa/Runtime.hpp>
 
 #include "quinoa/Types.hpp"
 #include "quinoa/Metadata.hpp"
@@ -21,8 +21,8 @@ namespace qn {
 
         f64 smooth_edge_percent{0.1};
 
-        ng::WindowedSinc insertion_sinc{};
-        ng::WindowedSinc extraction_sinc{};
+        nx::WindowedSinc insertion_sinc{};
+        nx::WindowedSinc extraction_sinc{};
 
         ns::Bandpass bandpass;
         Path debug_directory;
@@ -31,8 +31,8 @@ namespace qn {
     class ProjectionMatcher {
     public:
         ProjectionMatcher(
-            i64 n_slices,
-            const Shape<i64, 2>& shape,
+            isize n_slices,
+            const Shape2& shape,
             Device device
         );
 

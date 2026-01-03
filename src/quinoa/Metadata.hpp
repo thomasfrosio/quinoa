@@ -130,9 +130,9 @@ namespace qn {
                     // Go from volume->image space.
                     const auto angles = noa::deg2rad(image.angles);
                     const auto volume2image = (
-                        ng::rotate_z(+angles[0]) *
-                        ng::rotate_y(+angles[1]) *
-                        ng::rotate_x(+angles[2])
+                        nx::rotate_z(+angles[0]) *
+                        nx::rotate_y(+angles[1]) *
+                        nx::rotate_x(+angles[2])
                     ).pop_front(); // project along z
                     image.shifts += volume2image * shift;
                 }
@@ -158,16 +158,16 @@ namespace qn {
                     const auto angles = noa::deg2rad(image.angles);
 
                     const auto plane_rotation =
-                            ng::rotate_z(angles[0]) *
-                            ng::rotate_y(angles[1]) *
-                            ng::rotate_x(angles[2]);
+                            nx::rotate_z(angles[0]) *
+                            nx::rotate_y(angles[1]) *
+                            nx::rotate_x(angles[2]);
                     const auto [c, b, a] = plane_rotation * Vec{1., 0., 0.}; // plane normal
                     const auto z = -(a * image.shifts[1] + b * image.shifts[0]) / c;
 
                     const auto image2volume =
-                            ng::rotate_x(-angles[2]) *
-                            ng::rotate_y(-angles[1]) *
-                            ng::rotate_z(-angles[0]);
+                            nx::rotate_x(-angles[2]) *
+                            nx::rotate_y(-angles[1]) *
+                            nx::rotate_z(-angles[0]);
                     const auto volume_shift = image2volume * image.shifts.push_front(z);
 
                     mean += volume_shift.pop_front(); // z should be zero
@@ -192,13 +192,13 @@ namespace qn {
 
             /// Returns a view of the image at "idx", as currently sorted in this instance (see sort()).
             [[nodiscard]] constexpr auto operator[](std::integral auto index) noexcept -> Image& {
-                ni::bounds_check<true>(ssize(), index);
+                noa::bounds_check<true>(ssize(), index);
                 return images[static_cast<size_t>(index)];
             }
 
             /// Returns a view of the image at "idx", as currently sorted in this instance (see sort()).
             [[nodiscard]] constexpr auto operator[](std::integral auto index) const noexcept -> const Image& {
-                ni::bounds_check<true>(ssize(), index);
+                noa::bounds_check<true>(ssize(), index);
                 return images[static_cast<size_t>(index)];
             }
 
@@ -269,7 +269,7 @@ namespace qn {
         }
 
         [[nodiscard]] auto empty_ctf() const {
-            return ns::CTFIsotropic<f64>::Parameters{
+            return CTFIsotropic64::Parameters{
                 .pixel_size = mean(spacing),
                 .defocus = 0., // unset
                 .voltage = sample.voltage,
@@ -288,7 +288,7 @@ namespace qn {
                 average_defocus += image.defocus.value;
                 average_phase_shift += image.phase_shift;
             }
-            return ns::CTFIsotropic<f64>::Parameters{
+            return CTFIsotropic64::Parameters{
                 .pixel_size = mean(spacing),
                 .defocus = average_defocus / static_cast<f64>(stack.size()),
                 .voltage = sample.voltage,

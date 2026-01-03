@@ -12,7 +12,7 @@
 // #undef QN_INCLUDE_CPU_ONLY
 
 #ifndef QN_INCLUDE_CPU_ONLY
-#include <noa/Geometry.hpp>
+#include <noa/Xform.hpp>
 #include <noa/Signal.hpp>
 #include <noa/FFT.hpp>
 #endif
@@ -22,7 +22,7 @@ namespace {
 
     struct CenterCrossCorrelationMap {
         using span_t = SpanContiguous<const f32, 3, i32>;
-        using interp_t = noa::Interpolator<2, noa::Interp::LINEAR, noa::Border::ZERO, span_t>;
+        using interp_t = nx::Interpolator<2, nx::Interp::LINEAR, noa::Border::ZERO, span_t>;
 
         interp_t input{};
         SpanContiguous<f32, 3, i32> output{};
@@ -125,8 +125,8 @@ namespace qn {
 
     constexpr auto effective_thickness(f64 thickness, const Vec<f64, 3>& stage_angles) {
         const f64 scaling = (
-            ng::rotate_y(noa::deg2rad(stage_angles[1])) *
-            ng::rotate_x(noa::deg2rad(stage_angles[2]))
+            nx::rotate_y(noa::deg2rad(stage_angles[1])) *
+            nx::rotate_x(noa::deg2rad(stage_angles[2]))
         )[0][0];
         return thickness / scaling;
     }
@@ -211,7 +211,7 @@ namespace qn {
 
         // Get the highest peaks within the allowed lag.
         ns::cross_correlation_peak_2d<"fc2fc">(xmap, peak_shifts, {}, {
-            .registration_radius = Vec<i64, 2>{0, 0}, // turn off the registration
+            .registration_radius = Vec{0, 0}, // turn off the registration
             .maximum_lag = Vec<f64, 2>::from_value(noa::min(xmap_center) * options.max_shift_percent),
         });
 
@@ -223,7 +223,7 @@ namespace qn {
             .input = interp_t(xmap.span_contiguous<const f32, 3, i32>(), xmap_shape_2d.as<i32>()),
             .output = xmap_centered.span_contiguous<f32, 3, i32>(),
             .peak_indices = peak_shifts.span_contiguous<const Vec<f32, 2>, 1, i32>(),
-            .rotation = ng::rotate(distortion_angle).as<f32>(),
+            .rotation = nx::rotate(distortion_angle).as<f32>(),
             .input_center = xmap_center.as<f32>(),
             .output_center = xmap_centered_center.as<f32>(),
         });
@@ -233,7 +233,7 @@ namespace qn {
         const auto span_peak_values = has_values ? peak_values.span_1d() : SpanContiguous<f32>{};
         for (i64 i{}; auto& peak_shift: peak_shifts.span_1d()) {
             const auto [peak_offset_rotated, peak_value] = find_best_peak(span[i]);
-            const auto peak_offset = ng::rotate(distortion_angle) * peak_offset_rotated;
+            const auto peak_offset = nx::rotate(distortion_angle) * peak_offset_rotated;
             const auto peak_coordinate = peak_shift.as<f64>() + peak_offset;
             peak_shift = (peak_coordinate - xmap_center).as<f32>();
 
@@ -258,7 +258,7 @@ namespace qn {
 
         // Get the highest peak within the allowed lag.
         auto [peak_indices, _] = ns::cross_correlation_peak_2d<"fc2fc">(xmap, {
-            .registration_radius = Vec<i64, 2>{0, 0}, // turn off the registration
+            .registration_radius = Vec{0, 0}, // turn off the registration
             .maximum_lag = Vec<f64, 2>::from_value(noa::min(xmap_center) * options.max_shift_percent),
         });
 
@@ -266,17 +266,17 @@ namespace qn {
         // To improve the accuracy of the subpixel registration, correct the tilt-axis to have the distortion along x.
         // Since the actual peak is close to argmax, focus on (and only render) a small subregion around argmax.
         const auto rotate_xmap =
-            ng::translate(xmap_center) *
-            ng::rotate<true>(-distortion_angle) *
-            ng::translate(-xmap_center);
+            nx::translate(xmap_center) *
+            nx::rotate<true>(-distortion_angle) *
+            nx::translate(-xmap_center);
         peak_indices = (rotate_xmap * peak_indices.push_back(1)).pop_back();
 
         const auto rotate_and_center_peak = (
-            ng::translate(xmap_center - peak_indices + xmap_centered_center) *
-            ng::rotate<true>(-distortion_angle) *
-            ng::translate(-xmap_center)
+            nx::translate(xmap_center - peak_indices + xmap_centered_center) *
+            nx::rotate<true>(-distortion_angle) *
+            nx::translate(-xmap_center)
         ).inverse();
-        ng::transform_2d(xmap, xmap_centered, rotate_and_center_peak, {.interp = noa::Interp::LINEAR});
+        nx::transform_2d(xmap, xmap_centered, rotate_and_center_peak, {.interp = nx::Interp::LINEAR});
 
         // Get the peak and rotate back to the original xmap reference-frame.
         const auto [peak_offset, peak_value] = find_best_peak(

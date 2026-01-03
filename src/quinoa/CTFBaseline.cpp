@@ -7,7 +7,7 @@ namespace qn::ctf {
     auto Baseline::best_baseline_fitting_range(
         SpanContiguous<const f32> spectrum,
         const Vec<f64, 2>& fftfreq_range,
-        const ns::CTFIsotropic<f64>& ctf
+        const CTFIsotropic64& ctf
     ) -> Vec<f64, 2> {
         // The signal at very low frequencies can be quite far from the rest of the spectrum, to the point that
         // despite the strong smoothing of the baseline, the overall fit at low-mid frequency might be degraded.
@@ -15,8 +15,8 @@ namespace qn::ctf {
         // and the following peak.
         f64 target_value{};
         bool got_zero{};
-        i64 half_oscillation_size{};
-        for (i64 i{}; auto e: Simulate(ctf, fftfreq_range)) {
+        isize half_oscillation_size{};
+        for (isize i{}; auto e: Simulate(ctf, fftfreq_range)) {
             if (not got_zero and e.is_ctf_zero()) {
                 target_value += Simulate::sample_at(spectrum, fftfreq_range, e.fftfreq());
                 half_oscillation_size = i;
@@ -26,7 +26,7 @@ namespace qn::ctf {
                 target_value += Simulate::sample_at(spectrum, fftfreq_range, e.fftfreq());
                 half_oscillation_size = i - half_oscillation_size;
                 half_oscillation_size = half_oscillation_size * spectrum.ssize();
-                half_oscillation_size /= static_cast<i64>(Simulate::SIMULATED_LOGICAL_SIZE);
+                half_oscillation_size /= static_cast<isize>(Simulate::SIMULATED_LOGICAL_SIZE);
                 break;
             }
             ++i;
@@ -35,8 +35,8 @@ namespace qn::ctf {
         // target_value *= 1.2;
 
         auto fitting_range = fftfreq_range;
-        i64 index_cutoff{};
-        for (i64 i{}; i < spectrum.ssize(); ++i) {
+        isize index_cutoff{};
+        for (isize i{}; i < spectrum.ssize(); ++i) {
             if (spectrum[i] <= static_cast<f32>(target_value)) {
                 auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum.ssize() - 1);
                 fitting_range[0] = fftfreq_range[0] + static_cast<f64>(i) * fftfreq_step;
@@ -47,12 +47,12 @@ namespace qn::ctf {
 
         // Similarly, at the end of the spectrum, the background can vary significantly,
         // so try to detect such variation in the signal and cut if out of the fitting range.
-        i64 window_size{half_oscillation_size * 2 + 1};
-        auto sample_local_average = [&](i64 index) {
+        isize window_size{half_oscillation_size * 2 + 1};
+        auto sample_local_average = [&](isize index) {
             f32 value{};
             f32 count{};
-            for (i64 j{-window_size / 2}; j < window_size / 2; ++j) {
-                if (ni::is_inbound(spectrum.shape(), index + j)) {
+            for (isize j{-window_size / 2}; j < window_size / 2; ++j) {
+                if (noa::is_inbound(spectrum.shape(), index + j)) {
                     value += spectrum[index + j];
                     ++count;
                 }
@@ -64,7 +64,7 @@ namespace qn::ctf {
         // Compute a smooth version of the spectrum.
         auto local_average = std::vector<f32>{};
         local_average.reserve(static_cast<size_t>(spectrum.ssize() - index_cutoff));
-        for (i64 i{index_cutoff}; i < spectrum.ssize(); ++i)
+        for (isize i{index_cutoff}; i < spectrum.ssize(); ++i)
             local_average.push_back(sample_local_average(i));
 
         // Compute the gradient of the smoothed spectrum.
@@ -73,7 +73,7 @@ namespace qn::ctf {
         for (size_t i{}; i < local_average.size() - 1; ++i)
             gradient.push_back(std::abs(local_average[i + 1] - local_average[i]));
 
-        // Set the signal threshold
+        // Set the signal threshold.
         auto [gradient_threshold, signal_threshold] = [&gradient] {
             const auto quartile_75 = static_cast<size_t>(static_cast<f32>(gradient.size()) * 0.75f);
             auto gradient_copy = gradient;
@@ -99,9 +99,9 @@ namespace qn::ctf {
         // First, collect the regions above the thresholds.
         bool is_within_window{};
         f32 max_value_within_window{};
-        auto possible_windows = std::vector<Vec<i64, 2>>{};
-        const i64 offset = std::ssize(gradient) - static_cast<i64>(static_cast<f64>(spectrum.ssize()) * 0.25);
-        for (i64 i{offset}, start{}; const auto& e: gradient | stdv::drop(std::max(i64{}, offset))) {
+        auto possible_windows = std::vector<Vec<isize, 2>>{};
+        const isize offset = std::ssize(gradient) - static_cast<isize>(static_cast<f64>(spectrum.ssize()) * 0.25);
+        for (isize i{offset}, start{}; const auto& e: gradient | stdv::drop(std::max(isize{}, offset))) {
             max_value_within_window = std::max(max_value_within_window, e);
             if (not is_within_window and e >= signal_threshold) {
                 is_within_window = true;
@@ -119,9 +119,9 @@ namespace qn::ctf {
             return fitting_range;
 
         // Then, fuse windows that are close to each other.
-        const i64 maximum_distance_between_windows = static_cast<i64>(static_cast<f64>(spectrum.ssize()) * 0.05);
+        const isize maximum_distance_between_windows = static_cast<isize>(static_cast<f64>(spectrum.ssize()) * 0.05);
         for (size_t i{}; i < possible_windows.size() - 1; ++i) {
-            const i64 distance = possible_windows[i + 1][0] - possible_windows[i][1];
+            const isize distance = possible_windows[i + 1][0] - possible_windows[i][1];
             if (distance <= maximum_distance_between_windows) {
                 possible_windows[i + 1][0] = possible_windows[i][0];
                 possible_windows[i][0] = -1;
@@ -130,7 +130,7 @@ namespace qn::ctf {
         std::erase_if(possible_windows, [](const auto& window) { return window[0] == -1; });
 
         // Remove the window if it's at the end of the spectrum (within 10 pixel tolerance).
-        const i64 maximum_distance_from_end = static_cast<i64>(static_cast<f64>(spectrum.ssize()) * 0.05);
+        const isize maximum_distance_from_end = static_cast<isize>(static_cast<f64>(spectrum.ssize()) * 0.05);
         auto possible_window = possible_windows.back() + index_cutoff;
         if (possible_window[1] >= spectrum.ssize() - maximum_distance_from_end) {
             auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum.ssize() - 1);
@@ -145,7 +145,7 @@ namespace qn::ctf {
         auto [start, fftfreq_start] = nearest_integer_fftfreq(spectrum.ssize(), fftfreq_range, fitting_range[0], true);
         auto [end, fftfreq_end] = nearest_integer_fftfreq(spectrum.ssize(), fftfreq_range, fitting_range[1], true);
         auto actual_fitting_range = Vec{fftfreq_start, fftfreq_end};
-        spectrum = spectrum.subregion(ni::Slice{start, end + 1});
+        spectrum = spectrum.subregion(Slice{start, end + 1});
 
         allocate_(spectrum.ssize());
 
@@ -181,7 +181,7 @@ namespace qn::ctf {
     auto Baseline::tune_fitting_range(
         SpanContiguous<const f32> spectrum,
         const Vec<f64, 2>& fftfreq_range,
-        const ns::CTFIsotropic<f64>& ctf,
+        const CTFIsotropic64& ctf,
         const BaselineTuningOptions& options
     ) const -> Vec<f64, 2> {
         const auto thickness_modulation = ThicknessModulation{
@@ -224,7 +224,7 @@ namespace qn::ctf {
         const f64 high_threshold = options.threshold * bs_peak;
 
         const f64 fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum.ssize() - 1);
-        for (i64 i{}; i < spectrum.ssize(); ++i) {
+        for (isize i{}; i < spectrum.ssize(); ++i) {
             const f64 fftfreq = fftfreq_range[0] + static_cast<f64>(i) * fftfreq_step;
             const f64 bs_spectrum = static_cast<f64>(spectrum[i]) - sample_at(fftfreq);
             if (bs_spectrum <= high_threshold) {
@@ -284,7 +284,7 @@ namespace qn::ctf {
         const Vec<f64, 2>& fftfreq_range
     ) const {
         const auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum.ssize() - 1);
-        for (i64 i{}; i < spectrum.ssize(); ++i) {
+        for (isize i{}; i < spectrum.ssize(); ++i) {
             const auto fftfreq = static_cast<f64>(i) * fftfreq_step + fftfreq_range[0];
             spectrum[i] = static_cast<f32>(sample_at(fftfreq));
         }
@@ -306,7 +306,7 @@ namespace qn::ctf {
     ) const {
         check(input.ssize() == output.ssize());
         const auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(output.ssize() - 1);
-        for (i64 i{}; i < output.ssize(); ++i) {
+        for (isize i{}; i < output.ssize(); ++i) {
             const auto fftfreq = static_cast<f64>(i) * fftfreq_step + fftfreq_range[0];
             output[i] = input[i] - static_cast<f32>(sample_at(fftfreq));
         }
@@ -318,12 +318,12 @@ namespace qn::ctf {
         const Vec<f64, 2>& fftfreq_range
     ) const {
         auto [b, d, h, w] = output.shape();
-        check(noa::all(input.shape() == output.shape()));
+        check(input.shape() == output.shape());
         check(d == 1 and h == 1);
 
         const auto input_2d = input.reinterpret_as_cpu().span().filter(0, 3).as_contiguous();
         const auto output_2d = output.reinterpret_as_cpu().span().filter(0, 3).as_contiguous();
-        for (i64 i{}; i < b; ++i)
+        for (isize i{}; i < b; ++i)
             subtract(input_2d[i], output_2d[i], fftfreq_range);
     }
 }

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <noa/core/Config.hpp>
+#include <noa/base/Config.hpp>
 
 #if defined(NOA_COMPILER_GCC) || defined(NOA_COMPILER_CLANG)
 #   pragma GCC diagnostic push
@@ -9,7 +9,7 @@
 #   pragma warning(push, 0)
 #endif
 
-#include <nlopt.h>
+#include <nlopt.hpp>
 
 #if defined(NOA_COMPILER_GCC) || defined(NOA_COMPILER_CLANG)
 #   pragma GCC diagnostic pop
@@ -18,7 +18,7 @@
 #endif
 
 #include <optional>
-#include <noa/Array.hpp>
+#include <noa/Runtime.hpp>
 
 #include "quinoa/Types.hpp"
 #include "quinoa/Logger.hpp"
@@ -31,7 +31,7 @@ namespace qn {
 
     public:
         Optimizer() = default;
-        Optimizer(nlopt_algorithm algorithm, i64 n_variables) {
+        Optimizer(nlopt_algorithm algorithm, isize n_variables) {
             pointer = nlopt_create(algorithm, noa::safe_cast<u32>(n_variables));
             check(pointer != nullptr, "Failed to create the optimizer");
         }
@@ -153,8 +153,8 @@ namespace qn {
             return nlopt_get_numevals(pointer);
         }
 
-        [[nodiscard]] auto n_parameters() const noexcept -> i64 {
-            return static_cast<i64>(nlopt_get_dimension(pointer));
+        [[nodiscard]] auto n_parameters() const noexcept -> isize {
+            return static_cast<isize>(nlopt_get_dimension(pointer));
         }
 
     private:
@@ -180,7 +180,7 @@ namespace qn {
     public:
         Memoizer() = default;
 
-        Memoizer(i64 n_parameters, i64 resolution) {
+        Memoizer(isize n_parameters, isize resolution) {
             if (resolution > 0) {
                 // Allocate everything upfront.
                 m_cache_input = noa::zeros<f64>({resolution, 1, 2, n_parameters});
@@ -195,15 +195,15 @@ namespace qn {
             if (m_cache_lines.empty())
                 return std::nullopt;
 
-            const auto cache = m_cache_input.view().subregion(ni::Full{}, 0, 0, ni::Full{});
+            const auto cache = m_cache_input.view().subregion(Full{}, 0, 0, Full{});
 
             // If the caller passes the gradients, we need a record with the gradients too.
             const bool requires_gradients = gradients != nullptr;
 
             // Check the cache lines for a perfect match.
-            i64 line = m_circular_index;
-            i64 successful_line{-1};
-            for (i64 i = 0; i < resolution(); ++i) {
+            isize line = m_circular_index;
+            isize successful_line{-1};
+            for (isize i = 0; i < resolution(); ++i) {
                 const Key& cache_line = m_cache_lines[static_cast<size_t>(line)];
                 if (not cache_line.has_value)
                     continue;
@@ -211,7 +211,7 @@ namespace qn {
                 // Check this cache line.
                 const Span cache_line_input = cache.subregion(line).span_1d();
                 bool success{true};
-                for (i64 parameter = 0; parameter < n_parameters(); ++parameter) {
+                for (isize parameter = 0; parameter < n_parameters(); ++parameter) {
                     if (not noa::allclose<4>(cache_line_input[parameter], input[parameter], epsilon)) {
                         success = false;
                         break;
@@ -237,9 +237,9 @@ namespace qn {
             // We have a match. Set the recorded gradients and return recorded value.
             if (gradients) {
                 const auto cache_line_gradient = m_cache_input.view()
-                    .subregion(successful_line, 0, 1, ni::Full{})
+                    .subregion(successful_line, 0, 1, Full{})
                     .span_1d();
-                for (i64 i = 0; i < cache_line_gradient.ssize(); ++i)
+                for (isize i = 0; i < cache_line_gradient.ssize(); ++i)
                     gradients[i] = cache_line_gradient[i];
             }
             return m_cache_lines[static_cast<size_t>(successful_line)].value;
@@ -254,24 +254,24 @@ namespace qn {
             m_circular_index = (m_circular_index + 1) % resolution();
 
             const Span cache_line_input = m_cache_input.view()
-                .subregion(m_circular_index, 0, 0, ni::Full{})
+                .subregion(m_circular_index, 0, 0, Full{})
                 .span_1d();
-            for (i64 i = 0; i < cache_line_input.ssize(); ++i)
+            for (isize i = 0; i < cache_line_input.ssize(); ++i)
                 cache_line_input[i] = inputs[i];
 
             if (gradients) {
                 const Span cache_line_gradient = m_cache_input.view()
-                    .subregion(m_circular_index, 0, 1, ni::Full{})
+                    .subregion(m_circular_index, 0, 1, Full{})
                     .span_1d();
-                for (i64 i = 0; i < cache_line_gradient.ssize(); ++i)
+                for (isize i = 0; i < cache_line_gradient.ssize(); ++i)
                     cache_line_gradient[i] = gradients[i];
             }
 
             m_cache_lines[static_cast<size_t>(m_circular_index)] = {score, true, gradients != nullptr};
         }
 
-        [[nodiscard]] auto resolution() const noexcept -> i64 { return m_cache_input.shape()[0]; }
-        [[nodiscard]] auto n_parameters() const noexcept -> i64 { return m_cache_input.shape()[3]; }
+        [[nodiscard]] auto resolution() const noexcept -> isize { return m_cache_input.shape()[0]; }
+        [[nodiscard]] auto n_parameters() const noexcept -> isize { return m_cache_input.shape()[3]; }
 
         void reset_cache() {
             for (auto& line: m_cache_lines)
@@ -281,7 +281,7 @@ namespace qn {
     private:
         Array<f64> m_cache_input;
         std::vector<Key> m_cache_lines;
-        i64 m_circular_index{};
+        isize m_circular_index{};
     };
 
     struct CentralFiniteDifference {

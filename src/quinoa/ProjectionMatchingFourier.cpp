@@ -1,7 +1,6 @@
 #include <noa/FFT.hpp>
-#include <noa/Geometry.hpp>
+#include <noa/Xform.hpp>
 #include <noa/Signal.hpp>
-#include <noa/Utils.hpp>
 #include <noa/IO.hpp>
 
 #include "Plot.hpp"
@@ -17,11 +16,11 @@ namespace {
 
     Path debug_dir;
 
-    template<size_t N = 192>
+    template<usize N = 192>
     struct BitMask {
         static_assert(noa::is_multiple_of(N, 8));
-        static constexpr size_t WORD_COUNT = 32;
-        static constexpr size_t N_WORDS = N / 32;
+        static constexpr usize WORD_COUNT = 32;
+        static constexpr usize N_WORDS = N / 32;
         u32 buffer[N_WORDS]{};
 
         struct Ref {
@@ -36,14 +35,14 @@ namespace {
         };
 
         constexpr auto operator[](nt::integer auto i) const -> bool {
-            ni::bounds_check(N, i);
+            noa::bounds_check(N, i);
             const u32 data = buffer[i / 32];
             const u32 mask = 1 << (i % 32);
             return data & mask;
         }
 
         constexpr auto operator[](nt::integer auto i) noexcept -> Ref {
-            ni::bounds_check(N, i);
+            noa::bounds_check(N, i);
             return Ref{buffer[i / 32], 1u << (i % 32)};
         }
     };
@@ -89,7 +88,7 @@ namespace {
     class Sampler {
     public:
         using input_span_type = SpanContiguous<const c32, 3, i32>;
-        using input_interp_type = noa::InterpolatorSpectrum<2, "hc2h", noa::Interp::LINEAR, input_span_type>;
+        using input_interp_type = nx::InterpolatorSpectrum<2, "hc2h", nx::Interp::LINEAR, input_span_type>;
 
         input_interp_type input_slices{};
         i32 n_input_slices{};
@@ -98,7 +97,7 @@ namespace {
         SpanContiguous<f32, 2, i32> output_weights{};
 
         SpanContiguous<const f32, 1, i32> windowed_sinc{};
-        SpanContiguous<ng::Quaternion<f32>> insertion_inverse_rotation{};
+        SpanContiguous<nx::Quaternion<f32>> insertion_inverse_rotation{};
         Mat<f32, 3, 3> extraction_forward_rotation{};
         Vec<f32, 2> f_shape{};
         BitMask<> reference_mask{};
@@ -175,9 +174,9 @@ namespace {
         View<f32> m_xmap;
         View<f32> m_xmap_centered;
 
-        i64 m_n_references{};
+        isize m_n_references{};
         Array<f32> m_windowed_sinc;
-        Array<ng::Quaternion<f32>> m_insertion_inverse_rotations;
+        Array<nx::Quaternion<f32>> m_insertion_inverse_rotations;
         Sampler m_sampler;
         std::vector<Metadata::Image> m_references_metadata;
 
@@ -207,18 +206,19 @@ namespace {
             // Allocate for the quaternions encoding the 3d rotation of the input central-slices.
             const auto device = references_padded_rfft.device();
             const auto options = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
-            m_insertion_inverse_rotations = Array<ng::Quaternion<f32>>(references_padded_rfft.shape()[0], options);
+            m_insertion_inverse_rotations = Array<nx::Quaternion<f32>>(references_padded_rfft.shape()[0], options);
 
             // Prepare the w-windowed-sinc convolution filter.
             const auto volume_z = static_cast<f64>(size_padded());
-            const auto [extract_blackman_size, extract_window_total_weight] = ng::details::z_window_spec<i32>(
-                parameters.extraction_sinc.fftfreq_sinc, parameters.extraction_sinc.fftfreq_blackman, volume_z);
+            const auto& esinc = parameters.extraction_sinc;
+            const auto [extract_blackman_size, extract_window_total_weight] = nx::details::z_window_spec<i32>(
+                esinc.fftfreq_sinc, esinc.fftfreq_blackman, volume_z);
 
             m_windowed_sinc = Array<f32>(extract_blackman_size, options);
             for (i32 i{}; auto& e: m_windowed_sinc.span_1d()) {
-                const auto fftfreq_z_offset = ng::details::w_index_to_fftfreq_offset(i++, extract_blackman_size, volume_z);
+                const auto fftfreq_z_offset = nx::details::w_index_to_fftfreq_offset(i++, extract_blackman_size, volume_z);
                 const auto convolution_weight =
-                    ng::details::windowed_sinc(fftfreq_z_offset, parameters.extraction_sinc.fftfreq_sinc, parameters.extraction_sinc.fftfreq_blackman) /
+                    nx::details::windowed_sinc(fftfreq_z_offset, esinc.fftfreq_sinc, esinc.fftfreq_blackman) /
                     extract_window_total_weight;
                 e = static_cast<f32>(convolution_weight);
             }
@@ -266,7 +266,7 @@ namespace {
                 final_shifts += shift;
                 Logger::trace("shift={::.4f}", shift);
 
-                if (all(abs(shift) < parameters.shift_tolerance))
+                if (abs(shift) < parameters.shift_tolerance)
                     break;
             }
             if (iteration == MAX_N_ITERATIONS)
@@ -275,19 +275,19 @@ namespace {
         }
 
     public:
-        [[nodiscard]] auto size_padded() const noexcept -> i64 {
+        [[nodiscard]] auto size_padded() const noexcept -> isize {
             return m_references_padded_rfft.shape().height();
         }
-        [[nodiscard]] auto shape_padded() const noexcept -> Shape4<i64> {
+        [[nodiscard]] auto shape_padded() const noexcept -> Shape4 {
             return {1, 1, size_padded(), size_padded()};
         }
-        [[nodiscard]] auto shape_original() const noexcept -> Shape4<i64> {
+        [[nodiscard]] auto shape_original() const noexcept -> Shape4 {
             return m_image_buffer.shape().filter(2, 3).push_front<2>(1);
         }
-        [[nodiscard]] auto center_original() const noexcept -> Vec2<f64> {
+        [[nodiscard]] auto center_original() const noexcept -> Vec<f64, 2> {
             return (shape_original().filter(2, 3).vec / 2).as<f64>();
         }
-        [[nodiscard]] auto padding() const noexcept -> Vec4<i64> {
+        [[nodiscard]] auto padding() const noexcept -> Vec<isize, 4> {
             return (shape_padded() - shape_original()).vec;
         }
 
@@ -324,10 +324,10 @@ namespace {
 
             // Transform to place the central-slice inside the 3d Fourier (virtual) volume.
             const auto insertion_angles = noa::deg2rad(reference_metadata.angles);
-            m_insertion_inverse_rotations.span_1d()[m_n_references - 1] = ng::matrix2quaternion((
-                ng::rotate_x(insertion_angles[2]) *
-                ng::rotate_y(insertion_angles[1]) *
-                ng::rotate_z(-insertion_angles[0])
+            m_insertion_inverse_rotations.span_1d()[m_n_references - 1] = nx::matrix2quaternion((
+                nx::rotate_x(insertion_angles[2]) *
+                nx::rotate_y(insertion_angles[1]) *
+                nx::rotate_z(-insertion_angles[0])
             ).transpose()).as<f32>();
         }
 
@@ -335,9 +335,9 @@ namespace {
             // Transform of the central-slice to extract from the 3d Fourier (virtual) volume.
             const auto extraction_angles = noa::deg2rad(target_metadata.angles);
             m_sampler.extraction_forward_rotation = (
-                ng::rotate_x(extraction_angles[2]) *
-                ng::rotate_y(extraction_angles[1]) *
-                ng::rotate_z(-extraction_angles[0])
+                nx::rotate_x(extraction_angles[2]) *
+                nx::rotate_y(extraction_angles[1]) *
+                nx::rotate_z(-extraction_angles[0])
             ).as<f32>();
 
             // Exclude certain references based on their tilt difference with the target.
@@ -433,7 +433,7 @@ namespace {
     class Sampler2 {
     public:
         using input_span_type = SpanContiguous<const c32, 3, i32>;
-        using input_interp_type = noa::InterpolatorSpectrum<2, "hc2h", noa::Interp::LINEAR, input_span_type>;
+        using input_interp_type = nx::InterpolatorSpectrum<2, "hc2h", nx::Interp::LINEAR, input_span_type>;
 
         input_interp_type input_slices{};
         i32 n_input_slices{};
@@ -442,7 +442,7 @@ namespace {
         SpanContiguous<f32, 2, i32> output_weights{};
 
         SpanContiguous<const f32, 1, i32> windowed_sinc{};
-        SpanContiguous<ng::Quaternion<f32>> insertion_inverse_rotation{};
+        SpanContiguous<nx::Quaternion<f32>> insertion_inverse_rotation{};
         Mat<f32, 3, 3> extraction_forward_rotation{};
         Vec<f32, 2> f_shape{};
         BitMask<> reference_mask{};
@@ -525,9 +525,9 @@ namespace {
         Array<f32> m_xmap;
         Array<f32> m_xmap_centered;
 
-        i64 m_n_references{};
+        isize m_n_references{};
         Array<f32> m_windowed_sinc;
-        Array<ng::Quaternion<f32>> m_insertion_inverse_rotations;
+        Array<nx::Quaternion<f32>> m_insertion_inverse_rotations;
         Sampler2 m_sampler;
         std::vector<Metadata::Image> m_references_metadata;
 
@@ -544,8 +544,8 @@ namespace {
 
                 const auto size_padded = nf::next_fast_size(noa::max(shape_2d) * 2);
                 const auto maximum_n_references = n_slices;
-                const auto shape = Shape4<i64>{1, 1, shape_2d[0], shape_2d[1]};
-                const auto padded_shape = Shape4<i64>{1, 1, size_padded, size_padded};
+                const auto shape = Shape4{1, 1, shape_2d[0], shape_2d[1]};
+                const auto padded_shape = Shape4{1, 1, size_padded, size_padded};
                 const auto options = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
 
                 m_image_buffer = Array<f32>(shape, options);
@@ -567,18 +567,18 @@ namespace {
 
             // Allocate for the quaternions encoding the 3d rotation of the input central-slices.
             const auto options = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
-            m_insertion_inverse_rotations = Array<ng::Quaternion<f32>>(n_slices - 1, options);
+            m_insertion_inverse_rotations = Array<nx::Quaternion<f32>>(n_slices - 1, options);
 
             // Prepare the w-windowed-sinc convolution filter.
             const auto volume_z = static_cast<f64>(size_padded());
-            const auto [extract_blackman_size, extract_window_total_weight] = ng::details::z_window_spec<i32>(
+            const auto [extract_blackman_size, extract_window_total_weight] = nx::details::z_window_spec<i32>(
                 parameters.extraction_sinc.fftfreq_sinc, parameters.extraction_sinc.fftfreq_blackman, volume_z);
 
             m_windowed_sinc = Array<f32>(extract_blackman_size, options);
             for (i32 i{}; auto& e: m_windowed_sinc.span_1d()) {
-                const auto fftfreq_z_offset = ng::details::w_index_to_fftfreq_offset(i++, extract_blackman_size, volume_z);
+                const auto fftfreq_z_offset = nx::details::w_index_to_fftfreq_offset(i++, extract_blackman_size, volume_z);
                 const auto convolution_weight =
-                    ng::details::windowed_sinc(fftfreq_z_offset, parameters.extraction_sinc.fftfreq_sinc, parameters.extraction_sinc.fftfreq_blackman) /
+                    nx::details::windowed_sinc(fftfreq_z_offset, parameters.extraction_sinc.fftfreq_sinc, parameters.extraction_sinc.fftfreq_blackman) /
                     extract_window_total_weight;
                 e = static_cast<f32>(convolution_weight);
             }
@@ -613,19 +613,19 @@ namespace {
         }
 
     public:
-        [[nodiscard]] auto size_padded() const noexcept -> i64 {
+        [[nodiscard]] auto size_padded() const noexcept -> isize {
             return m_references_padded_rfft.shape().height();
         }
-        [[nodiscard]] auto shape_padded() const noexcept -> Shape4<i64> {
+        [[nodiscard]] auto shape_padded() const noexcept -> Shape4 {
             return {1, 1, size_padded(), size_padded()};
         }
-        [[nodiscard]] auto shape_original() const noexcept -> Shape4<i64> {
+        [[nodiscard]] auto shape_original() const noexcept -> Shape4 {
             return m_image_buffer.shape().filter(2, 3).push_front<2>(1);
         }
-        [[nodiscard]] auto center_original() const noexcept -> Vec2<f64> {
+        [[nodiscard]] auto center_original() const noexcept -> Vec<f64, 2> {
             return (shape_original().filter(2, 3).vec / 2).as<f64>();
         }
-        [[nodiscard]] auto padding() const noexcept -> Vec4<i64> {
+        [[nodiscard]] auto padding() const noexcept -> Vec<isize, 4> {
             return (shape_padded() - shape_original()).vec;
         }
 
@@ -659,10 +659,10 @@ namespace {
 
             // Transform to place the central-slice inside the 3d Fourier (virtual) volume.
             const auto insertion_angles = noa::deg2rad(reference_metadata.angles);
-            m_insertion_inverse_rotations.span_1d()[m_n_references - 1] = ng::matrix2quaternion((
-                ng::rotate_x(insertion_angles[2]) *
-                ng::rotate_y(insertion_angles[1]) *
-                ng::rotate_z(-insertion_angles[0])
+            m_insertion_inverse_rotations.span_1d()[m_n_references - 1] = nx::matrix2quaternion((
+                nx::rotate_x(insertion_angles[2]) *
+                nx::rotate_y(insertion_angles[1]) *
+                nx::rotate_z(-insertion_angles[0])
             ).transpose()).as<f32>();
         }
 
@@ -670,9 +670,9 @@ namespace {
             // Transform of the central-slice to extract from the 3d Fourier (virtual) volume.
             const auto extraction_angles = noa::deg2rad(target_metadata.angles);
             m_sampler.extraction_forward_rotation = (
-                ng::rotate_x(extraction_angles[2]) *
-                ng::rotate_y(extraction_angles[1]) *
-                ng::rotate_z(-extraction_angles[0])
+                nx::rotate_x(extraction_angles[2]) *
+                nx::rotate_y(extraction_angles[1]) *
+                nx::rotate_z(-extraction_angles[0])
             ).as<f32>();
 
             // Exclude certain references based on their tilt difference with the target.
@@ -757,14 +757,14 @@ namespace {
 }
 
 namespace qn {
-    ProjectionMatcher::ProjectionMatcher(i64 n_slices, const Shape2<i64>& shape_2d, Device device) {
+    ProjectionMatcher::ProjectionMatcher(isize n_slices, const Shape2& shape_2d, Device device) {
 
         // TODO try higher interpolation and reduce size?
         const auto size_padded = nf::next_fast_size(noa::max(shape_2d) * 2);
 
         const auto maximum_n_references = n_slices - 1;
-        const auto shape = Shape4<i64>{1, 1, shape_2d[0], shape_2d[1]};
-        const auto padded_shape = Shape4<i64>{1, 1, size_padded, size_padded};
+        const auto shape = Shape4{1, 1, shape_2d[0], shape_2d[1]};
+        const auto padded_shape = Shape4{1, 1, size_padded, size_padded};
         const auto options = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
 
         const auto n0 = Allocator::bytes_currently_allocated(device);
@@ -827,7 +827,7 @@ namespace qn {
         auto projection_metadata = metadata;
         projection_metadata.sort("absolute_tilt");
 
-        for (i64 target_index = 1; target_index < projection_metadata.ssize(); ++target_index) {
+        for (isize target_index = 1; target_index < projection_metadata.ssize(); ++target_index) {
             const auto& new_reference_slice = projection_metadata[target_index - 1];
             auto& target_slice = projection_metadata[target_index];
 
@@ -868,7 +868,7 @@ namespace qn {
         auto projection_metadata = metadata;
         projection_metadata.sort("absolute_tilt");
 
-        for (i64 target_index = 1; target_index < projection_metadata.ssize(); ++target_index) {
+        for (isize target_index = 1; target_index < projection_metadata.ssize(); ++target_index) {
             const auto& new_reference_slice = projection_metadata[target_index - 1];
             auto& target_slice = projection_metadata[target_index];
 

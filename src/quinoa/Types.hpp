@@ -19,10 +19,10 @@ namespace qn {
 
     using namespace noa::types;
     namespace nf = noa::fft;
-    namespace ng = noa::geometry;
-    namespace ni = noa::indexing;
+    namespace nx = noa::xform;
     namespace ns = noa::signal;
     namespace nt = noa::traits;
+    // namespace ni = noa::io;
 
     using noa::panic;
     using noa::panic_at_location;

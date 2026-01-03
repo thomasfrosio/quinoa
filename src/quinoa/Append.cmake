@@ -17,7 +17,6 @@ set(QUINOA_HEADERS
     src/quinoa/Thickness.hpp
     src/quinoa/Utilities.hpp
     src/quinoa/PostProcessing.hpp
-    src/quinoa/StarFile.hpp
 
     src/quinoa/ProjectionMatching.hpp
 
@@ -30,7 +29,7 @@ set(QUINOA_HEADERS
     src/quinoa/CTFPatches.hpp
     src/quinoa/CTFSimulate.hpp
 
-    src/quinoa/Tests.hpp
+#    src/quinoa/Tests.hpp
 
 )
 

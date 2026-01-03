@@ -1,6 +1,6 @@
-#include <noa/Geometry.hpp>
 #include <noa/IO.hpp>
 #include <noa/Signal.hpp>
+#include <noa/Xform.hpp>
 
 // #include "quinoa/GridSearch.hpp"
 #include "quinoa/Logger.hpp"
@@ -28,7 +28,7 @@ namespace {
 
     struct CrossCorrelate {
         using span_type = SpanContiguous<const f32, 3, i32>;
-        using interpolator_type = noa::Interpolator<2, noa::Interp::LINEAR, noa::Border::ZERO, span_type>;
+        using interpolator_type = nx::Interpolator<2, nx::Interp::LINEAR, noa::Border::ZERO, span_type>;
 
         interpolator_type stack{};
         SpanContiguous<const Vec<f32, 4>> reference_plane_coefficients{};
@@ -80,7 +80,7 @@ namespace {
 
     struct CrossCorrelate2 {
         using span_type = SpanContiguous<const f32, 3, i32>;
-        using interpolator_type = noa::Interpolator<2, noa::Interp::LINEAR, noa::Border::ZERO, span_type>;
+        using interpolator_type = nx::Interpolator<2, nx::Interp::LINEAR, noa::Border::ZERO, span_type>;
 
         interpolator_type stack{};
         SpanContiguous<const Vec<f32, 4>> reference_plane_coefficients{};
@@ -127,9 +127,9 @@ namespace {
             const auto target_angles = noa::deg2rad(target.angles);
             const auto reference_angles = noa::deg2rad(reference.angles);
             const auto reference_plane_rotation = (
-                ng::rotate_z(reference_angles[0]) *
-                ng::rotate_y(reference_angles[1]) *
-                ng::rotate_x(reference_angles[2])
+                nx::rotate_z(reference_angles[0]) *
+                nx::rotate_y(reference_angles[1]) *
+                nx::rotate_x(reference_angles[2])
             );
             const auto [c, b, a] = reference_plane_rotation * Vec{1., 0., 0.}; // plane normal
             const auto reference_center = slice_center + reference.shifts;
@@ -138,14 +138,14 @@ namespace {
 
             // Compute the reference->target transformation.
             matrix = (
-                ng::translate(slice_center.push_front(0) + target.shifts.push_front(0)) *
-                ng::rotate_z<true>(target_angles[0]) *
-                ng::rotate_y<true>(target_angles[1]) *
-                ng::rotate_x<true>(target_angles[2]) *
-                ng::rotate_x<true>(-reference_angles[2]) *
-                ng::rotate_y<true>(-reference_angles[1]) *
-                ng::rotate_z<true>(-reference_angles[0]) *
-                ng::translate(-slice_center.push_front(0) - reference.shifts.push_front(0))
+                nx::translate(slice_center.push_front(0) + target.shifts.push_front(0)) *
+                nx::rotate_z<true>(target_angles[0]) *
+                nx::rotate_y<true>(target_angles[1]) *
+                nx::rotate_x<true>(target_angles[2]) *
+                nx::rotate_x<true>(-reference_angles[2]) *
+                nx::rotate_y<true>(-reference_angles[1]) *
+                nx::rotate_z<true>(-reference_angles[0]) *
+                nx::translate(-slice_center.push_front(0) - reference.shifts.push_front(0))
             ).filter_rows(1, 2).as<f32>();
         }
 
@@ -192,9 +192,9 @@ namespace {
             const auto target_angles = noa::deg2rad(target.angles);
             const auto reference_angles = noa::deg2rad(reference.angles);
             const auto reference_plane_rotation = (
-                ng::rotate_z(reference_angles[0]) *
-                ng::rotate_y(reference_angles[1]) *
-                ng::rotate_x(reference_angles[2])
+                nx::rotate_z(reference_angles[0]) *
+                nx::rotate_y(reference_angles[1]) *
+                nx::rotate_x(reference_angles[2])
             );
             const auto [c, b, a] = reference_plane_rotation * Vec{1., 0., 0.}; // plane normal
             const auto reference_center = slice_center + reference.shifts;
@@ -203,14 +203,14 @@ namespace {
 
             // Compute the reference->target transformation.
             matrix = (
-                ng::translate(slice_center.push_front(0) + target.shifts.push_front(0)) *
-                ng::rotate_z<true>(target_angles[0]) *
-                ng::rotate_y<true>(target_angles[1]) *
-                ng::rotate_x<true>(target_angles[2]) *
-                ng::rotate_x<true>(-reference_angles[2]) *
-                ng::rotate_y<true>(-reference_angles[1]) *
-                ng::rotate_z<true>(-reference_angles[0]) *
-                ng::translate(-slice_center.push_front(0) - reference.shifts.push_front(0))
+                nx::translate(slice_center.push_front(0) + target.shifts.push_front(0)) *
+                nx::rotate_z<true>(target_angles[0]) *
+                nx::rotate_y<true>(target_angles[1]) *
+                nx::rotate_x<true>(target_angles[2]) *
+                nx::rotate_x<true>(-reference_angles[2]) *
+                nx::rotate_y<true>(-reference_angles[1]) *
+                nx::rotate_z<true>(-reference_angles[0]) *
+                nx::translate(-slice_center.push_front(0) - reference.shifts.push_front(0))
             ).filter_rows(1, 2).as<f32>();
         }
 

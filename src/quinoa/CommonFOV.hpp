@@ -1,6 +1,6 @@
 #pragma once
 
-#include <noa/Array.hpp>
+#include <noa/Runtime.hpp>
 
 #include "quinoa/Types.hpp"
 #include "quinoa/Metadata.hpp"
@@ -52,29 +52,29 @@ namespace qn {
         }
     };
 
-    struct MaskFOVs {
-        SpanContiguous<const f32, 3> input_images;
-        SpanContiguous<f32, 3> output_images;
-        SpanContiguous<const ParallelogramMask, 1> parallelograms;
-
-        NOA_HD void operator()(i64 i, i64 h, i64 w) const {
-            auto value = parallelograms[i](h, w);
-            if (value > 1e-6f)
-                value *= input_images(i, h, w);
-            output_images(i, h, w) = value;
-        }
-    };
-
     struct MaskFOV {
         SpanContiguous<const f32, 2> input_image;
         SpanContiguous<f32, 2> output_image;
         ParallelogramMask parallelogram;
 
-        NOA_HD void operator()(i64 h, i64 w) const {
+        NOA_HD void operator()(isize h, isize w) const {
             auto value = parallelogram(h, w);
             if (value > 1e-6f)
                 value *= input_image(h, w);
             output_image(h, w) = value;
+        }
+    };
+
+    struct MaskFOVs {
+        SpanContiguous<const f32, 3> input_images;
+        SpanContiguous<f32, 3> output_images;
+        SpanContiguous<const ParallelogramMask, 1> parallelograms;
+
+        NOA_HD void operator()(isize i, isize h, isize w) const {
+            auto value = parallelograms[i](h, w);
+            if (value > 1e-6f)
+                value *= input_images(i, h, w);
+            output_images(i, h, w) = value;
         }
     };
 }
@@ -97,25 +97,25 @@ namespace qn {
         CommonFOV() = default;
 
         /// Initializes with the full FOV.
-        explicit CommonFOV(const Shape<i64, 2>& shape) {
+        explicit CommonFOV(const Shape2& shape) {
             set_geometry(shape);
         }
 
         CommonFOV(
-            const Shape<i64, 2>& shape,
+            const Shape2& shape,
             const Metadata::Stack& metadata
         ) {
             set_geometry(shape, metadata);
         }
 
-        void set_geometry(const Shape<i64, 2>& shape) {
+        void set_geometry(const Shape2& shape) {
             m_shape = shape;
             m_common_area_radius = shape.vec.as<f64>() / 2;
             m_common_area_center = m_common_area_radius;
         }
 
         void set_geometry(
-            const Shape<i64, 2>& shape,
+            const Shape2& shape,
             const Metadata::Stack& metadata
         ) {
             m_shape = shape;
@@ -131,15 +131,15 @@ namespace qn {
                 // Center and stretch the image along its tilt-axis to compute its FOV.
                 const auto angles = noa::deg2rad(image.angles);
                 const auto plane_normal = (
-                    ng::rotate_z(angles[0]) *
-                    ng::rotate_y(angles[1]) *
-                    ng::rotate_x(angles[2])
+                    nx::rotate_z(angles[0]) *
+                    nx::rotate_y(angles[1]) *
+                    nx::rotate_x(angles[2])
                 ) * Vec{1., 0., 0.};
                 const auto to_0deg = (
-                    ng::rotate_z<true>(+angles[0]) *
-                    ng::rotate_x<true>(-angles[2]) *
-                    ng::rotate_y<true>(-angles[1]) *
-                    ng::rotate_z<true>(-angles[0])
+                    nx::rotate_z<true>(+angles[0]) *
+                    nx::rotate_x<true>(-angles[2]) *
+                    nx::rotate_y<true>(-angles[1]) *
+                    nx::rotate_z<true>(-angles[0])
                 ).pop_back();
 
                 // Move the image FOV to volume space.
@@ -182,7 +182,7 @@ namespace qn {
             const Metadata::Image& metadata,
             const FOVMaskOptions& options = {}
         ) const {
-            check(noa::all(m_common_area_radius >= 0), "Common area geometry is not initialized");
+            check(m_common_area_radius >= 0, "Common area geometry is not initialized");
 
             const auto angles = options.add_tilt_and_pitch ? noa::deg2rad(metadata.angles) : Vec{0., 0., 0.};
             const auto shifts = options.add_shifts ? metadata.shifts : Vec<f64, 2>{};
@@ -195,12 +195,12 @@ namespace qn {
 
             // Tilt/pitch the parallelogram and project along the z.
             auto tilt_plane = (
-                ng::translate((m_common_area_center + shifts).push_front(0)) *
-                ng::rotate_z<true>(+angles[0]) *
-                ng::rotate_y<true>(+angles[1]) *
-                ng::rotate_x<true>(+angles[2]) *
-                ng::rotate_z<true>(-angles[0]) *
-                ng::translate(-m_common_area_center.push_front(0))
+                nx::translate((m_common_area_center + shifts).push_front(0)) *
+                nx::rotate_z<true>(+angles[0]) *
+                nx::rotate_y<true>(+angles[1]) *
+                nx::rotate_x<true>(+angles[2]) *
+                nx::rotate_z<true>(-angles[0]) *
+                nx::translate(-m_common_area_center.push_front(0))
             ).filter_rows(1, 2); // project z
 
             a = tilt_plane * Vec{0., a[0], a[1], 1.};
@@ -224,8 +224,8 @@ namespace qn {
             const View<f32>& output,
             const View<ParallelogramMask>& parallelograms
         ) const {
-            check(vall(noa::Equal{}, m_shape, input.shape().filter(2, 3)) and
-                  vall(noa::Equal{}, m_shape, output.shape().filter(2, 3)),
+            check(m_shape == input.shape().filter(2, 3) and
+                  m_shape == output.shape().filter(2, 3),
                   "Shapes don't match");
 
             noa::iwise(output.shape().filter(0, 2, 3), output.device(), MaskFOVs{
@@ -240,8 +240,8 @@ namespace qn {
             const View<f32>& output,
             const ParallelogramMask& parallelogram
         ) const {
-            check(vall(noa::Equal{}, m_shape, input.shape().filter(2, 3)) and
-                  vall(noa::Equal{}, m_shape, output.shape().filter(2, 3)),
+            check(m_shape == input.shape().filter(2, 3) and
+                  m_shape == output.shape().filter(2, 3),
                   "Shapes don't match");
 
             noa::iwise(output.shape().filter(2, 3), output.device(), MaskFOV{
@@ -257,8 +257,8 @@ namespace qn {
             const Metadata::Stack& metadata,
             const FOVMaskOptions& options = {}
         ) const {
-            check(vall(noa::Equal{}, m_shape, input.shape().filter(2, 3)) and
-                  vall(noa::Equal{}, m_shape, output.shape().filter(2, 3)),
+            check(m_shape == input.shape().filter(2, 3) and
+                  m_shape == output.shape().filter(2, 3),
                   "Shapes don't match");
 
             auto parallelograms = Array<ParallelogramMask>(metadata.ssize());
@@ -290,8 +290,8 @@ namespace qn {
             apply_fov(image, image, set_fov(metadata, options));
         }
 
-        [[nodiscard]] constexpr auto center() const noexcept -> const Vec2<f64>& { return m_common_area_center; }
-        [[nodiscard]] constexpr auto radius() const noexcept -> const Vec2<f64>& { return m_common_area_radius; }
+        [[nodiscard]] constexpr auto center() const noexcept -> const Vec<f64, 2>& { return m_common_area_center; }
+        [[nodiscard]] constexpr auto radius() const noexcept -> const Vec<f64, 2>& { return m_common_area_radius; }
         [[nodiscard]] constexpr auto smooth_edge(f64 smooth_edge_percent) const noexcept -> f64 {
             // The smooth-edge percent is relative to the common area size, not the original image size.
             auto smooth_edge_size = noa::max(m_common_area_radius * 2) * smooth_edge_percent;
@@ -300,8 +300,8 @@ namespace qn {
         }
 
     private:
-        Shape2<i64> m_shape{};
-        Vec2<f64> m_common_area_center{};
-        Vec2<f64> m_common_area_radius{-1};
+        Shape2 m_shape{};
+        Vec<f64, 2> m_common_area_center{};
+        Vec<f64, 2> m_common_area_radius{-1};
     };
 }

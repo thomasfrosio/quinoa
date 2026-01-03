@@ -24,7 +24,7 @@ namespace {
 
     struct CreateStacks {
         using span_type = SpanContiguous<const f32, 3, i32>;
-        using interpolator_type = noa::Interpolator<2, noa::Interp::LINEAR, noa::Border::ZERO, span_type>;
+        using interpolator_type = nx::Interpolator<2, nx::Interp::LINEAR, noa::Border::ZERO, span_type>;
         using reduce_type = Vec<f32, 5, 8>;
 
         interpolator_type input{}; // (n,h,w)
@@ -90,7 +90,7 @@ namespace {
         const std::vector<Vec<f64, 2>>& relative_shifts,
         std::vector<Vec<f64, 2>>& global_shifts,
         const Metadata::Stack& metadata,
-        i64 pivot
+        isize pivot
     ) {
         // Relative shifts (target->reference) to global shifts (target->volume).
         const auto n = std::size(relative_shifts);
@@ -107,12 +107,12 @@ namespace {
             shift -= mean;
 
         // Transform the shifts back to image space.
-        for (size_t i{}; i < n; ++i) {
+        for (usize i{}; i < n; ++i) {
             const auto angles = noa::deg2rad(metadata[i].angles);
             const auto volume2image = (
-                ng::rotate_z(angles[0]) *
-                ng::rotate_y(angles[1]) *
-                ng::rotate_x(angles[2])
+                nx::rotate_z(angles[0]) *
+                nx::rotate_y(angles[1]) *
+                nx::rotate_x(angles[2])
             ).filter_rows(1, 2);
             global_shifts[i] = volume2image * global_shifts[i].push_front(0);
         }
@@ -122,7 +122,7 @@ namespace {
 
 namespace qn {
     AlignmentCoarse::AlignmentCoarse(
-        const Shape4<i64>& shape,
+        const Shape4& shape,
         Device device
     ) {
         const auto allocated_start = Allocator::bytes_currently_allocated(device);
@@ -136,7 +136,7 @@ namespace qn {
         const auto buffer_shape = shape.set<0>(n_total_images * 4);
 
         // Use device-only memory (which seems faster than managed memory) for the big buffer, if possible.
-        const auto n_bytes_to_allocate = static_cast<size_t>(buffer_shape.rfft().n_elements()) * sizeof(c32);
+        const auto n_bytes_to_allocate = static_cast<usize>(buffer_shape.rfft().n_elements()) * sizeof(c32);
         const bool has_enough_space = n_bytes_to_allocate < device.memory_capacity().free;
         m_buffer_rfft = Array<c32>(buffer_shape.rfft(), {
             .device = device,
@@ -155,8 +155,8 @@ namespace qn {
         m_peak_stats = noa::like<Vec<f32, 5>>(m_fov_masks);
 
         // Prepare the shifts.
-        m_relative_shifts.resize(static_cast<size_t>(n_total_images));
-        m_global_shifts.resize(static_cast<size_t>(n_total_images));
+        m_relative_shifts.resize(static_cast<usize>(n_total_images));
+        m_global_shifts.resize(static_cast<usize>(n_total_images));
 
         // Prepare FFT plans and set the workspace.
         if (device.is_gpu()) {
@@ -164,7 +164,7 @@ namespace qn {
             nf::set_cache_limit(10, device);
             nf::r2c(buffer(0, 2), buffer_rfft(0, 2), {.record_and_share_workspace = true});
             nf::c2r(buffer_rfft(1), buffer(0), {.record_and_share_workspace = true});
-            const auto workspace = m_buffer_rfft.subregion(ni::Offset{2 * n_target_images});
+            const auto workspace = m_buffer_rfft.subregion(Offset{2 * n_target_images});
             const auto n_plans_set = nf::set_workspace(device, workspace);
             if (n_plans_set != 2) {
                 Logger::warn(
@@ -334,7 +334,7 @@ namespace qn {
         const Path* output_dir,
         bool cosine_stretch,
         bool need_score
-    ) -> Pair<Vec2<f64>, f64> {
+    ) -> Pair<Vec<f64, 2>, f64> {
         check(metadata.ssize() == stack.shape()[0]);
 
         const auto device = stack.device();
@@ -366,9 +366,9 @@ namespace qn {
             // Compute the plane coefficients of the reference.
             const auto reference_angles = noa::deg2rad(reference.angles);
             const auto reference_plane_rotation = (
-                ng::rotate_z(reference_angles[0]) *
-                ng::rotate_y(reference_angles[1]) *
-                ng::rotate_x(reference_angles[2])
+                nx::rotate_z(reference_angles[0]) *
+                nx::rotate_y(reference_angles[1]) *
+                nx::rotate_x(reference_angles[2])
             );
             const auto [c, b, a] = reference_plane_rotation * Vec{1., 0., 0.}; // plane normal
             const auto reference_center = image_center + reference.shifts;
@@ -378,14 +378,14 @@ namespace qn {
             // Compute the reference->target transformation.
             const auto target_angles = noa::deg2rad(target.angles);
             projection_matrix = (
-                ng::translate(image_center.push_front(0) + target.shifts.push_front(0)) *
-                ng::rotate_z<true>(+target_angles[0]) *
-                ng::rotate_y<true>(+target_angles[1]) *
-                ng::rotate_x<true>(+target_angles[2]) *
-                ng::rotate_x<true>(-reference_angles[2]) *
-                ng::rotate_y<true>(-reference_angles[1]) *
-                ng::rotate_z<true>(-reference_angles[0]) *
-                ng::translate(-image_center.push_front(0) - reference.shifts.push_front(0))
+                nx::translate(image_center.push_front(0) + target.shifts.push_front(0)) *
+                nx::rotate_z<true>(+target_angles[0]) *
+                nx::rotate_y<true>(+target_angles[1]) *
+                nx::rotate_x<true>(+target_angles[2]) *
+                nx::rotate_x<true>(-reference_angles[2]) *
+                nx::rotate_y<true>(-reference_angles[1]) *
+                nx::rotate_z<true>(-reference_angles[0]) *
+                nx::translate(-image_center.push_front(0) - reference.shifts.push_front(0))
             ).filter_rows(1, 2).as<f32>(); // project along z-axis
 
             mask = common_fov.set_fov(reference, {
@@ -443,7 +443,7 @@ namespace qn {
 
         // Compute the shift, i.e., by how much the stretched target is away from the reference.
         // To align the target onto the reference, we would need to subtract this shift from it.
-        find_peaks<"fc2fc">(buffer(0), m_xmap_centered.view(), m_peak_shifts.view(), m_peak_values.view(), {
+        find_peaks<"fc">(buffer(0), m_xmap_centered.view(), m_peak_shifts.view(), m_peak_values.view(), {
             .distortion_angle_deg = metadata[0].angles[0],
             .max_shift_percent = max_shift_percent,
         });
@@ -455,7 +455,7 @@ namespace qn {
         // the end. For simplicity, we chose this common reference-frame to be the volume reference-frame, which has
         // no rotation, no tilt, no pitch.
         f64 average_zncc{};
-        m_relative_shifts[static_cast<size_t>(pivot)] = {};
+        m_relative_shifts[static_cast<usize>(pivot)] = {};
         for (i32 i{}; auto&& [peak_shift, peak_value, peak_stats]: noa::zip(
             m_peak_shifts.span_1d(),
             m_peak_values.span_1d(),
@@ -470,9 +470,9 @@ namespace qn {
             // Compute the reference-plane coefficients.
             const auto reference_angles = noa::deg2rad(reference.angles);
             const auto reference_plane_rotation = (
-                ng::rotate_z(reference_angles[0]) *
-                ng::rotate_y(reference_angles[1]) *
-                ng::rotate_x(reference_angles[2])
+                nx::rotate_z(reference_angles[0]) *
+                nx::rotate_y(reference_angles[1]) *
+                nx::rotate_x(reference_angles[2])
             );
 
             // Compute the z-coordinate at the image shift.
@@ -482,13 +482,13 @@ namespace qn {
 
             // Transform the shifts to volume-space.
             const auto reference2volume = (
-                ng::rotate_x<true>(-reference_angles[2]) *
-                ng::rotate_y<true>(-reference_angles[1]) *
-                ng::rotate_z<true>(-reference_angles[0])
+                nx::rotate_x<true>(-reference_angles[2]) *
+                nx::rotate_y<true>(-reference_angles[1]) *
+                nx::rotate_z<true>(-reference_angles[0])
             ).filter_rows(1, 2);
             auto shift = reference2volume * Vec{z, projected_shift[0], projected_shift[1], 1.};
 
-            m_relative_shifts[static_cast<size_t>(index_target)] = shift;
+            m_relative_shifts[static_cast<usize>(index_target)] = shift;
 
             if (need_score) {
                 // Center and L2-normalize the peak.

@@ -1,7 +1,6 @@
 #include <noa/FFT.hpp>
-#include <noa/Geometry.hpp>
+#include <noa/Xform.hpp>
 #include <noa/Signal.hpp>
-#include <noa/Utils.hpp>
 #include <noa/IO.hpp>
 
 #include "quinoa/Logger.hpp"
@@ -28,9 +27,9 @@ namespace {
         f32 phase_flip_strength;
         f32 defocus_start_um;
         f32 defocus_step_um;
-        i64 strip_offset;
+        isize strip_offset;
 
-        NOA_HD void operator()(i64 s, i64 y, i64 x) {
+        NOA_HD void operator()(isize s, isize y, isize x) {
             const auto frequency = nf::index2frequency<false, true>(Vec{y, x}, image_padded_rfft.shape().filter(0));
             const auto fftfreq_2d = frequency.as<f32>() * fftfreq_norm;
 
@@ -58,16 +57,16 @@ namespace {
         SpanContiguous<const f32, 3> strips_padded; // (s,h+p,w+p)
         SpanContiguous<f32, 2> image; // (h,w)
 
-        Vec<i64, 2> image_center;
-        Vec<i64, 2> left_padding;
+        Vec<isize, 2> image_center;
+        Vec<isize, 2> left_padding;
         Vec<f32, 3> z_projection_nm;
         f32 z_offset_start_nm;
         f32 z_step_nm;
 
-        i64 strip_start;
-        i64 strip_end;
+        isize strip_start;
+        isize strip_end;
 
-        NOA_HD void operator()(i64 i, i64 j) const {
+        NOA_HD void operator()(isize i, isize j) const {
             // Get the z-position at this index of the image.
             const auto indices = Vec{i, j};
             const auto coordinates = (indices - image_center).as<f32>();
@@ -75,7 +74,7 @@ namespace {
 
             // Get the closest z-strip.
             const auto strip = (volume_z_coordinate_nm - z_offset_start_nm) / z_step_nm;
-            const auto strip_index = static_cast<i64>(noa::round(strip));
+            const auto strip_index = static_cast<isize>(noa::round(strip));
 
             // If the chunk contains that z-strip, save it into the image.
             if (strip_index >= strip_start and strip_index < strip_end) {
@@ -90,18 +89,18 @@ namespace {
         SpanContiguous<const f32, 3> images;
         SpanContiguous<f32, 3> tiles_padded;
         SpanContiguous<const Vec<i32, 2>> tile_padded_origins;
-        Vec<i64, 2> tile_padded_center;
+        Vec<isize, 2> tile_padded_center;
         f32 taper_radius;
         f32 taper_smoothness;
 
-        NOA_HD void operator()(i64 i, i64 y, i64 x) const {
+        NOA_HD void operator()(isize i, isize y, isize x) const {
             const auto tile_padded_indices = Vec{y, x};
             const auto tile_coordinates = tile_padded_indices - tile_padded_center;
-            const auto image_indices = tile_padded_origins[i].as<i64>() + tile_padded_indices;
+            const auto image_indices = tile_padded_origins[i].as<isize>() + tile_padded_indices;
 
             // Get the image value, or zero if OOB.
             f32 value{};
-            if (ni::is_inbound(images.shape().pop_front(), image_indices)) {
+            if (noa::is_inbound(images.shape().pop_front(), image_indices)) {
                 value = images(image_indices.push_front(i));
 
                 // Compute the smooth taper.
@@ -122,12 +121,12 @@ namespace {
         }
     };
 
-    template<noa::Interp INTERP>
+    template<nx::Interp INTERP>
     struct BackwardProjection {
     public:
         static constexpr auto BORDER = noa::Border::ZERO;
         using input_span_t = SpanContiguous<const f32, 3>;
-        using interpolator_t = noa::Interpolator<2, INTERP, BORDER, input_span_t>;
+        using interpolator_t = nx::Interpolator<2, INTERP, BORDER, input_span_t>;
         using matrices_span_t = SpanContiguous<const Mat<f32, 2, 4>>;
 
     public:
@@ -136,11 +135,11 @@ namespace {
         SpanContiguous<f32, 3> subvolume{}; // (d,h,w)
 
     public:
-        constexpr void operator()(const Vec<i64, 3>& indices) const {
+        constexpr void operator()(const Vec<isize, 3>& indices) const {
             const auto volume_coordinates = indices.as<f32>().push_back(1);
 
             f32 value{};
-            for (i64 i{}; i < projection_matrices.ssize(); ++i) {
+            for (isize i{}; i < projection_matrices.ssize(); ++i) {
                 // TODO Add volume deformations with the addition of a SplineGrid updating volume_coordinates.
                 const auto image_coordinates = projection_matrices[i] * volume_coordinates;
                 value += tiles_padded.interpolate_at(image_coordinates, i);
@@ -167,13 +166,13 @@ namespace {
             );
 
             const auto image_shape = loader.slice_shape();
-            const auto images_shape = image_shape.push_front(Vec{metadata.ssize(), i64{1}});
+            const auto images_shape = image_shape.push_front(Vec{metadata.ssize(), isize{1}});
             const auto [buffer, buffer_rfft] = nf::empty<f32>(images_shape, {
                 .device = loader.compute_device(),
                 .allocator = Allocator::ASYNC,
             });
 
-            for (i64 i{}; auto& slice: metadata)
+            for (isize i{}; auto& slice: metadata)
                 loader.read_slice(buffer.view().subregion(i++), slice.index_file);
             loader.clear_cache(); // remove stack saved on the host
 
@@ -190,7 +189,7 @@ namespace {
             const CTFIsotropic64& ctf,
             f64 volume_thickness_nm,
             f64 z_step_nm,
-            i64 phase_flip_strength
+            i32 phase_flip_strength
         ) :
             m_metadata{&metadata},
             m_ctf{&ctf},
@@ -203,14 +202,14 @@ namespace {
             // Compute the z-offset at the center of the volume.
             // This will be used to compute the relative z-offset of z-sections.
             const auto n_sections = std::round(volume_thickness_nm / z_step_nm);
-            check(noa::is_odd(static_cast<i64>(n_sections)));
+            check(noa::is_odd(static_cast<isize>(n_sections)));
             m_volume_z_center_nm = (n_sections / 2) * z_step_nm;
 
             // Get the maximum defocus and n_strips.
             f64 max_z_range_nm{};
             f64 max_defocus_nm{};
-            i64 min_n_strips{std::numeric_limits<i64>::max()};
-            i64 max_n_strips{};
+            isize min_n_strips{std::numeric_limits<isize>::max()};
+            isize max_n_strips{};
             for (auto& slice: metadata) {
                 const auto [start_offset_nm, n_strips] = divide_image_in_z_strips(
                     image_shape, slice.angles, spacing_nm, z_step_nm
@@ -237,7 +236,7 @@ namespace {
             const f64 resolution_nm = spacing_nm * 2;
             const f64 delocalization_nm = 2 * max_defocus_nm * wavelength_nm / resolution_nm;
             const f64 delocalization_pix = std::round(delocalization_nm / spacing_nm);
-            const i64 aliasing_free_size = [&] {
+            const isize aliasing_free_size = [&] {
                 auto ictf = ctf;
                 ictf.set_defocus(max_defocus_nm * 1e-3);
                 return ctf::aliasing_free_size(ictf, Vec{0., 0.5});
@@ -245,8 +244,8 @@ namespace {
 
             // Compute a satisfying shape given these limits.
             constexpr f64 PADDING_FACTOR = 1.2;
-            const auto minimum_padding = static_cast<i64>(delocalization_pix);
-            auto image_padded_shape = Shape{(image_shape.vec.as<f64>() * PADDING_FACTOR).as<i64>()};
+            const auto minimum_padding = static_cast<isize>(delocalization_pix);
+            auto image_padded_shape = Shape{(image_shape.vec.as<f64>() * PADDING_FACTOR).as<isize>()};
             image_padded_shape = noa::max(image_padded_shape, image_shape + minimum_padding);
             image_padded_shape = noa::max(image_padded_shape, aliasing_free_size);
             image_padded_shape = nf::next_fast_shape(image_padded_shape);
@@ -280,7 +279,7 @@ namespace {
         }
 
         static auto divide_image_in_z_strips(
-            const Shape<i64, 2>& image_shape,
+            const Shape2& image_shape,
             const Vec<f64, 3>& image_angles,
             f64 spacing_nm,
             f64 z_step_nm
@@ -307,9 +306,9 @@ namespace {
             // Image plane coefficients to get the z-offset at image coordinate.
             const auto angles = noa::deg2rad(image_angles);
             const auto plane_rotation = ( // TODO check
-                ng::rotate_z(angles[0]) *
-                ng::rotate_y(angles[1]) *
-                ng::rotate_x(angles[2])
+                nx::rotate_z(angles[0]) *
+                nx::rotate_y(angles[1]) *
+                nx::rotate_x(angles[2])
             );
             const auto [c, b, a] = plane_rotation * Vec{1., 0., 0.};
 
@@ -328,23 +327,23 @@ namespace {
             const auto first_strip_nm = noa::round(minmax[0] / z_step_nm) * z_step_nm;
             const auto last_strip_nm = noa::round(minmax[1] / z_step_nm) * z_step_nm;
             const auto n_strips = (last_strip_nm - first_strip_nm) / z_step_nm + 1;
-            return {first_strip_nm, static_cast<i64>(std::round(n_strips))};
+            return {first_strip_nm, static_cast<isize>(std::round(n_strips))};
         }
 
         static auto reduce_memory_requirements(
-            const Shape<i64, 2>& image_shape,
-            const Shape<i64, 2>& image_padded_shape,
-            i64 n_images,
-            i64 max_n_strips,
+            const Shape2& image_shape,
+            const Shape2& image_padded_shape,
+            isize n_images,
+            isize max_n_strips,
             size_t n_bytes_free
-        ) -> Tuple<i64, i64, bool> {
+        ) -> Tuple<isize, isize, bool> {
             // The strategy is the following:
             //  1. If GPU memory is low, try 2 chunks. This should be enough for most cases and
             //     decreases the overall memory needed (host and device). The overhead is minimal.
             //  2. If this is still not enough, keep spectra on the host.
             //  3. If this is still not enough, divide in more chunks.
-            const auto images_shape = image_shape.push_front(Vec{n_images, i64{1}});
-            const auto images_padded_shape = image_padded_shape.push_front(Vec{n_images, i64{1}});
+            const auto images_shape = image_shape.push_front(Vec{n_images, isize{1}});
+            const auto images_padded_shape = image_padded_shape.push_front(Vec{n_images, isize{1}});
             const auto images_bytes = static_cast<size_t>(images_shape.n_elements()) * sizeof(f32);
             const auto images_padded_bytes = static_cast<size_t>(images_padded_shape.rfft().n_elements()) * sizeof(c32);
 
@@ -353,10 +352,10 @@ namespace {
             // We may not be able to query the device stats, in which case
             // better to hope for the best and process in one chunk.
             if (n_bytes_free == 0)
-                return noa::make_tuple(i64{1}, max_n_strips, keep_spectra_on_device);
+                return noa::make_tuple(isize{1}, max_n_strips, keep_spectra_on_device);
 
-            i64 chunk_size{};
-            i64 n_chunks{1};
+            isize chunk_size{};
+            isize n_chunks{1};
             for (; n_chunks < max_n_strips; ++n_chunks) { // until 1 strip per chunk
                 auto base = images_bytes;
                 if (n_chunks <= 2) {
@@ -369,7 +368,7 @@ namespace {
                     keep_spectra_on_device = false;
                 }
 
-                chunk_size = static_cast<i64>(std::ceil(static_cast<f64>(max_n_strips) / static_cast<f64>(n_chunks)));
+                chunk_size = static_cast<isize>(std::ceil(static_cast<f64>(max_n_strips) / static_cast<f64>(n_chunks)));
                 const auto n_elements = n_chunks * image_padded_shape.rfft().n_elements();
                 const auto n_bytes = static_cast<size_t>(n_elements) * sizeof(c32);
                 const auto n_bytes_total = static_cast<size_t>(static_cast<f64>(n_bytes) * 2); // x2 for FFT plans
@@ -381,15 +380,15 @@ namespace {
 
         void allocate_and_prepare_spectra(
             StackLoader& loader,
-            const Shape<i64, 2>& image_shape,
-            const Shape<i64, 2>& image_padded_shape,
+            const Shape2& image_shape,
+            const Shape2& image_padded_shape,
             const Metadata::Stack& metadata,
             bool keep_spectra_on_device,
-            i64 chunk_size
+            isize chunk_size
         ) {
-            const auto images_shape = image_shape.push_front(Vec{metadata.ssize(), i64{1}});
-            const auto images_padded_shape = image_padded_shape.push_front(Vec{metadata.ssize(), i64{1}});
-            const auto image_padded_strips_shape = image_padded_shape.push_front(Vec{chunk_size, i64{1}});
+            const auto images_shape = image_shape.push_front(Vec{metadata.ssize(), isize{1}});
+            const auto images_padded_shape = image_padded_shape.push_front(Vec{metadata.ssize(), isize{1}});
+            const auto image_padded_strips_shape = image_padded_shape.push_front(Vec{chunk_size, isize{1}});
             const auto options = ArrayOption{.device = loader.compute_device(), .allocator = Allocator::MANAGED};
 
             noa::tie(m_images_padded, m_images_padded_rfft) = nf::empty<f32>(
@@ -428,7 +427,7 @@ namespace {
                 m_image_padded_rfft = Array<c32>(images_padded_shape.rfft(), options);
         }
 
-        void compute_irffts(i64 n_strips, bool record = false, i64 n_groups = 4) {
+        void compute_irffts(isize n_strips, bool record = false, isize n_groups = 4) {
             // We compute many FFTs with different batch sizes. In CUDA, this leads to computing many plans, and while
             // the memory consumption can be almost entirely eliminated by sharing the workspace across these plans,
             // the overhead of computing the plans in the first place is too important. In fact, it is faster to group
@@ -437,8 +436,8 @@ namespace {
             // Group batch size into groups.
             const auto maximum_n_strips = m_strips_padded.shape()[0];
             const auto group_size = noa::next_multiple_of(maximum_n_strips, n_groups) / n_groups;
-            const auto index = static_cast<i64>(noa::ceil(static_cast<f64>(n_strips) / static_cast<f64>(group_size)));
-            const auto slice = ni::Slice{0, index * group_size};
+            const auto index = static_cast<isize>(noa::ceil(static_cast<f64>(n_strips) / static_cast<f64>(group_size)));
+            const auto slice = Slice{0, index * group_size};
 
             // Prepare for this transform, asking to share the workspace.
             nf::c2r(m_strips_padded_rfft.view().subregion(slice), m_strips_padded.view().subregion(slice), {
@@ -459,11 +458,11 @@ namespace {
 
             // Create and cache the plans for every FFT about to be run.
             // These FFTs also share the same workspace, so they have to run on the same stream.
-            for (i64 i{1}; i < m_strips_padded.shape()[0]; ++i)
+            for (isize i{1}; i < m_strips_padded.shape()[0]; ++i)
                 compute_irffts(i, true);
         }
 
-        NOA_NOINLINE auto compute_filtered_stack(i64 z) -> View<f32> {
+        NOA_NOINLINE auto compute_filtered_stack(isize z) -> View<f32> {
             if (m_z_step_nm <= 0) // no ctf
                 return m_images_filtered.view();
 
@@ -491,10 +490,10 @@ namespace {
                 // Recompose the filtered tile from the defocus-strips.
                 const auto angles = noa::deg2rad(slice.angles);
                 const auto z_projection_nm = (
-                    ng::scale(Vec<f64, 3>::from_value(spacing_nm)) *
-                    ng::rotate_x(angles[2]) *
-                    ng::rotate_y(angles[1]) *
-                    ng::rotate_z(angles[0])
+                    nx::scale(Vec<f64, 3>::from_value(spacing_nm)) *
+                    nx::rotate_x(angles[2]) *
+                    nx::rotate_y(angles[1]) *
+                    nx::rotate_z(angles[0])
                 )[0].as<f32>();
 
                 // Make the input spectrum available on the device.
@@ -503,9 +502,9 @@ namespace {
                     image_padded_rfft = image_padded_rfft.to(m_image_padded_rfft.view());
 
                 const auto chunk_size = m_strips_padded.shape()[0];
-                for (i64 i{}; i < n_strips; i += chunk_size) {
+                for (isize i{}; i < n_strips; i += chunk_size) {
                     const auto ichunk_size = std::min(chunk_size, n_strips - i);
-                    const auto ichunk = ni::Slice{0, ichunk_size};
+                    const auto ichunk = Slice{0, ichunk_size};
 
                     noa::iwise(image_padded_shape.rfft().push_front(ichunk_size), m_images_filtered.device(), FilterPaddedImages{
                         .image_padded_rfft = image_padded_rfft.span().filter(2, 3).as_contiguous(),
@@ -555,13 +554,13 @@ namespace {
     class Reconstructor {
     public:
         Reconstructor(
-            const Shape<i64, 2>& image_shape,
-            const Shape<i64, 3>& volume_shape,
+            const Shape2& image_shape,
+            const Shape3& volume_shape,
             const Metadata::Stack& metadata,
             const Device& device,
             bool oversample,
             bool correct_rotation,
-            noa::Interp interp,
+            nx::Interp interp,
             f64 spacing_nm,
             f64 z_step_nm
         ) :
@@ -580,14 +579,14 @@ namespace {
             // downsampled, and the central subvolume (without the padding) is extracted and placed back into the
             // volume. In other words, we backproject subvolumes 4 times larger (x2 padding, x2 oversampling) than
             // the final subvolume.
-            const auto tile_size = i64{64}; // TODO max z_step with this
+            const auto tile_size = isize{64}; // TODO max z_step with this
             const auto tile_padded_size = tile_size * 2;
             const auto tile_padded_os_size = tile_padded_size * (1 + oversample);
             const auto tile_shape = Shape{tile_size, tile_size};
             const auto tile_padded_shape = Shape{tile_padded_size, tile_padded_size};
             const auto tile_padded_os_shape = Shape{tile_padded_os_size, tile_padded_os_size};
 
-            const auto z_step = static_cast<i64>(z_step_nm / spacing_nm);
+            const auto z_step = static_cast<isize>(z_step_nm / spacing_nm);
             const auto n_sections = volume_shape[0] / z_step;
             check(noa::is_odd(z_step) and noa::is_odd(n_sections));
             m_subvolume_shape = Shape{z_step, tile_size, tile_size};
@@ -608,7 +607,7 @@ namespace {
             // limit the number of threads to keep the memory usage reasonable. 10 threads need about 0.5GB.
             const auto is_gpu = device.is_gpu();
             const auto options = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
-            m_n_threads = is_gpu ? i64{1} : i64{8};//std::max(Stream::current(device).thread_limit(), i64{10});
+            m_n_threads = is_gpu ? 1 : std::max(Stream::current(device).thread_limit(), i32{8});
 
             // Forward matrices relating 3d positions in the tomogram to 2d positions in the images.
             // Then, compute the padded tile origins and projection matrices for the oversampled tiles.
@@ -620,12 +619,12 @@ namespace {
                 const auto angles = noa::deg2rad(image.angles);
                 const auto final_rotation = correct_rotation ? 0. : angles[0];
                 forward_projection_matrix = (
-                    ng::translate((image_center + image.shifts).push_front(0)) *
-                    ng::rotate_z<true>(angles[0]) *
-                    ng::rotate_y<true>(angles[1]) *
-                    ng::rotate_x<true>(angles[2]) *
-                    ng::rotate_z<true>(-final_rotation) *
-                    ng::translate(-volume_center)
+                    nx::translate((image_center + image.shifts).push_front(0)) *
+                    nx::rotate_z<true>(angles[0]) *
+                    nx::rotate_y<true>(angles[1]) *
+                    nx::rotate_x<true>(angles[2]) *
+                    nx::rotate_z<true>(-final_rotation) *
+                    nx::translate(-volume_center)
                 ).filter_rows(1, 2);
             }
 
@@ -634,14 +633,14 @@ namespace {
             const auto tile_padded_center = (tile_padded_shape / 2).vec.as<f64>();
             m_tile_padded_origins = Array<Vec<i32, 2>>(m_grid_shape);
             m_tile_padded_os_matrices = Array<Mat<f32, 2, 4>>(m_grid_shape);
-            for (i64 z{}; z < nz; ++z) {
-                for (i64 y{}; y < ny; ++y) {
-                    for (i64 x{}; x < nx; ++x) {
+            for (isize z{}; z < nz; ++z) {
+                for (isize y{}; y < ny; ++y) {
+                    for (isize x{}; x < nx; ++x) {
                         // Compute the center of the subvolume.
                         const auto subvolume_origin = Vec{z, y, x} * m_subvolume_shape.vec;
                         const auto subvolume_center_coordinates = subvolume_origin.as<f64>() + subvolume_center;
 
-                        for (i64 t{}; t < nt; ++t) {
+                        for (isize t{}; t < nt; ++t) {
                             // Project subvolume center back to image-space.
                             // Extract the padded tile origin and residual shifts for the extraction.
                             const auto tile_padded_center_coordinate = forward_projection_matrices_1d[t] * subvolume_center_coordinates.push_back(1);
@@ -649,7 +648,7 @@ namespace {
                             const auto tile_padded_origin_truncated = noa::floor(tile_padded_origin_coordinate);
                             const auto tile_padded_origin = tile_padded_origin_truncated.as<i32>();
                             const auto tile_residual_shift = tile_padded_origin_coordinate - tile_padded_origin_truncated;
-                            m_tile_padded_origins(z, y, x, t) = tile_padded_origin;
+                            m_tile_padded_origins.span()(z, y, x, t) = tile_padded_origin;
 
                             // Compute the backward projection matrix (this is done on the oversampled padded tiles).
                             // Note that the padded tiles/subvolumes are even-sized, so the center is preserved during
@@ -657,13 +656,13 @@ namespace {
                             const auto angles = noa::deg2rad(metadata[t].angles);
                             const auto final_rotation = correct_rotation ? 0. : angles[0];
                             const auto scale = static_cast<f64>(1 + oversample);
-                            m_tile_padded_os_matrices(z, y, x, t) = ( // volume->image
-                                ng::translate((tile_padded_center + tile_residual_shift).push_front(0) * scale) *
-                                ng::rotate_z<true>(angles[0]) *
-                                ng::rotate_y<true>(angles[1]) *
-                                ng::rotate_x<true>(angles[2]) *
-                                ng::rotate_z<true>(-final_rotation) *
-                                ng::translate(-subvolume_padded_center * scale)
+                            m_tile_padded_os_matrices.span()(z, y, x, t) = ( // volume->image
+                                nx::translate((tile_padded_center + tile_residual_shift).push_front(0) * scale) *
+                                nx::rotate_z<true>(angles[0]) *
+                                nx::rotate_y<true>(angles[1]) *
+                                nx::rotate_x<true>(angles[2]) *
+                                nx::rotate_z<true>(-final_rotation) *
+                                nx::translate(-subvolume_padded_center * scale)
                             ).filter_rows(1, 2).as<f32>(); // (y, x)
                         }
                     }
@@ -692,49 +691,50 @@ namespace {
             // Allocate buffers.
             // Note that for the CPU mode, each thread needs its own buffer.
             // To retrieve the buffer (as a real and complex view), use the *_pair(tid) functions.
-            m_tiles_padded_rfft = Array<c32>(tile_padded_shape.rfft().push_front(Vec{m_n_threads, nt}), options);
+            const auto bd = Vec<isize, 2>::from_values(m_n_threads, nt);
+            m_tiles_padded_rfft = Array<c32>(tile_padded_shape.rfft().push_front(bd), options);
             m_subvolume_padded_rfft = Array<c32>(m_subvolume_padded_shape.rfft().push_front(m_n_threads), options);
             if (oversample) {
-                m_tiles_padded_os_rfft = Array<c32>(tile_padded_os_shape.rfft().push_front(Vec{m_n_threads, nt}), options);
+                m_tiles_padded_os_rfft = Array<c32>(tile_padded_os_shape.rfft().push_front(bd), options);
                 m_subvolume_padded_os_rfft = Array<c32>(m_subvolume_padded_os_shape.rfft().push_front(m_n_threads), options);
             }
             if (is_gpu)
                 m_subvolume_row = Array<f32>(m_subvolume_shape.set<2>(volume_shape[2]).push_front(1), options);
         }
 
-        [[nodiscard]] auto tiles_padded_pair(i64 tid) const {
+        [[nodiscard]] auto tiles_padded_pair(isize tid) const {
             const auto& [td, th, tw] = m_subvolume_padded_shape;
             auto pair = Pair<View<f32>, View<c32>>{};
             pair.second = m_tiles_padded_rfft.view().subregion(tid).permute({1, 0, 2, 3});
-            pair.first = nf::alias_to_real(pair.second, Shape{m_grid_shape[3], i64{1}, th, tw});
+            pair.first = nf::alias_to_real(pair.second, Shape{m_grid_shape[3], isize{1}, th, tw});
             return pair;
         }
 
-        [[nodiscard]] auto tiles_padded_os_pair(i64 tid) const {
+        [[nodiscard]] auto tiles_padded_os_pair(isize tid) const {
             if (not m_oversample)
                 return tiles_padded_pair(tid);
             const auto& [td, th, tw] = m_subvolume_padded_os_shape;
             auto pair = Pair<View<f32>, View<c32>>{};
             pair.second = m_tiles_padded_os_rfft.view().subregion(tid).permute({1, 0, 2, 3});
-            pair.first = nf::alias_to_real(pair.second, Shape{m_grid_shape[3], i64{1}, th, tw});
+            pair.first = nf::alias_to_real(pair.second, Shape{m_grid_shape[3], isize{1}, th, tw});
             return pair;
         }
 
-        [[nodiscard]] auto subvolume_padded_pair(i64 tid) const {
+        [[nodiscard]] auto subvolume_padded_pair(isize tid) const {
             const auto& [td, th, tw] = m_subvolume_padded_shape;
             auto pair = Pair<View<f32>, View<c32>>{};
             pair.second = m_subvolume_padded_rfft.view().subregion(tid);
-            pair.first = nf::alias_to_real(pair.second, Shape{i64{1}, td, th, tw});
+            pair.first = nf::alias_to_real(pair.second, Shape{isize{1}, td, th, tw});
             return pair;
         }
 
-        [[nodiscard]] auto subvolume_padded_os_pair(i64 tid) const {
+        [[nodiscard]] auto subvolume_padded_os_pair(isize tid) const {
             if (not m_oversample)
                 return subvolume_padded_pair(tid);
             const auto& [td, th, tw] = m_subvolume_padded_os_shape;
             auto pair = Pair<View<f32>, View<c32>>{};
             pair.second = m_subvolume_padded_os_rfft.view().subregion(tid);
-            pair.first = nf::alias_to_real(pair.second, Shape{i64{1}, td, th, tw});
+            pair.first = nf::alias_to_real(pair.second, Shape{isize{1}, td, th, tw});
             return pair;
         }
 
@@ -754,7 +754,7 @@ namespace {
 
         NOA_NOINLINE auto reconstruct_subvolume(
             const View<const f32>& input_stack,
-            i64 z, i64 y, i64 x, i64 tid = 0
+            isize z, isize y, isize x, isize tid = 0
         ) -> View<f32> {
             const auto [tiles_padded, tiles_padded_rfft] = tiles_padded_pair(tid);
             const auto [tiles_padded_os, tiles_padded_os_rfft] = tiles_padded_os_pair(tid);
@@ -772,7 +772,7 @@ namespace {
                 .images = input_stack.span().filter(0, 2, 3).as_contiguous(),
                 .tiles_padded = tiles_padded.span().filter(0, 2, 3).as_contiguous(),
                 .tile_padded_origins = m_tile_padded_origins.span().subregion(z, y, x).as_1d(),
-                .tile_padded_center = tile_padded_center.as<i64>(),
+                .tile_padded_center = tile_padded_center.as<isize>(),
                 .taper_radius = taper_radius,
                 .taper_smoothness = taper_smoothness,
             });
@@ -780,7 +780,7 @@ namespace {
             // Oversample, if necessary.
             if (m_oversample) {
                 nf::r2c(tiles_padded, tiles_padded_rfft);
-                nf::resize<"h2h">(
+                nf::resize<"h">(
                     tiles_padded_rfft, tiles_padded.shape(),
                     tiles_padded_os_rfft, tiles_padded_os.shape()
                 );
@@ -789,15 +789,15 @@ namespace {
 
             // Prefilter, if necessary.
             // TODO We could also prefilter before the oversampling.
-            if (m_interp == noa::Interp::CUBIC_BSPLINE)
-                noa::cubic_bspline_prefilter(tiles_padded_os, tiles_padded_os);
+            if (m_interp == nx::Interp::CUBIC_BSPLINE)
+                nx::cubic_bspline_prefilter(tiles_padded_os, tiles_padded_os);
 
             // Backward project.
             const auto input = tiles_padded_os.span().filter(0, 2, 3).as_contiguous();
             const auto output = subvolume_padded_os.span().filter(1, 2, 3).as_contiguous();
             const auto matrices = m_tile_padded_os_matrices.span().subregion(z, y, x).as_1d();
-            if (m_interp == noa::Interp::CUBIC_BSPLINE) {
-                using operator_t = BackwardProjection<noa::Interp::CUBIC_BSPLINE>;
+            if (m_interp == nx::Interp::CUBIC_BSPLINE) {
+                using operator_t = BackwardProjection<nx::Interp::CUBIC_BSPLINE>;
                 noa::iwise(
                     output.shape(), subvolume_padded_os.device(),
                     operator_t{
@@ -805,8 +805,8 @@ namespace {
                         .projection_matrices = matrices,
                         .subvolume = output,
                     });
-            } else if (m_interp == noa::Interp::LINEAR) {
-                using operator_t = BackwardProjection<noa::Interp::LINEAR>;
+            } else if (m_interp == nx::Interp::LINEAR) {
+                using operator_t = BackwardProjection<nx::Interp::LINEAR>;
                 noa::iwise(
                     output.shape(), subvolume_padded_os.device(),
                     operator_t{
@@ -819,7 +819,7 @@ namespace {
             // Downsample, if necessary.
             if (m_oversample) {
                 nf::r2c(subvolume_padded_os, subvolume_padded_os_rfft);
-                nf::resize<"h2h">(
+                nf::resize<"h">(
                     subvolume_padded_os_rfft, subvolume_padded_os.shape(),
                     subvolume_padded_rfft, subvolume_padded.shape()
                 );
@@ -828,14 +828,14 @@ namespace {
 
             // Return a view of the subvolume (excluding the padding).
             auto subvolume = subvolume_padded.view().subregion(0,
-                ni::Slice{m_left_padding[0], m_left_padding[0] + m_subvolume_shape[0]},
-                ni::Slice{m_left_padding[1], m_left_padding[1] + m_subvolume_shape[1]},
-                ni::Slice{m_left_padding[2], m_left_padding[2] + m_subvolume_shape[2]}
+                Slice{m_left_padding[0], m_left_padding[0] + m_subvolume_shape[0]},
+                Slice{m_left_padding[1], m_left_padding[1] + m_subvolume_shape[1]},
+                Slice{m_left_padding[2], m_left_padding[2] + m_subvolume_shape[2]}
             );
             return subvolume;
         }
 
-        void reconstruct_z_section(const View<const f32>& stack, const View<f32>& z_section, i64 z) {
+        void reconstruct_z_section(const View<const f32>& stack, const View<f32>& z_section, isize z) {
             const auto [sy, sx] = m_subvolume_shape.filter(1, 2);
             const auto [ny, nx] = m_grid_shape.filter(1, 2);
 
@@ -846,31 +846,31 @@ namespace {
                 auto& stream = Stream::current({});
                 auto n_threads = stream.thread_limit();
                 stream.set_thread_limit(1);
-                parallel_for(m_n_threads, Shape{ny, nx}, [&](i64 tid, i64 y, i64 x) {
+                parallel_for(m_n_threads, Shape{ny, nx}, [&](isize tid, isize y, isize x) {
                     const auto subvolume = reconstruct_subvolume(stack, z, y, x, tid);
                     auto dst = z_section.subregion(
-                        ni::Ellipsis{},
-                        ni::Slice{y * sy, y * sy + sy},
-                        ni::Slice{x * sx, x * sx + sx}
+                        Ellipsis{},
+                        Slice{y * sy, y * sy + sy},
+                        Slice{x * sx, x * sx + sx}
                     );
-                    auto src = subvolume.subregion(ni::Ellipsis{}, ni::Slice{0, dst.shape()[2]}, ni::Slice{0, dst.shape()[3]});
+                    auto src = subvolume.subregion(Ellipsis{}, Slice{0, dst.shape()[2]}, Slice{0, dst.shape()[3]});
                     src.to(dst);
                 });
                 stream.set_thread_limit(n_threads);
             } else {
                 // Store the subvolumes into the row buffer.
                 // Once the row of subvolumes is computed, transfer to the host.
-                for (i64 y{}; y < ny; ++y) {
-                    for (i64 x{}; x < nx; ++x) {
+                for (isize y{}; y < ny; ++y) {
+                    for (isize x{}; x < nx; ++x) {
                         const auto subvolume = reconstruct_subvolume(stack, z, y, x);
-                        const auto dst = m_subvolume_row.view().subregion(ni::Ellipsis{}, ni::Slice{x * sx, x * sx + sx});
+                        const auto dst = m_subvolume_row.view().subregion(Ellipsis{}, Slice{x * sx, x * sx + sx});
 
-                        auto src = subvolume.subregion(ni::Ellipsis{}, ni::Slice{0, dst.shape()[2]}, ni::Slice{0, dst.shape()[3]});
+                        auto src = subvolume.subregion(Ellipsis{}, Slice{0, dst.shape()[2]}, Slice{0, dst.shape()[3]});
 
                         src.to(dst);
                     }
-                    auto dst = z_section.subregion(ni::Ellipsis{}, ni::Slice{y * sy, y * sy + sy}, ni::Full{});
-                    m_subvolume_row.view().subregion(ni::Ellipsis{}, ni::Slice{0, dst.shape()[2]}, ni::Full{}).to(dst);
+                    auto dst = z_section.subregion(Ellipsis{}, Slice{y * sy, y * sy + sy}, Full{});
+                    m_subvolume_row.view().subregion(Ellipsis{}, Slice{0, dst.shape()[2]}, Full{}).to(dst);
                 }
             }
         }
@@ -879,14 +879,14 @@ namespace {
 
     private:
         bool m_oversample;
-        noa::Interp m_interp;
-        i64 m_n_threads{};
+        nx::Interp m_interp;
+        i32 m_n_threads{};
 
         Vec<i64, 3> m_left_padding{};
-        Shape<i64, 3> m_subvolume_shape{};
-        Shape<i64, 3> m_subvolume_padded_shape{};
-        Shape<i64, 3> m_subvolume_padded_os_shape{};
-        Shape<i64, 4> m_grid_shape{};
+        Shape3 m_subvolume_shape{};
+        Shape3 m_subvolume_padded_shape{};
+        Shape3 m_subvolume_padded_os_shape{};
+        Shape4 m_grid_shape{};
 
         Array<Vec<i32, 2>> m_tile_padded_origins;
         Array<Mat<f32, 2, 4>> m_tile_padded_os_matrices;
@@ -908,7 +908,7 @@ namespace {
 
         const f64 spacing = mean(stack.stack_spacing());
         const f64 spacing_nm = spacing * 1e-1;
-        auto ctf = ns::CTFIsotropic<f64>({
+        auto ctf = CTFIsotropic64({
             .pixel_size = spacing,
             .defocus = 0.,
             .voltage = metadata.sample.voltage,
@@ -920,7 +920,7 @@ namespace {
         });
 
         // For simplicity, make the defocus resolution (in pixels) an odd integer multiple of the pixel size.
-        auto z_step = static_cast<i64>(std::floor(parameters.defocus_step_nm / spacing_nm));
+        auto z_step = static_cast<isize>(std::floor(parameters.defocus_step_nm / spacing_nm));
         z_step += noa::is_even(z_step);
         const auto z_step_nm = static_cast<f64>(z_step) * spacing_nm;
         Logger::trace("defocus_resolution={:.3f}nm ({}pix)", z_step_nm, z_step);
@@ -930,7 +930,7 @@ namespace {
         // make the volume thickness an odd multiple of z_step.
         const f64 sample_thickness = metadata.sample.thickness / spacing_nm;
         const f64 z_padding = metadata.sample.thickness * parameters.z_padding_percent / spacing_nm;
-        auto volume_thickness = static_cast<i64>(std::round(sample_thickness + z_padding));
+        auto volume_thickness = static_cast<isize>(std::round(sample_thickness + z_padding));
         volume_thickness = noa::next_multiple_of(volume_thickness, z_step);
         if (noa::is_even(volume_thickness / z_step))
             volume_thickness += z_step;
@@ -980,10 +980,10 @@ namespace {
         // Reconstruct the (possibly CTF-corrected) tomogram.
         auto volume = Array<f32>(volume_shape.push_front(1));
         const auto [sz, nz] = reconstructor.z_range();
-        for (i64 z{}; z < nz; ++z) {
+        for (isize z{}; z < nz; ++z) {
             auto t1 = Logger::trace_scope_time("z={:02}/{:02}", z, nz);
             const auto filtered_stack = filterer.compute_filtered_stack(z);
-            const auto volume_z_section = volume.view().subregion(0, ni::Slice{z * sz, z * sz + sz});
+            const auto volume_z_section = volume.view().subregion(0, Slice{z * sz, z * sz + sz});
             reconstructor.reconstruct_z_section(filtered_stack, volume_z_section, z);
         }
 

@@ -11,8 +11,8 @@ namespace qn::details {
             while (file.next_line_or_throw(buffer)) {
                 const auto line = std::string_view(buffer);
                 const size_t index = line.find('=');
-                if (noa::string::trim(line.substr(0, index)) == "uuid") {
-                    std::optional result = noa::string::parse<u64>(line.substr(index + 1));
+                if (noa::details::trim(line.substr(0, index)) == "uuid") {
+                    std::optional result = noa::details::parse<u64>(line.substr(index + 1));
                     check(result.has_value(), "Invalid UUID: {}", line);
                     has_uuid = result.value() == Logger::s_uuid;
                     break;

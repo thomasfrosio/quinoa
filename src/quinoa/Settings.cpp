@@ -5,7 +5,6 @@
 #include <toml++/toml.hpp>
 
 #include <noa/Session.hpp>
-#include <noa/Utils.hpp>
 
 #include "quinoa/Types.hpp"
 #include "quinoa/Settings.hpp"
@@ -100,7 +99,7 @@ namespace {
     auto parse_string_(std::string_view name, const toml::table& table, std::string fallback) -> std::string {
         if (auto arg = table.at_path(name)) {
             check(arg.is_string(), "{}={} is not a string", name, arg);
-            return noa::string::to_lower(noa::string::trim(arg.value<std::string>().value()));
+            return noa::details::to_lower(noa::details::trim(arg.value<std::string>().value()));
         }
         return fallback;
     }
@@ -116,9 +115,9 @@ namespace {
     auto parse_interp(std::string_view name, const toml::table& table, const std::string& fallback) {
         const auto stack_interp = parse_string_(name, table, fallback);
         if (stack_interp == "linear")
-            return noa::Interp::LINEAR;
+            return nx::Interp::LINEAR;
         if (stack_interp == "cubic-bspline")
-            return noa::Interp::CUBIC_BSPLINE;
+            return nx::Interp::CUBIC_BSPLINE;
         panic(R"({} should be "linear" or "cubic-bspline", but got "{}")", name, stack_interp);
     }
 
@@ -227,12 +226,12 @@ namespace {
         if (auto node = table.at_path("preprocessing.exclude_stack_indices")) {
             if (node.is_array()) {
                 for (auto&& e: *node.as_array()) {
-                    auto result = e.value<i64>();
+                    auto result = e.value<isize>();
                     check(result.has_value(), "Could not parse preprocessing.exclude_stack_indices={} as an array of indices", node);
                     preprocessing.exclude_stack_indices.push_back(*result);
                 }
             } else if (node.is_integer()) {
-                preprocessing.exclude_stack_indices.push_back(*node.value<i64>());
+                preprocessing.exclude_stack_indices.push_back(*node.value<isize>());
             } else {
                 panic("Could not parse preprocessing.exclude_stack_indices={} as an array of indices", node);
             }
@@ -287,7 +286,7 @@ namespace {
               "postprocessing:tomogram_z_padding_percent should be between 0 and 200, but got {}",
               postprocessing.tomogram_z_padding_percent);
 
-        postprocessing.tomogram_phase_flip_strength = parse_number_("postprocessing.tomogram.phase_flip_strength", table, i64{8});
+        postprocessing.tomogram_phase_flip_strength = parse_number_("postprocessing.tomogram.phase_flip_strength", table, 8);
         check(postprocessing.tomogram_phase_flip_strength >= 0 and postprocessing.tomogram_phase_flip_strength <= 10,
               "postprocessing:tomogram_phase_flip_strength should be between 0 and 10, but got {}",
               postprocessing.tomogram_phase_flip_strength);
@@ -314,11 +313,11 @@ namespace {
 
         // n_threads
         if (auto n_threads = table.at_path("compute.n_threads")) {
-            auto result = n_threads.value<i64>();
+            auto result = n_threads.value<i32>();
             check(result.has_value(), "compute:n_threads={} is not convertible to an integer", n_threads);
             compute.n_threads = result.value();
         } else {
-            compute.n_threads = noa::clamp(static_cast<i64>(noa::cpu::Device::cores().logical), 1, 16);
+            compute.n_threads = noa::clamp(static_cast<i32>(noa::cpu::Device::cores().logical), 1, 16);
         }
 
         // register_input_stack

@@ -1,7 +1,6 @@
-#include <noa/Array.hpp>
+#include <noa/Runtime.hpp>
 #include <noa/Session.hpp>
 #include <noa/Signal.hpp>
-#include <noa/Utils.hpp>
 
 #include "quinoa/Alignment.hpp"
 #include "quinoa/ExcludeViews.hpp"
@@ -12,7 +11,7 @@
 #include "quinoa/Thickness.hpp"
 #include "quinoa/PostProcessing.hpp"
 
-#include "quinoa/Tests.hpp"
+// #include "quinoa/Tests.hpp"
 
 auto process_tilt_series() {
 
@@ -29,9 +28,9 @@ auto main(int argc, char* argv[]) -> int {
         // Logger::set_level("trace");
         // tests::test_stage_leveling();
         // return 0;
-        Logger::set_level("trace");
-        tests::test_frc();
-        return 0;
+        // Logger::set_level("trace");
+        // tests::test_frc();
+        // return 0;
 
         // Parse the settings.
         auto settings = Settings{};
@@ -49,8 +48,6 @@ auto main(int argc, char* argv[]) -> int {
             Stream::set_current(Stream(settings.compute.device, Stream::DEFAULT)); // FIXME ASYNC
         Stream::set_current(Stream({}, Stream::SYNC));
 
-
-
         // Initialize the metadata early in case the parsing fails.
         auto metadata = Metadata::load_from_settings(settings);
         const auto basename = settings.files.stack_file.stem().string();
@@ -62,8 +59,8 @@ auto main(int argc, char* argv[]) -> int {
         // tests::test_star_file();
         // tests::test_common_fov2();
         // tests::test_image_cross_correlation();
-        tests::test_frc();
-        return 0;
+        // tests::test_frc();
+        // return 0;
 
         // Register the input stack. The application loads the input stack many times. To save computation,
         // load the stack to memory once and save it inside a static array. The StackLoader will
@@ -78,7 +75,7 @@ auto main(int argc, char* argv[]) -> int {
             if (not settings.preprocessing.exclude_stack_indices.empty()) {
                 Logger::info("Excluding views: {}", settings.preprocessing.exclude_stack_indices);
                 metadata.stack.exclude_if([&](const auto& image) {
-                    for (i64 e: settings.preprocessing.exclude_stack_indices)
+                    for (isize e: settings.preprocessing.exclude_stack_indices)
                         if (e == image.index)
                             return true;
                     return false;
