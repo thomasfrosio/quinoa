@@ -2,9 +2,9 @@
 
 #include <noa/Runtime.hpp>
 
-#include "quinoa/CTFGrid.hpp"
 #include "quinoa/Stack.hpp"
 #include "quinoa/Types.hpp"
+#include "quinoa/ctf/Grid.hpp"
 
 namespace qn::ctf {
     class Patches {
@@ -23,13 +23,14 @@ namespace qn::ctf {
             const Vec<f64, 2>& resolution_range,
             isize patch_size,
             isize patch_padded_size,
-            f64 target_bin_angle = 0,
+            f64 target_bin_angle = 180,
             isize target_phi_size = 1024,
             nx::Interp polar_interp = nx::Interp::CUBIC_BSPLINE
         ) -> Patches;
 
     public:
         Patches() = default;
+        [[nodiscard]] auto array() const noexcept { return m_polar; }
         [[nodiscard]] auto view() const noexcept { return m_polar.view(); }
         [[nodiscard]] auto patches(isize index) const noexcept {
             return m_polar.view().subregion(index).permute({1, 0, 2, 3});

@@ -2,7 +2,9 @@
 #include <noa/Xform.hpp>
 
 #include "quinoa/ExcludeViews.hpp"
+#include "quinoa/Logger.hpp"
 #include "quinoa/Plot.hpp"
+#include "quinoa/Stack.hpp"
 
 namespace {
     using namespace qn;
@@ -17,7 +19,7 @@ namespace {
         if (metadata.ssize() < 2)
             return;
 
-        // Collect the metrics.
+        // Collect the data.
         std::vector<i64> indices;
         std::vector<f64> points, gradients;
         for (i64 i{1}; i < metadata.ssize(); ++i) {
@@ -67,6 +69,7 @@ namespace qn {
         const DetectAndExcludeBlankViewsParameters& parameters
     ) {
         auto timer = Logger::info_scope_time("Blank view detection");
+        timer.set_newline(false);
 
         // Load the stack at very low resolution, without any normalization/padding/taper,
         // other than setting the mean to zero (which is not required for the next steps).
@@ -95,8 +98,8 @@ namespace qn {
         profile = profile.is_dereferenceable() ?
             std::move(profile).reinterpret_as_cpu() :
             std::move(profile).to_cpu();
-        auto span = profile.span_1d();
 
+        const auto span = profile.span_1d();
         save_plot_xy(
             metadata | stdv::transform([](auto& s) { return s.angles[1]; }), span,
             parameters.output_directory / "exclude_blank_views.txt", {

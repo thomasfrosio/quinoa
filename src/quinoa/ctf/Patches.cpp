@@ -1,9 +1,9 @@
 #include <noa/Xform.hpp>
 #include <noa/FFT.hpp>
 
-#include "quinoa/CTF.hpp"
 #include "quinoa/Logger.hpp"
 #include "quinoa/Plot.hpp"
+#include "quinoa/ctf/CTF.hpp"
 
 namespace qn::ctf {
     auto Patches::from_stack(
@@ -26,9 +26,9 @@ namespace qn::ctf {
         const auto patches_rfft = Array<c32>(patches_shape.rfft(), options);
         const auto patches = nf::alias_to_real(patches_rfft.view(), patches_shape);
 
-        // For below one pixel-sizes (e.g. super-resolution cases), the resolution limit (4.5 at the time of writing)
-        // becomes is too low resolution, and we end up cropping too much of the original spectrum. This limits the
-        // Fourier cropping up to 0.2 fftfreq (so for a resolution limit of 4.5, anything above 0.9A/pix is unaffected)
+        // For below-one pixel-sizes (e.g. super-resolution cases), the resolution limit (4.5 at the time of writing)
+        // becomes too low and we end up cropping too much of the original spectrum. This limits the Fourier cropping
+        // up to 0.2 fftfreq (so for a resolution limit of 4.5, anything above 0.9A/pix is unaffected)
         // TODO I don't think this is necessary. Check if this improves the spectrum.
         const auto spacing = mean(stack_loader.stack_spacing()); // assume isotropic
         const auto maximum_resolution = std::min(resolution_range[1], fftfreq_to_resolution(spacing, 0.2));
@@ -39,8 +39,8 @@ namespace qn::ctf {
         const auto patches_cropped_rfft = Array<c32>(patches_cropped_shape.rfft(), options);
         const auto patches_cropped = nf::alias_to_real(patches_cropped_rfft.view(), patches_cropped_shape);
 
-        // Then go back to real space to zero-pad, effectively increasing the sampling and stretching the Thon rings.
-        // In case we zero-pad back to the original patch size, don't allocate and reuse the patches instead.
+        // Then we'll need to go back to real space to zero-pad, effectively increasing the sampling and stretching the
+        // Thon rings. In case we zero-pad back to the original patch size, don't allocate and reuse the patches.
         const auto patches_padded_shape = Shape{grid.n_patches(), isize{1}, patch_padded_size, patch_padded_size};
         const auto zero_padding = (patches_padded_shape - patches_cropped_shape).vec;
         const bool has_padding = zero_padding != 0;
@@ -49,7 +49,7 @@ namespace qn::ctf {
         const auto patches_padded = has_padding ? nf::alias_to_real(patches_padded_rfft, patches_padded_shape) : patches;
         const auto patches_padded_rfft_ps = noa::like<f32>(patches_padded_rfft);
 
-        // Then the zero-padded (oversampled) patch is transformed to polar space.
+        // Then the zero-padded (oversampled) patch will be transformed to polar space.
         // The polar transformation can and should remove the low frequencies outside the resolution range.
         // To reduce interpolation, select the starting fftfreq to also be at the nearest integer frequency.
         auto polar_width = patch_padded_size / 2 + 1;
@@ -77,14 +77,21 @@ namespace qn::ctf {
         // of a given angle. If there is some astigmatism in the spectra, this results in a loss of information.
         // However, astigmatism doesn't change that quickly with phi, so we can reduce the polar height by taking
         // wedges of 2-to-5 degrees without losing much information.
-        const bool use_wedges = target_bin_angle > 0;
-        auto n_wedges = target_phi_size;
+        const auto n_wedges = static_cast<isize>(std::round(180. / target_bin_angle));
+
         auto wedges_phi_range = noa::Linspace{};
         auto wedges_fmt = std::string{};
         auto patches_polar = Array<f32>{};
         auto patches_polar_bin = View<f32>{};
-        if (use_wedges) {
-            n_wedges = static_cast<isize>(std::round(180. / target_bin_angle));
+
+        if (n_wedges == 1) {
+            // No astigmatism is to be fitted, so compute and save the rotational averages.
+            wedges_phi_range = noa::Linspace{0., noa::Constant<f64>::PI, false};
+            patches_polar = Array<f32>({grid.n_patches(), 1, target_phi_size, polar_width}, options);
+            patches_polar_bin = patches_polar.view();
+            wedges_fmt = fmt::format("  phi=1 (initial={}, wedges=[180.0deg, size=180])\n", target_phi_size);
+
+        } else {
             const auto wedge_step = 180. / static_cast<f64>(n_wedges);
             const auto wedge_half_step = noa::deg2rad(wedge_step / 2);
 
@@ -110,7 +117,7 @@ namespace qn::ctf {
                   noa::offset_at(polar_reduce_strides, polar_reduce_shape.vec - 1));
             patches_polar_bin = View(patches_polar.get(), polar_reduce_shape, polar_reduce_strides, options);
 
-            wedges_fmt = not use_wedges ? "" : fmt::format(
+            wedges_fmt = fmt::format(
                 "  phi={} (initial={}, wedges=[{:.1}deg, size={}])\n",
                 n_wedges, phi_size, wedge_step, wedge_size
             );
@@ -166,33 +173,22 @@ namespace qn::ctf {
 
             // Transform the power-spectra to polar space. This will allow us to efficiently compute
             // (astigmatism-corrected) rotational averages by a simple reduction along the height.
-            // Note that we need to offset the phi start here to have the wedges centered on the [0,pi) range.
             if (polar_interp == nx::Interp::CUBIC_BSPLINE)
                 nx::cubic_bspline_prefilter(patches_padded_rfft_ps, patches_padded_rfft_ps);
-
-            auto output_patches = output.patches(image_metadata.index);
-            if (use_wedges) {
-                nx::spectrum2polar<"h2fc">(
+            nx::spectrum2polar<"h2fc">(
                     patches_padded_rfft_ps, patches_padded_shape, patches_polar.view(), {
                         .spectrum_fftfreq = noa::Linspace{0., fftfreq_range[1], true},
                         .rho_range = output.rho(),
                         .phi_range = wedges_phi_range,
                         .interp = polar_interp,
                 });
-                noa::reduce_axes_ewise( // (n,1,phi,rho)->(n,1,n_wedges,rho)
-                    patches_polar_bin, f32{},
-                    output_patches.reshape({-1, n_wedges, 1, polar_width}),
-                    noa::ReduceMean{.size = static_cast<f32>(patches_polar_bin.shape()[2])}
-                );
-            } else {
-                nx::spectrum2polar<"h2fc">(
-                    patches_padded_rfft_ps, patches_padded_shape, output_patches, {
-                        .spectrum_fftfreq = noa::Linspace{0., fftfreq_range[1], true},
-                        .rho_range = output.rho(),
-                        .phi_range = output.phi(),
-                        .interp = polar_interp,
-                });
-            }
+
+            // Bin the wedges.
+            noa::reduce_axes_ewise( // (n,1,phi,rho)->(n,1,n_wedges,rho)
+                patches_polar_bin, f32{},
+                output.patches(image_metadata.index).reshape({-1, n_wedges, 1, polar_width}),
+                noa::ReduceMean{.size = static_cast<f32>(patches_polar_bin.shape()[2])}
+            );
 
             Logger::trace("tilt={:>+6.2f}", image_metadata.angles[1]);
         }

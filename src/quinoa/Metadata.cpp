@@ -1,5 +1,5 @@
 #include <noa/Core.hpp>
-#include <noa/IO.hpp>
+#include <noa/io/TextFile.hpp>
 #include <forward_list>
 
 #pragma GCC diagnostic push
@@ -31,14 +31,27 @@ namespace {
         return &front_path;
     }
 
-    void apply_settings_and_defaults(const Settings& settings, Metadata& metadata, bool is_initialized) {
+    void apply_settings(const Settings& settings, Metadata& metadata) {
         const auto has_setting = [&](f64 value) {
             constexpr auto MAX = std::numeric_limits<f64>::max();
             return not noa::allclose(MAX, value);
         };
 
-        // Set/add the angles and phase-shifts.
-        // If not in the settings, let them unchanged (from mdoc/star, or zero).
+        // By this point, the metadata is entirely initialized with the MDOC or the STAR file.
+        // This function is here to apply the user settings provided by the user via the CLI or the TOML file.
+        // These settings have the priority over the MDOC and STAR files.
+
+        // Sample.
+        if (has_setting(settings.experiment.voltage))
+            metadata.sample.voltage = settings.experiment.voltage;
+        if (has_setting(settings.experiment.cs))
+            metadata.sample.cs = settings.experiment.cs;
+        if (has_setting(settings.experiment.amplitude))
+            metadata.sample.amplitude = settings.experiment.amplitude;
+        if (has_setting(settings.experiment.thickness))
+            metadata.sample.thickness = settings.experiment.thickness;
+
+        // Stack.
         for (auto& e: metadata.stack) {
             // Set the tilt-axis.
             if (has_setting(settings.experiment.tilt_axis))
@@ -51,7 +64,7 @@ namespace {
                 e.angles[2] += settings.experiment.add_specimen_pitch;
 
             // Set an initial value for the phase-shift.
-            if (has_setting(e.phase_shift))
+            if (has_setting(settings.experiment.phase_shift))
                 e.phase_shift = settings.experiment.phase_shift;
         }
 
@@ -65,20 +78,6 @@ namespace {
                     if (image.time == time)
                         image.frames = &path;
         }
-
-        // Use setting value > mdoc/star file > default value.
-        const auto set_value = [&](f64& metadata_value, f64 settings_value, f64 default_value) {
-            if (has_setting(settings_value))
-                metadata_value = settings_value;
-            if (is_initialized)
-                return;
-            metadata_value = default_value;
-        };
-
-        set_value(metadata.sample.voltage, settings.experiment.voltage, 300.);
-        set_value(metadata.sample.cs, settings.experiment.cs, 2.7);
-        set_value(metadata.sample.amplitude, settings.experiment.amplitude, 0.07);
-        set_value(metadata.sample.thickness, settings.experiment.thickness, 0.);
     }
 
     void check_metadata(const Metadata& metadata) {
@@ -93,25 +92,44 @@ namespace {
 
 namespace qn {
     auto Metadata::load_from_mdoc(const Path& mdoc) -> Metadata {
-        auto file = noa::io::InputTextFile(mdoc, {.read = true});
-        std::string line;
-
-        // TODO Use Voltage.
         // TODO Use PriorRecordDose.
-
         auto metadata = Metadata{};
         auto& images = metadata.stack.images;
 
+        // "key = value" -> "value"
+        std::string_view trimmed;
+        auto get_substring = [&trimmed] {
+            return noa::details::trim_left(trimmed.substr(trimmed.find_first_of('=') + 1));
+        };
+
         auto frame_path = Path{};
-        bool has_rotation{}, has_tilt{}, has_exposure{}, has_datetime{};
-        while (file.next_line_or_throw(line)) {
-            std::string_view trimmed = noa::details::trim(line);
+        bool is_header{true}, has_voltage{}, has_rotation{}, has_tilt{}, has_exposure{}, has_datetime{};
+        for (auto&& line : noa::read_lines(mdoc)) {
+             trimmed = noa::details::trim(line);
+
+            // Header.
+            if (is_header) {
+                if (trimmed.starts_with("Voltage")) {
+                    auto substring = get_substring();
+                    auto result = noa::details::parse<f64>(substring);
+                    check(result, "Could not parse Voltage = {}", substring);
+                    metadata.sample.voltage = *result;
+                    has_voltage = true;
+                }
+            }
 
             // Create a new image.
             if (trimmed.starts_with("[ZValue =")) {
+                if (is_header) {
+                    check(has_voltage, "Missing Voltage in the mdoc header");
+                    metadata.sample.cs = 2.7;
+                    metadata.sample.amplitude = 0.07;
+                    metadata.sample.thickness = 0.;
+                    is_header = false;
+                }
                 if (not images.empty()) {
                     // Before switching to the next image, check that we collected the necessary fields.
-                    check(has_tilt and has_exposure and has_datetime,
+                    check(has_rotation and has_tilt and has_exposure and has_datetime,
                           "An image in the mdoc is missing a key value:\n"
                           "has_rotation={}, has_tilt={}, has_exposure={} and has_datetime={}",
                           has_rotation, has_tilt, has_exposure, has_datetime);
@@ -127,11 +145,7 @@ namespace qn {
                 continue;
             }
 
-            // "key = value" -> "value"
-            auto get_substring = [&trimmed] {
-                return noa::details::trim_left(trimmed.substr(trimmed.find_first_of('=') + 1));
-            };
-
+            // Parse image fields.
             if (trimmed.starts_with("RotationAngle")) {
                 auto substring = get_substring();
                 auto result = noa::details::parse<f64>(substring);
@@ -387,33 +401,29 @@ namespace qn {
 
     auto Metadata::load_from_settings(const Settings& settings) -> Metadata {
         Metadata metadata;
-        bool is_initialized{};
 
-        // Load the mdoc.
-        if (not settings.files.mdoc_file.empty()) {
-            Logger::info("Loading metadata from mdoc file {}.", settings.files.mdoc_file);
-            metadata = load_from_mdoc(settings.files.mdoc_file);
-            is_initialized = true;
-        }
-
-        // Overwrite with the star file.
         if (not settings.files.star_file.empty()) {
             Logger::info("Loading metadata from star file {}.", settings.files.star_file);
             metadata = load_from_star(settings.files.star_file);
-            is_initialized = true;
+            apply_settings(settings, metadata);
+
+        } else if (not settings.files.mdoc_file.empty()) {
+            Logger::info("Loading metadata from mdoc file {}.", settings.files.mdoc_file);
+            metadata = load_from_mdoc(settings.files.mdoc_file);
+            apply_settings(settings, metadata);
+
+        } else {
+            panic("Cannot initialize the metadata. No mdoc or star file have been provided");
         }
 
-        // Overwrite with the user settings.
-        apply_settings_and_defaults(settings, metadata, is_initialized);
         check_metadata(metadata);
-
         return metadata;
     }
 
     void Metadata::save_star(const Path& filename) const {
         const auto now = round<stdc::minutes>(stdc::system_clock::now());
         std::string buffer = fmt::format(
-            "# Created by quinoa at {:%R} on {:%d/%m/%y}\n\n"
+            "# Created by quinoa at {:%R} on {:%d/%m/%Y}\n\n"
             "_qnVersion {}\n\n"
             "data_sample\n"
             "_qnVoltage   {:>7.2f}  # kV\n"
@@ -422,7 +432,7 @@ namespace qn {
             "_qnThickness {:>7.2f}  # nm\n\n"
             "data_stack\n"
             "loop_\n"
-            "_qnIndex             # index within input stack, from 0\n"
+            "_qnIndex             # 0-based index within the input stack\n"
             "_qnRotation          # deg\n"
             "_qnTilt              # deg\n"
             "_qnPitch             # deg\n"
@@ -432,9 +442,9 @@ namespace qn {
             "_qnAstigmatismValue  # um\n"
             "_qnAstigmatismAngle  # deg\n"
             "_qnPhaseShift        # deg\n"
-            "_qnPreExposure       # e-/A2\n"
-            "_qnPostExposure      # e-/A2\n"
-            "_qnTimepoint         # collection time\n"
+            "_qnPreExposure       # e/A2\n"
+            "_qnPostExposure      # e/A2\n"
+            "_qnTimepoint         # collection time UID\n"
             "_qnFrames            # filepath of the frames\n",
             now, now, 1, sample.voltage, sample.amplitude, sample.cs, sample.thickness);
 
@@ -453,7 +463,7 @@ namespace qn {
                 image.index_file, image.angles[0], image.angles[1], image.angles[2], image.shifts[1], image.shifts[0],
                 image.defocus.value, image.defocus.astigmatism, noa::rad2deg(image.defocus.angle),
                 noa::rad2deg(image.phase_shift), image.exposure[0], image.exposure[1], image.time,
-                image.frames ? *image.frames : "<NA>"
+                image.frames ? *image.frames : Path{}
             );
         }
 

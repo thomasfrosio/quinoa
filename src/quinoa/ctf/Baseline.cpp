@@ -1,7 +1,7 @@
 #include <noa/Signal.hpp>
 
-#include "quinoa/CTF.hpp"
-#include "quinoa/CTFBaseline.hpp"
+#include "quinoa/ctf/CTF.hpp"
+#include "quinoa/ctf/Baseline.hpp"
 
 namespace qn::ctf {
     auto Baseline::best_baseline_fitting_range(
@@ -130,7 +130,7 @@ namespace qn::ctf {
         std::erase_if(possible_windows, [](const auto& window) { return window[0] == -1; });
 
         // Remove the window if it's at the end of the spectrum (within 10 pixel tolerance).
-        const isize maximum_distance_from_end = static_cast<isize>(static_cast<f64>(spectrum.ssize()) * 0.05);
+        const auto maximum_distance_from_end = static_cast<isize>(static_cast<f64>(spectrum.ssize()) * 0.05);
         auto possible_window = possible_windows.back() + index_cutoff;
         if (possible_window[1] >= spectrum.ssize() - maximum_distance_from_end) {
             auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum.ssize() - 1);
@@ -147,7 +147,7 @@ namespace qn::ctf {
         auto actual_fitting_range = Vec{fftfreq_start, fftfreq_end};
         spectrum = spectrum.subregion(Slice{start, end + 1});
 
-        allocate_(spectrum.ssize());
+        allocate_(spectrum.size());
 
         // Save fftfreq range for sample_at().
         m_fftfreq_start = actual_fitting_range[0];

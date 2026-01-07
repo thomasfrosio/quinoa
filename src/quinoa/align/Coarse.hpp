@@ -1,15 +1,16 @@
 #pragma once
 
-#include <noa/Runtime.hpp>
+#include <noa/Types.hpp>
 
 #include "quinoa/CommonFOV.hpp"
 #include "quinoa/Metadata.hpp"
+#include "quinoa/Stack.hpp"
 #include "quinoa/Types.hpp"
 
 namespace qn {
     struct AlignShiftsOptions {
         bool cosine_stretch{};
-        i32 update_count{1};
+        i32 update_count{1}; // negative means until convergence
 
         bool fov_mask{};
         f64 smooth_edge_percent{};

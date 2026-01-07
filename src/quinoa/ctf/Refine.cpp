@@ -5,9 +5,9 @@
 #include "quinoa/Optimizer.hpp"
 #include "quinoa/Metadata.hpp"
 #include "quinoa/Utilities.hpp"
-#include "quinoa/CTF.hpp"
 #include "quinoa/Plot.hpp"
 #include "quinoa/SplineGrid.hpp"
+#include "quinoa/ctf/CTF.hpp"
 
 namespace {
     using namespace ::qn;
@@ -865,10 +865,17 @@ namespace {
             const auto& [c, n, p, w] = m_reduced_cnpw.shape();
             const auto actual_c = first_channel_only ? 1 : c;
             const auto output = m_reduced_cnpw.view().subregion(Slice{0, actual_c});
-            noa::reduce_axes_iwise( // (cnp,h,w)->(cnp,1,w)
-                Shape{actual_c * n * p, h, w}, m_patches.view().device(), noa::wrap(f32{0}, f32{0}),
-                output.reshape({1, actual_c * n * p, 1, w}), m_reduce_height
-            );
+            if (h == 1) {
+                // The polar spectra are already reduced to 1d (astigmatism is ignored).
+                // No reduction necessary, simply copy to the output buffer.
+                auto broadcast = noa::broadcast(m_patches.view().reshape({1, n, p, w}), output.shape());
+                noa::ewise(broadcast, output, noa::Copy{});
+            } else {
+                noa::reduce_axes_iwise( // (cnp,h,w)->(cnp,1,w)
+                    Shape{actual_c * n * p, h, w}, m_patches.view().device(), noa::wrap(f32{0}, f32{0}),
+                    output.reshape({1, actual_c * n * p, 1, w}), m_reduce_height
+                );
+            }
         }
 
         // Fuse the 1d spectrum of each patch into one 1d spectrum per image, (c,n,p,1,w)->(c,n,1,1,w).

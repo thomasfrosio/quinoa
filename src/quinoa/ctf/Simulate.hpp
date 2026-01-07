@@ -4,7 +4,7 @@
 
 namespace qn::ctf {
     /// Range-like type designed to iterate through a |CTF| curve and efficiently analyze its gradient.
-    /// This is used when we need to know where are the |CTF| vertexes (peaks and zeros) and sample a spectrum
+    /// This is used when we need to know where the |CTF| vertexes (peaks and zeros) are and sample a spectrum
     /// at these locations.
     class Simulate {
     public:

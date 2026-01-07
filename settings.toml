@@ -1,99 +1,23 @@
 [files]
-#mdoc_file = '~/Datasets/11830/01122021_BrnoKrios_arctis_lam2_pos15.mdoc'
-#stack_file = '~/Datasets/11830/01122021_BrnoKrios_arctis_lam2_pos15.st'
-#output_directory = '~/Tmp/quinoa/11830/pos15/001'
-#frames_directory = '~/Datasets/11830'
-#mdoc_file = '~/Datasets/11701/Cir_15kb_c_ts_005_driftcorr.mdoc'
-#stack_file = '~/Datasets/11701/Cir_15kb_c_ts_005_driftcorr.st'
-#output_directory = '~/Tmp/quinoa/11701/001'
-#frames_directory = '~/Datasets/11701'
 
-#mdoc_file = '~/Datasets/10304/file.mdoc'
-#stack_file = '~/Datasets/10304/tilt1.mrc'
-#output_directory = '~/Tmp/quinoa/10304/thickness'
-#frames_directory = '~/Datasets/10304'
+stack_file = '~/Datasets/10304/tilt5.mrc'
+mdoc_file = '~/Datasets/10304/file.mdoc'
+output_directory = '~/Tmp/quinoa/10304/003'
+frames_directory = '~/Datasets/10304/frames'
+star_file = '~/Tmp/quinoa/10304/001/tilt5.star'
 
-#mdoc_file = '~/Datasets/10304/file.mdoc'
-#stack_file = '~/Datasets/10304/tilt6.mrc'
-#output_directory = '~/Tmp/quinoa/10304/001/tilt6'
-#frames_directory = '~/Datasets/10304'
-
-#mdoc_file = '~/Datasets/Yakun/tilt9906.mdoc'
-#stack_file = '~/Datasets/Yakun/tilt9906.mrc'
-#output_directory = '~/Tmp/quinoa/Yakun/tilt9906/rotation_offset'
-#frames_directory = '~/Datasets/Yakun'
-#csv_file = '~/Tmp/quinoa/Yakun/tilt9906/thickness_01/tilt9906_aligned.csv'
-
-stack_file = '~/Tmp/quinoa/frc/ts_rot45_aligned.mrc'
-star_file = '~/Tmp/quinoa/frc/ts_rot45_aligned.star'
-output_directory = '~/Tmp/quinoa/frc'
-
-#frames_directory = '~/Tmp/quinoa/coarse_alignment'
-
-#mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/simulated_tilts/sym.mdoc'
-#stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/simulated_tilts/sym.mrc'
-#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/level01'
-#frames_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/simulated_tilts/01'
-#csv_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/simulated_tilts/sym.csv'
-
-#mdoc_file = '~/Datasets/kyprianos/Position_1_2.mdoc'
-#stack_file = '~/Datasets/kyprianos/Position_1_2_stack_445_flipy_xrayremoved.mrc'
-#star_file = '~/Tmp/quinoa/thickness/Position_1_2_stack_445_flipy_xrayremoved.star'
-#output_directory = '~/Tmp/quinoa/frc/'
-#frames_directory = '~/Datasets/kyprianos/01'
-
-#pattern = 'tilt'
-#mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/kyprianos/Position_1_2.mdoc'
-#stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/kyprianos/Position_1_2_stack_445_flipy_xrayremoved.mrc'
-#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/kyprianos/06'
-##frames_directory = '/dls/ebic/data/staff-scratch/thomas2/datasets/kyprianos'
-#star_file = '/dls/ebic/data/staff-scratch/thomas2/tmp/kyprianos/05/Position_1_2_stack_445_flipy_xrayremoved.star'
-
-## Remote
-#mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun/tilt9906.mdoc'
-#stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun/tilt9906.mrc'
-#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/yakun/tilt9906/rotation_offset_test01'
-#frames_directory = '/dls/ebic/data/staff-scratch/thomas2/datasets/yakun'
-#csv_file = '/dls/ebic/data/staff-scratch/thomas2/tmp/yakun/tilt9906/recons02/tilt9906_aligned.csv'
-
-#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/10304/002/tilt1'
-#frames_directory = '/dls/ebic/data/staff-scratch/thomas2/datasets/10304'
-#mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/10304/file.mdoc'
-#stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/10304/tilt1.mrc'
-
-#mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/11854/s001/s001.mdoc'
-#stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/11854/s001/s001.mrc'
-#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/11854/s001/004'
-#frames_directory = '/dls/ebic/data/staff-scratch/thomas2/datasets/11854/s001'
-
-#mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/11854/Y12_s003/Y12_s003.mdoc'
-#stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/11854/Y12_s003/Y12_s003.mrc'
-#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/11854/Y12_s003/001'
-#frames_directory = '/dls/ebic/data/staff-scratch/thomas2/datasets/11854/Y12_s003'
-
-#mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/11701/Cir_15kb_c_ts_005_driftcorr.mdoc'
-#stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/11701/Cir_15kb_c_ts_005_driftcorr.st'
-#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/11701/004'
-#frames_directory = '/dls/ebic/data/staff-scratch/thomas2/datasets/11701'
-
-#mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/TS_03.mdoc'
-#stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/TS_03_cropped.mrc'
-#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/10164/TS_03/300'
-#star_file = '/dls/ebic/data/staff-scratch/thomas2/tmp/10164/TS_03/300/TS_03_cropped.star'
-#frames_directory = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164'
-
-#mdoc_file = '~/Datasets/10164/TS_03.mdoc'
-#stack_file = '~/Datasets/10164/TS_03_cropped.mrc'
-#output_directory = '~/Tmp/10164/TS_03/003'
-#frames_directory = '~/Datasets/10164'
+#stack_file = '~/Datasets/12104/TS_006.st'
+#mdoc_file = '~/Datasets/12104/TS_006.mdoc'
+#output_directory = '~/Tmp/quinoa/12104/001'
+#framces_directory = '~/Tmp/quinoa/12104/001'
 
 [experiment]
 #tilt_axis = 0
 #add_specimen_tilt = 0
 #add_specimen_pitch = 0
-voltage = 300
-amplitude = 0.07
-cs = 2.7
+#voltage = 300
+#amplitude = 0.07
+#cs = 2.7
 #phase_shift = 0
 #thickness = 350
 
@@ -104,14 +28,14 @@ exclude_stack_images = []
 
 [alignment.coarse]
 run = false
-check_rotation = false
+check_rotation = true
 fit_rotation = true
 fit_tilt = true
 fit_pitch = true
 
 [alignment.ctf]
-run = false
-check_rotation = true
+run = true
+check_defocus_gradient = true
 fit_rotation = false
 fit_tilt = true
 fit_pitch = true
@@ -120,19 +44,17 @@ fit_astigmatism = true
 fit_thickness = false
 
 [alignment.refine]
-run = true
+run = false
 fit_thickness = false
 
 [postprocessing]
 run = true
 resolution = 20
-
 stack.run = true
 stack.correct_rotation = true
 stack.interpolation = 'linear'
 stack.dtype = 'f16'
-
-tomogram.run = true
+tomogram.run = false
 tomogram.correct_rotation = true
 tomogram.interpolation = 'linear'
 tomogram.dtype = 'f16'

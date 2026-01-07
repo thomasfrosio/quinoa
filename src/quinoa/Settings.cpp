@@ -41,7 +41,7 @@ namespace {
             "alignment.coarse.fit_tilt"sv,
             "alignment.coarse.fit_pitch"sv,
             "alignment.ctf.run"sv,
-            "alignment.ctf.check_rotation"sv,
+            "alignment.ctf.check_defocus_gradient"sv,
             "alignment.ctf.fit_rotation"sv,
             "alignment.ctf.fit_tilt"sv,
             "alignment.ctf.fit_pitch"sv,
@@ -156,7 +156,7 @@ namespace {
         Settings::Files files;
         get_path("files.stack_file", "stack", files.stack_file, true);
         get_path("files.frames_directory", "frames", files.frames_directory, false);
-        get_path("files.star_file", "csv", files.star_file, true);
+        get_path("files.star_file", "star", files.star_file, true);
         get_path("files.mdoc_file", "mdoc", files.mdoc_file, true);
 
         get_path("files.output_directory", "output", files.output_directory, false);
@@ -250,7 +250,7 @@ namespace {
         alignment.coarse_fit_pitch = parse_boolean_("alignment.coarse.fit_pitch", table, true);
 
         alignment.ctf_run = parse_boolean_("alignment.ctf.run", table, true);
-        alignment.ctf_check_rotation = parse_boolean_("alignment.ctf.check_rotation", table, true);
+        alignment.ctf_check_defocus_gradient = parse_boolean_("alignment.ctf.check_defocus_gradient", table, true);
         alignment.ctf_fit_rotation = parse_boolean_("alignment.ctf.fit_rotation", table, false);
         alignment.ctf_fit_tilt = parse_boolean_("alignment.ctf.fit_tilt", table, true);
         alignment.ctf_fit_pitch = parse_boolean_("alignment.ctf.fit_pitch", table, true);
@@ -394,7 +394,7 @@ namespace qn {
             postprocessing = parse_postprocessing_(settings);
             compute = parse_compute_(settings);
         } catch (...) {
-            panic("Failed to parse the settings TOML file at {}", settings_path);
+            panic("Failed to parse the settings from the TOML file at {}", settings_path);
         }
         return true;
     }
