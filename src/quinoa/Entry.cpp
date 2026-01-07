@@ -2,7 +2,9 @@
 #include <noa/Session.hpp>
 #include <noa/Signal.hpp>
 
-#include "quinoa/Alignment.hpp"
+#include "quinoa/align/Align.hpp"
+#include "quinoa/ctf/CTF.hpp"
+
 #include "quinoa/ExcludeViews.hpp"
 #include "quinoa/Logger.hpp"
 #include "quinoa/Metadata.hpp"
@@ -23,14 +25,7 @@ auto main(int argc, char* argv[]) -> int {
     try {
         // Initialize the logger before doing anything else.
         Logger::initialize();
-        auto timer = Logger::status_scope_time("Main");
-
-        // Logger::set_level("trace");
-        // tests::test_stage_leveling();
-        // return 0;
-        // Logger::set_level("trace");
-        // tests::test_frc();
-        // return 0;
+        auto timer = Logger::status_scope_time<false>("Main");
 
         // Parse the settings.
         auto settings = Settings{};
@@ -82,7 +77,7 @@ auto main(int argc, char* argv[]) -> int {
                 });
             }
 
-            // TODO Remove hot pixels?
+            // TODO Frame alignment
 
             if (settings.preprocessing.exclude_blank_views) {
                 detect_and_exclude_blank_views(
@@ -100,22 +95,21 @@ auto main(int argc, char* argv[]) -> int {
             if (settings.alignment.coarse_run) {
                 coarse_alignment(
                     settings.files.stack_file, metadata, {
-                        .compute_device = settings.compute.device,
-                        .maximum_resolution = 12.,
+                        .device = settings.compute.device,
                         .check_rotation = settings.alignment.coarse_check_rotation,
                         .fit_rotation_offset = settings.alignment.coarse_fit_rotation,
                         .fit_tilt_offset = settings.alignment.coarse_fit_tilt,
                         .fit_pitch_offset = settings.alignment.coarse_fit_pitch,
-                        .output_directory = settings.files.output_directory,
+                        .output_directory = settings.files.output_directory / "diagnostics" / "coarse",
                     }
                 );
             }
 
             if (settings.alignment.ctf_run) {
-                ctf_alignment(
+                ctf::fit(
                     settings.files.stack_file, metadata, {
                         .compute_device = settings.compute.device,
-                        .output_directory = settings.files.output_directory,
+                        .output_directory = settings.files.output_directory / "diagnostics" / "ctf",
 
                         .patch_size_ang = 680,
                         .n_images_in_initial_average = 3,
@@ -123,7 +117,7 @@ auto main(int argc, char* argv[]) -> int {
                         .fit_phase_shift = settings.alignment.ctf_fit_phase_shift,
                         .fit_astigmatism = settings.alignment.ctf_fit_astigmatism,
                         .fit_thickness = settings.alignment.ctf_fit_thickness,
-                        .check_rotation = settings.alignment.ctf_check_rotation,
+                        .check_defocus_gradient = settings.alignment.ctf_check_defocus_gradient,
 
                         .fit_rotation = settings.alignment.ctf_fit_rotation,
                         .fit_tilt = settings.alignment.ctf_fit_tilt,

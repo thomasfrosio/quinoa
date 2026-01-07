@@ -1,6 +1,5 @@
 #pragma once
 
-#include <noa/Runtime.hpp>
 #include <noa/Signal.hpp>
 
 #include "quinoa/Types.hpp"
@@ -8,9 +7,7 @@
 
 namespace qn {
     struct RotationOffsetParameters {
-        bool check_rotation{false};
-        ns::Bandpass bandpass{0, 0, 0.5, 0};
-        f64 angle_range{};
+        f64 angle_range{}; // negative means full rotation
         const Path* output_directory{};
     };
 

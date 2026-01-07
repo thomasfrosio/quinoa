@@ -1,12 +1,12 @@
 #pragma once
 
-#include "quinoa/Types.hpp"
 #include "quinoa/Metadata.hpp"
-#include "quinoa/CTFBaseline.hpp"
-#include "quinoa/CTFGrid.hpp"
-#include "quinoa/CTFPatches.hpp"
-#include "quinoa/CTFSimulate.hpp"
-#include "quinoa/Thickness.hpp"
+#include "quinoa/Types.hpp"
+#include "quinoa/ctf/Baseline.hpp"
+#include "quinoa/ctf/Grid.hpp"
+#include "quinoa/ctf/Patches.hpp"
+#include "quinoa/ctf/Simulate.hpp"
+#include "quinoa/ctf/Thickness.hpp"
 
 namespace qn::ctf {
     /// Computes the minimum logical size necessary for the Thon-rings to not alias.
@@ -172,7 +172,7 @@ namespace qn::ctf {
         bool exclude_bad_images{};
         bool first_image_has_higher_exposure{};
         bool fit_phase_shift{};
-        bool check_rotation{};
+        bool check_defocus_gradient{};
         Path output_directory{};
     };
     void coarse_fit(
@@ -195,5 +195,28 @@ namespace qn::ctf {
         const Grid& grid,
         const Patches& patches,
         const FitRefineOptions& fit
+    );
+
+    struct FitSettings {
+        Device compute_device;
+        Path output_directory;
+
+        f64 patch_size_ang;
+        i64 n_images_in_initial_average;
+        Vec<f64, 2> resolution_range;
+        bool fit_phase_shift;
+        bool fit_astigmatism;
+        bool fit_thickness;
+        bool check_defocus_gradient;
+
+        // Refine:
+        bool fit_rotation;
+        bool fit_tilt;
+        bool fit_pitch;
+    };
+    void fit(
+        const Path& stack_filename,
+        Metadata& metadata,
+        const FitSettings& settings
     );
 }

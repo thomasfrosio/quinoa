@@ -1,8 +1,5 @@
 #pragma once
 
-#include <noa/Core.hpp>
-#include <noa/Base.hpp>
-
 #include "quinoa/Types.hpp"
 
 namespace qn::details {

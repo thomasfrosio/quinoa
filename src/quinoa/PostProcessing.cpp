@@ -5,8 +5,8 @@
 
 #include "quinoa/Logger.hpp"
 #include "quinoa/Metadata.hpp"
-#include "quinoa/CTF.hpp"
 #include "quinoa/PostProcessing.hpp"
+#include "quinoa/ctf/CTF.hpp"
 
 namespace {
     using namespace qn;
@@ -607,7 +607,7 @@ namespace {
             // limit the number of threads to keep the memory usage reasonable. 10 threads need about 0.5GB.
             const auto is_gpu = device.is_gpu();
             const auto options = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
-            m_n_threads = is_gpu ? 1 : std::max(Stream::current(device).thread_limit(), i32{8});
+            m_n_threads = is_gpu ? 1 : std::max(Stream::current(device).thread_limit(), 8);
 
             // Forward matrices relating 3d positions in the tomogram to 2d positions in the images.
             // Then, compute the padded tile origins and projection matrices for the oversampled tiles.

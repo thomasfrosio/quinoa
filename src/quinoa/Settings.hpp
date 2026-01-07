@@ -45,7 +45,7 @@ namespace qn {
             bool coarse_fit_pitch{};
 
             bool ctf_run{};
-            bool ctf_check_rotation{};
+            bool ctf_check_defocus_gradient{};
             bool ctf_fit_rotation{};
             bool ctf_fit_tilt{};
             bool ctf_fit_pitch{};

@@ -1,8 +1,8 @@
 #include <noa/Xform.hpp>
 
-#include "quinoa/CTF.hpp"
 #include "quinoa/GridSearch.hpp"
 #include "quinoa/Plot.hpp"
+#include "quinoa/ctf/CTF.hpp"
 
 namespace {
     using namespace qn;
@@ -234,7 +234,7 @@ namespace {
         const Vec<f64, 2>& fftfreq_range,
         const Path& output_directory
     ) {
-        auto timer = Logger::info_scope_time("Rotation check");
+        auto timer = Logger::info_scope_time<false>("Rotation check");
         const auto [n, p, w] = spectra.shape().filter(0, 1, 3);
         const auto fftfreq_linspace = noa::Linspace<f64>::from_vec(fftfreq_range);
 
@@ -364,8 +364,12 @@ namespace {
             .device = patches.view().device(),
             .allocator = Allocator::PITCHED_MANAGED,
         });
-        const f32 n_patches_per_image = static_cast<f32>(patches.height());
-        noa::reduce_axes_ewise(patches.view(), f32{0}, spectra, noa::ReduceMean{.size=n_patches_per_image});
+        if (patches.height() == 1) {
+            noa::ewise(patches.view(), spectra, noa::Copy{}); // no astigmatism, the height is already reduced
+        } else {
+            const f32 n_patches_per_image = static_cast<f32>(patches.height());
+            noa::reduce_axes_ewise(patches.view(), f32{0}, spectra, noa::ReduceMean{.size=n_patches_per_image});
+        }
         return spectra;
     }
 }
@@ -560,7 +564,7 @@ namespace qn::ctf {
         ctf.set_phase_shift(average_phase_shift);
 
         // Check that the defocus gradients in the images match the tilt geometry.
-        if (options.check_rotation) {
+        if (options.check_defocus_gradient) {
             rotation_check(
                 meta, ctf, grid, spectra_per_patch.view(),
                 patches.rho_vec(), options.output_directory

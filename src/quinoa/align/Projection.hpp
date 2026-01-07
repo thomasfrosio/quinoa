@@ -6,13 +6,6 @@
 #include "quinoa/Metadata.hpp"
 
 namespace qn {
-    void simple_projection_matching(
-        const View<f32>& stack,
-        Metadata::Stack& metadata,
-        f64 thickness_um,
-        const Path& output_directory
-    );
-
     struct ProjectionMatchingParameters {
         bool correct_ctf{false}; // TODO
 

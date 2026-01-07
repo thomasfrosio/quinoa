@@ -1,14 +1,13 @@
 #include <noa/Runtime.hpp>
-#include <noa/FFT.hpp>
 #include <noa/Xform.hpp>
-#include <noa/Signal.hpp>
 
 #include "quinoa/Optimizer.hpp"
 #include "quinoa/CommonFOV.hpp"
 #include "quinoa/GridSearch.hpp"
 #include "quinoa/Logger.hpp"
 #include "quinoa/Plot.hpp"
-#include "quinoa/RotationOffset.hpp"
+
+#include "quinoa/align/Rotation.hpp"
 
 namespace {
     using namespace qn;
@@ -70,10 +69,11 @@ namespace qn {
     ) {
         auto timer = Logger::info_scope_time("Rotation offset");
 
-        const f64 initial_rotation_offset = options.check_rotation ? 0 : metadata[0].angles[0];
+        const bool full_rotation = options.angle_range < 0;
+        const f64 initial_rotation_offset = full_rotation ? 0 : metadata[0].angles[0];
         f64 max_shift{};
         for (auto& slice: metadata) {
-            if (options.check_rotation) {
+            if (full_rotation) {
                 slice.angles[0] = 0.;
             } else if (not noa::allclose(initial_rotation_offset, slice.angles[0])) {
                 slice.angles[0] = initial_rotation_offset;
@@ -112,7 +112,7 @@ namespace qn {
 
         // The function to maximize.
         auto znccs = std::vector<Vec<f64, 2>>{}; // diagnostics
-        auto eval = [&](u32 n, const f64* rotation_offset, f64* g) mutable {
+        auto eval = [&](u32 n, const f64* rotation_offset, f64* g) {
             check(n == 1 and g == nullptr);
 
             // Set to the current rotation.
@@ -165,7 +165,7 @@ namespace qn {
         f64 best_rotation_offset{initial_rotation_offset};
         i32 n_evaluations{};
 
-        if (options.check_rotation) {
+        if (full_rotation) {
             Logger::trace(
                 "rotation_offset:\n"
                 "  device={}\n"

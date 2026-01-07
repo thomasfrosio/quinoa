@@ -10,7 +10,7 @@ namespace qn::ctf {
         /// first peak times this threshold.
         f64 threshold = 1.5;
 
-        /// NCC between the baseline-subtracted peak and simulated CTF at which the peak is considered bad.
+        /// NCC between the baseline-subtracted peak and simulated CTF at which a peak is considered bad.
         f64 minimum_ncc = 0.45;
 
         /// Keep at least that number of peaks.
@@ -31,9 +31,9 @@ namespace qn::ctf {
         /// Zero means minimum_ncc. This can be used to recover only very good peaks.
         f64 minimum_ncc_for_recovery = 0;
 
-        /// Thickness of the sample. This depends on the stage angles (see effective_thickness).
-        /// Zero means that the classic CTF model should be used. Otherwise, the thickness modulation applied.
-        /// Note that regions near the nodes are skipped from the tuning and automatically included.
+        /// Thickness of the sample used for the thickness modulation curve. Note that this depends on the stage angles
+        /// (see effective_thickness). Zero is equivalent to the classic CTF model. Note that regions near the nodes
+        /// are skipped from the tuning and automatically included.
         f64 thickness_um = 0;
     };
 
@@ -120,7 +120,7 @@ namespace qn::ctf {
 
             // Denormalize fftfreq back to frequencies.
             const f64 frequency = (fftfreq - m_fftfreq_start) / m_fftfreq_step;
-            const isize index = static_cast<isize>(std::floor(frequency));
+            const auto index = static_cast<isize>(std::floor(frequency));
             const f64 fraction = frequency - noa::clamp(std::floor(frequency), 0, static_cast<f64>(last_index));
 
             // Polynomial evaluation (Horner's scheme) - interpolation.
@@ -133,23 +133,24 @@ namespace qn::ctf {
         }
 
     private:
-        void allocate_(isize n) {
-            const isize n_to_allocate = n * 4;
+        void allocate_(usize n) {
+            const usize n_to_allocate = n * 4;
             if (m_buffer == nullptr or n_allocated < n_to_allocate) {
                 // Allocate a bit more to increase the chance of reusing the buffer
                 // when the fitting is done with slightly different fitting ranges.
                 n_allocated = n_to_allocate + 20 * 4;
-                m_buffer = std::make_unique<f64[]>(static_cast<usize>(n_allocated));
+                m_buffer = std::make_unique<f64[]>(n_allocated);
             }
-            m_a = SpanContiguous(m_buffer.get() + n * 0, n);
-            m_b = SpanContiguous(m_buffer.get() + n * 1, n);
-            m_c = SpanContiguous(m_buffer.get() + n * 2, n);
-            m_d = SpanContiguous(m_buffer.get() + n * 3, n);
+            const auto size = static_cast<isize>(n);
+            m_a = SpanContiguous(m_buffer.get() + size * 0, size);
+            m_b = SpanContiguous(m_buffer.get() + size * 1, size);
+            m_c = SpanContiguous(m_buffer.get() + size * 2, size);
+            m_d = SpanContiguous(m_buffer.get() + size * 3, size);
         }
 
     private:
         std::unique_ptr<f64[]> m_buffer; // (n*4)
-        isize n_allocated{};
+        usize n_allocated{};
 
         // Cubic spline expressed as a set of cubic polynomials.
         // f(x) = a_x + b_x + c_x^2 + d_x^3, where a_x = y_x, and x is uniform [0 to n-1].

@@ -2,8 +2,6 @@
 
 #include "quinoa/Types.hpp"
 #include "quinoa/Metadata.hpp"
-#include "quinoa/Logger.hpp"
-#include "quinoa/Stack.hpp"
 
 namespace qn {
     struct DetectAndExcludeBlankViewsParameters {

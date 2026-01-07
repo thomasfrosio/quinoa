@@ -1,36 +1,30 @@
 set(QUINOA_HEADERS
-    src/quinoa/Alignment.hpp
-    src/quinoa/AlignmentCoarse.hpp
-
     src/quinoa/CommonFOV.hpp
     src/quinoa/ExcludeViews.hpp
     src/quinoa/GridSearch.hpp
     src/quinoa/Logger.hpp
     src/quinoa/Metadata.hpp
     src/quinoa/Optimizer.hpp
-    src/quinoa/Settings.hpp
-#    src/quinoa/PairwiseShift.hpp
-    src/quinoa/StageLevel.hpp
-    src/quinoa/RotationOffset.hpp
-    src/quinoa/Stack.hpp
-    src/quinoa/Types.hpp
-    src/quinoa/Thickness.hpp
-    src/quinoa/Utilities.hpp
     src/quinoa/PostProcessing.hpp
-
-    src/quinoa/ProjectionMatching.hpp
-
+    src/quinoa/Settings.hpp
     src/quinoa/SplineCurve.hpp
     src/quinoa/SplineGrid.hpp
+    src/quinoa/Stack.hpp
+    src/quinoa/Thickness.hpp
+    src/quinoa/Types.hpp
+    src/quinoa/Utilities.hpp
 
-    src/quinoa/CTF.hpp
-    src/quinoa/CTFBaseline.hpp
-    src/quinoa/CTFGrid.hpp
-    src/quinoa/CTFPatches.hpp
-    src/quinoa/CTFSimulate.hpp
+    src/quinoa/align/Align.hpp
+    src/quinoa/align/Coarse.hpp
+    src/quinoa/align/Projection.hpp
+    src/quinoa/align/Rotation.hpp
 
-#    src/quinoa/Tests.hpp
-
+    src/quinoa/ctf/CTF.hpp
+    src/quinoa/ctf/Baseline.hpp
+    src/quinoa/ctf/Grid.hpp
+    src/quinoa/ctf/Patches.hpp
+    src/quinoa/ctf/Simulate.hpp
+    src/quinoa/ctf/Thickness.hpp
 )
 
 set(QUINOA_SOURCES_CXX
@@ -38,28 +32,24 @@ set(QUINOA_SOURCES_CXX
     src/quinoa/Metadata.cpp
     src/quinoa/Settings.cpp
     src/quinoa/Utilities.cpp
-
 )
 
 set(QUINOA_SOURCES_UNIFIED
     src/quinoa/Entry.cpp
-    src/quinoa/Plot.cpp
-    src/quinoa/Stack.cpp
-
     src/quinoa/ExcludeViews.cpp
+    src/quinoa/Plot.cpp
     src/quinoa/PostProcessing.cpp
-
-    src/quinoa/Alignment.cpp
-    src/quinoa/AlignmentCoarse.cpp
-
-#    src/quinoa/PairwiseShift.cpp
-    src/quinoa/StageLevel.cpp
-    src/quinoa/RotationOffset.cpp
-    src/quinoa/CTFBaseline.cpp
-    src/quinoa/CTFCoarse.cpp
-    src/quinoa/CTFPatches.cpp
-    src/quinoa/CTFRefine.cpp
+    src/quinoa/Stack.cpp
     src/quinoa/Thickness.cpp
-    src/quinoa/ProjectionMatching.cpp
-    src/quinoa/ProjectionMatchingFourier.cpp
+
+    src/quinoa/align/Align.cpp
+    src/quinoa/align/Coarse.cpp
+    src/quinoa/align/Projection.cpp
+    src/quinoa/align/Rotation.cpp
+
+    src/quinoa/ctf/CTF.cpp
+    src/quinoa/ctf/Baseline.cpp
+    src/quinoa/ctf/Coarse.cpp
+    src/quinoa/ctf/Patches.cpp
+    src/quinoa/ctf/Refine.cpp
 )

@@ -1,11 +1,12 @@
 #include <noa/Signal.hpp>
 #include <noa/FFT.hpp>
 
-#include "quinoa/AlignmentCoarse.hpp"
 #include "quinoa/Logger.hpp"
 #include "quinoa/Optimizer.hpp"
 #include "quinoa/Plot.hpp"
 #include "quinoa/Utilities.hpp"
+
+#include "quinoa/align/Coarse.hpp"
 
 namespace {
     using namespace qn;
@@ -31,7 +32,7 @@ namespace {
         SpanContiguous<f32, 3, i32> references{}; // (n-1,h,w)
         SpanContiguous<f32, 3, i32> stretched_targets{}; // (n-1,h,w)
 
-        SpanContiguous<const ParallelogramMask, 1, i32> fov_masks{}; // (n - 1)
+        SpanContiguous<const ParallelogramMask, 1, i32> fov_masks{}; // (n-1)
         SpanContiguous<const Vec<f32, 4>, 1, i32> reference_plane_coefficients{}; // (n-1)
         SpanContiguous<const Mat<f32, 2, 4>, 1, i32> reference2target{}; // (n-1)
 
@@ -169,7 +170,7 @@ namespace qn {
             if (n_plans_set != 2) {
                 Logger::warn(
                     "Failed to set the FFT workspace. An new workspace will have to be allocated, "
-                    "considerably increasing the memory requirements. Please report this. "
+                    "possibly increasing the memory requirements significantly. Please report this. "
                     "shape={}, workspace_left_to_allocate={}bytes, n_plans_set={}",
                     shape, nf::workspace_left_to_allocate(device), n_plans_set);
             }
@@ -190,15 +191,14 @@ namespace qn {
             "  device={}\n"
             "  stretching={}\n"
             "  fov_mask={}\n"
-            "  smooth_edge={}%",
+            "  smooth_edge={:.0f}%",
             m_buffer.device(),
             options.cosine_stretch,
             options.fov_mask,
             options.smooth_edge_percent * 100
         );
 
-        // We'll need the images sorted by tilt angles, with the lowest absolute tilt being the pivot point.
-        metadata.sort("tilt");
+        metadata.sort("tilt"); // just to make sure the images are sorted
 
         // Iterating a few times may be required to get a stable shift.
         auto max_shifts = Vec<f64, 2>{};
@@ -206,7 +206,6 @@ namespace qn {
         auto last_average_shift = Vec<f64, 2>{};
         const bool converge = options.update_count < 0;
         const i32 count = converge ? 125 : options.update_count;
-        auto pair_metadata = Metadata::Stack{};
 
         i32 i{};
         while (i < count) {
@@ -263,24 +262,14 @@ namespace qn {
             options.smooth_edge_percent * 100
         );
 
-        // We'll need the images sorted by tilt angles, with the lowest absolute tilt being the pivot point.
-        auto meta = metadata;
-        meta.sort("tilt");
-        bool stack_is_sorted{true};
-        for (i32 expected_index{0}; const auto& image: meta) {
-            if (expected_index++ != image.index) {
-                stack_is_sorted = false;
-                break;
-            }
-        }
-        check(stack_is_sorted, "The tilts in the stack should be sorted in ascending order");
+        metadata.sort("tilt"); // just to make sure images are sorted
 
         auto eval = [&](u32 n, const f64* p, f64* g) -> f64 {
             check(n == 2 and g == nullptr);
-            auto meta_ = meta;
-            meta_.add_image_angles({0, p[0], p[1]});
+            auto meta = metadata;
+            meta.add_image_angles({0, p[0], p[1]});
             auto zncc = eval_(
-                stack, meta_,
+                stack, meta,
                 options.fov_mask,
                 options.smooth_edge_percent,
                 options.max_shift_percent,
@@ -288,7 +277,6 @@ namespace qn {
                 true,
                 true
             ).second;
-            Logger::trace("t={:.4f}, p={:.4f}, s={:.4f}", p[0], p[1], zncc); // FIXME
             return zncc;
         };
 
@@ -300,14 +288,14 @@ namespace qn {
         auto optimizer = Optimizer{};
         if (options.tilt_search_range > 10.) {
             optimizer = Optimizer(NLOPT_GN_DIRECT_L, 2);
-            optimizer.set_max_number_of_evaluations(100);
+            optimizer.set_max_number_of_evaluations(100); // this should be more than enough
             optimizer.set_bounds(tilt_range, pitch_range);
             optimizer.set_max_objective(eval);
             optimizer.optimize(parameters.data());
             n_evaluations += optimizer.n_evaluations();
         }
         optimizer = Optimizer(NLOPT_LN_SBPLX, 2);
-        optimizer.set_x_tolerance_abs(0.005); // FIXME should be lower? 0.05-0.01
+        optimizer.set_x_tolerance_abs(0.01);
         optimizer.set_bounds(tilt_range, pitch_range);
         optimizer.set_max_objective(eval);
         const f64 zncc = optimizer.optimize(parameters.data());
@@ -345,8 +333,11 @@ namespace qn {
         const auto image_center = (image_shape.vec / 2).as<f64>();
 
         // Whether to enforce the common FOV between all the images.
-        // This is quite restrictive and removes regions from the higher tilts that are not in the lower tilts.
-        // When the shifts are not known and large shifts are present, it is best to turn off the common FOV.
+        // This removes the regions from the higher tilts that are not in the lower tilts,
+        // which can be quite a lot of information that could be used for the alignment. As such,
+        // when the shifts are not known (and large shifts are expected), turning off the common FOV
+        // is best. In this case, only the FOV due to the shift difference between the target and
+        // its reference is accounted for.
         const auto common_fov = fov_mask ?
             CommonFOV(image_shape, metadata) :
             CommonFOV(image_shape);
@@ -390,12 +381,12 @@ namespace qn {
 
             mask = common_fov.set_fov(reference, {
                 .smooth_edge_percent = smooth_edge_percent,
-                .add_shifts = true,
+                .add_shifts = true, // the mask is applied to unaligned images
                 .add_tilt_and_pitch = fov_mask,
             });
         }
 
-        // Compute the reference and stretched target stacks.
+        // Compute the reference and (stretched-)target stacks.
         using interp_t = CreateStacks::interpolator_type;
         auto iwise_shape = image_shape.push_front(n_targets).as<i32>();
         auto create_stacks = CreateStacks{
@@ -409,6 +400,7 @@ namespace qn {
         };
 
         if (need_score) {
+            // On top of computing the stacks, compute the stats for the ZNCC score.
             noa::reduce_axes_iwise( // (n,h,w)->(n,1,1)
                 iwise_shape, device, CreateStacks::reduce_type{},
                 m_peak_stats.view().flat(1), create_stacks
@@ -417,39 +409,38 @@ namespace qn {
             noa::iwise(iwise_shape, device, create_stacks);
         }
 
-        // Get the views from the buffers.
-        if (Logger::is_debug() and output_dir) {
-            auto filename = *output_dir / "stretched_targets.mrc";
-            noa::write_image(buffer(1), filename, {.dtype = "f16"});
-            filename = *output_dir / "references.mrc";
-            noa::write_image(buffer(0), filename, {.dtype = "f16"});
-            Logger::debug("{} saved", filename);
-        }
+        // if (output_dir) {
+        //     auto filename = *output_dir / "stretched_targets.mrc";
+        //     noa::write_image(buffer(1), filename, {.dtype = "f16"});
+        //     filename = *output_dir / "references.mrc";
+        //     noa::write_image(buffer(0), filename, {.dtype = "f16"});
+        //     Logger::debug("{} saved", filename);
+        // }
 
         // (Conventional) cross-correlation, returning a centered map.
-        // Note that to compute a ZNCC between -1 and 1, the normalization should be done on the xmap (BACKWARD).
+        // Note that to compute a ZNCC between -1 and 1, the FFT normalization should be done on the xmap (BACKWARD).
         nf::r2c(buffer(0, 2), buffer_rfft(0, 2), {.norm = nf::Norm::BACKWARD});
         noa::iwise(buffer_rfft(0).shape().filter(0, 2, 3), device, CrossCorrelate{
             .references = buffer_rfft(0).span_contiguous<const c32, 3, i32>(),
             .stretched_targets = buffer_rfft(1).span_contiguous<c32, 3, i32>(), // output
         });
-        nf::c2r(buffer_rfft(1), buffer(0), {.norm = nf::Norm::BACKWARD}); // xmap
+        nf::c2r(buffer_rfft(1), buffer(0), {.norm = nf::Norm::BACKWARD}); // centered xmap
 
-        if (Logger::is_debug() and output_dir) {
-            auto filename = *output_dir / "xmap.mrc";
-            noa::write_image(buffer(0), filename, {.dtype = "f16"});
-            Logger::debug("{} saved", filename);
-        }
+        // if (output_dir) {
+        //     auto filename = *output_dir / "xmap.mrc";
+        //     noa::write_image(buffer(0), filename, {.dtype = "f16"});
+        //     Logger::debug("{} saved", filename);
+        // }
 
-        // Compute the shift, i.e., by how much the stretched target is away from the reference.
-        // To align the target onto the reference, we would need to subtract this shift from it.
+        // Compute the shift, i.e., by how much the (stretched-)target is away from the reference.
+        // To align the (stretched-)target onto the reference, we would need to subtract this shift from it.
         find_peaks<"fc">(buffer(0), m_xmap_centered.view(), m_peak_shifts.view(), m_peak_values.view(), {
             .distortion_angle_deg = metadata[0].angles[0],
             .max_shift_percent = max_shift_percent,
         });
 
         // We should now transform the shifts back to each target's reference-frame. However, we'll need to compute the
-        // global shifts and center them later on. These operations require accumulating the shifts of the lower views
+        // global shifts (and center them) later on. These operations require accumulating the shifts of the lower views
         // up to the global reference. As such, the simplest is to scale all these image-to-image shifts directly to
         // the same reference-frame, process everything there, and then go back to each image's reference-frame at
         // the end. For simplicity, we chose this common reference-frame to be the volume reference-frame, which has
