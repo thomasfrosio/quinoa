@@ -160,8 +160,8 @@ namespace {
         auto tmp = noa::like(debug_tomogram);
         auto kernel = ns::window_gaussian<f32>(11, 2, {.normalize = true}).to(tmp.options());
         Logger::trace("kernel={::.3f}", kernel.span_1d());
-        ns::median_filter_2d(debug_tomogram, tmp, {.window_size = 11});
-        ns::convolve_separable(tmp, debug_tomogram, kernel, kernel, kernel, {}, {.border = noa::Border::ZERO});
+        // ns::median_filter_2d(debug_tomogram, tmp, {.window_size = 11});
+        // ns::convolve_separable(tmp, debug_tomogram, kernel, kernel, kernel, {}, {.border = noa::Border::ZERO});
 
         noa::write_image(debug_tomogram, output_directory / "tomogram.mrc", {.dtype = "f16"}); // FIXME
         noa::write_image(variances, output_directory / "variances.mrc"); // FIXME
@@ -363,7 +363,7 @@ namespace qn {
         const auto original_spacing = metadata.spacing;
         metadata.set_spacing(stack_loader.stack_spacing());
 
-        save_stack(input_images.view(), metadata.spacing, metadata.stack, options.output_directory / "input_stack.mrc");
+        // save_stack(input_images.view(), metadata.spacing, metadata.stack, options.output_directory / "input_stack.mrc");
 
         // auto input_images = noa::read_image<f32>(options.output_directory / "input_stack.mrc").data;
         // auto stack_spacing_nm = 1.2;

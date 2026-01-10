@@ -1,18 +1,23 @@
 [files]
 
-stack_file = '~/Datasets/10304/tilt5.mrc'
-mdoc_file = '~/Datasets/10304/file.mdoc'
-output_directory = '~/Tmp/quinoa/10304/003'
-frames_directory = '~/Datasets/10304/frames'
-star_file = '~/Tmp/quinoa/10304/001/tilt5.star'
+#stack_file = '~/Datasets/10304/tilt5.mrc'
+#mdoc_file = '~/Datasets/10304/file.mdoc'
+#output_directory = '~/Tmp/quinoa/10304/003'
+#frames_directory = '~/Datasets/10304/frames'
+#star_file = '~/Tmp/quinoa/10304/001/tilt5.star'
 
 #stack_file = '~/Datasets/12104/TS_006.st'
-#mdoc_file = '~/Datasets/12104/TS_006.mdoc'
-#output_directory = '~/Tmp/quinoa/12104/001'
-#framces_directory = '~/Tmp/quinoa/12104/001'
+#mdoc_file = '~/Datasets/12104/TS_006_.mdoc'
+#output_directory = '~/Tmp/quinoa/12104/004'
+#star_file = '~/Tmp/quinoa/12104/002/TS_006.star'
+
+stack_file = '~/Datasets/12463/TS_001.mrc'
+mdoc_file = '~/Datasets/12463/TS_001.mrc.mdoc'
+output_directory = '~/Tmp/quinoa/12463/002'
+#star_file = '~/Tmp/quinoa/12463/001/TS_001.star'
 
 [experiment]
-#tilt_axis = 0
+#tilt_axis = 85.4
 #add_specimen_tilt = 0
 #add_specimen_pitch = 0
 #voltage = 300
@@ -22,7 +27,7 @@ star_file = '~/Tmp/quinoa/10304/001/tilt5.star'
 #thickness = 350
 
 [preprocessing]
-run = false
+run = true
 exclude_blank_views = true
 exclude_stack_images = []
 
@@ -34,11 +39,11 @@ fit_tilt = true
 fit_pitch = true
 
 [alignment.ctf]
-run = true
+run = false
 check_defocus_gradient = true
 fit_rotation = false
-fit_tilt = true
-fit_pitch = true
+fit_tilt = false
+fit_pitch = false
 fit_phase_shift = false
 fit_astigmatism = true
 fit_thickness = false
@@ -48,18 +53,20 @@ run = false
 fit_thickness = false
 
 [postprocessing]
-run = true
+run = false
 resolution = 20
+
 stack.run = true
 stack.correct_rotation = true
 stack.interpolation = 'linear'
 stack.dtype = 'f16'
+
 tomogram.run = false
 tomogram.correct_rotation = true
 tomogram.interpolation = 'linear'
 tomogram.dtype = 'f16'
 tomogram.oversample = false
-tomogram.correct_ctf = false
+tomogram.correct_ctf = true
 tomogram.z_padding_percent = 10
 tomogram.phase_flip_strength = 8
 

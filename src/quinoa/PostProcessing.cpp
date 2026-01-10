@@ -46,7 +46,7 @@ namespace {
 
             // Compute and the filter.
             const auto regularization = phase_flip_strength * noa::exp(2 * fftfreq_sqd);
-            const auto phase_flip = -noa::sign(value); // negate for negative contrast
+            const auto phase_flip = -noa::sign(value); // negate for negative contrast // FIXME
             const auto wiener_like = (1 + regularization) / (noa::abs(value) + regularization) * phase_flip;
             const auto b_decay = noa::exp(ctf.bfactor() / 4 * fftfreq_sqd);
             strips_padded_rfft(s, y, x) = image_padded_rfft(y, x) * wiener_like * b_decay;
@@ -70,7 +70,7 @@ namespace {
             // Get the z-position at this index of the image.
             const auto indices = Vec{i, j};
             const auto coordinates = (indices - image_center).as<f32>();
-            const auto volume_z_coordinate_nm = noa::dot(z_projection_nm, coordinates.push_front(0));
+            const auto volume_z_coordinate_nm = noa::dot(z_projection_nm, coordinates.push_front(0)); // FIXME
 
             // Get the closest z-strip.
             const auto strip = (volume_z_coordinate_nm - z_offset_start_nm) / z_step_nm;
@@ -489,7 +489,7 @@ namespace {
 
                 // Recompose the filtered tile from the defocus-strips.
                 const auto angles = noa::deg2rad(slice.angles);
-                const auto z_projection_nm = (
+                const auto z_projection_nm = ( // FIXME
                     nx::scale(Vec<f64, 3>::from_value(spacing_nm)) *
                     nx::rotate_x(angles[2]) *
                     nx::rotate_y(angles[1]) *

@@ -38,6 +38,18 @@ namespace {
         const auto threshold_stddev_high = median_stddev * 2;
         const auto threshold_gradient = median_gradient * 4;
 
+        // const auto med_var = noa::median(View(points.data(), std::ssize(points)));
+        // std::vector<f64> points_med;
+        // for (auto var: points)
+        //     points_med.push_back(std::abs(var - med_var));
+        // const auto mad_var = noa::median(View(points_med.data(), std::ssize(points)));
+        //
+        // const auto med_grad = noa::median(View(gradients.data(), std::ssize(gradients)));
+        // std::vector<f64> gradients_med;
+        // for (auto grad: gradients)
+        //     gradients_med.push_back(std::abs(grad - med_grad));
+        // const auto mad_grad = noa::median(View(gradients_med.data(), std::ssize(gradients)));
+
         // Flag the bad images.
         for (size_t i{}; i < indices.size(); i++) {
             if (points[i] > threshold_stddev_high or

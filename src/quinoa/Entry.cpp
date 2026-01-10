@@ -2,6 +2,7 @@
 #include <noa/Session.hpp>
 #include <noa/Signal.hpp>
 
+#include "Plot.hpp"
 #include "quinoa/align/Align.hpp"
 #include "quinoa/ctf/CTF.hpp"
 
@@ -55,6 +56,32 @@ auto main(int argc, char* argv[]) -> int {
         // tests::test_common_fov2();
         // tests::test_image_cross_correlation();
         // tests::test_frc();
+        {
+            auto shape = Shape4{1,1,1,1024};
+            auto spectrum = Array<f32>(shape.rfft());
+            auto ctf = CTFIsotropic64({
+                .pixel_size = 5,
+                .defocus = 3.5,
+                .voltage = 300.,
+                .amplitude = 0.07,
+                .cs = 2.7,
+                .phase_shift = 0.,
+                .bfactor = 0.,
+                .scale = 1.,
+            });
+            auto sum = noa::zeros<f32>(shape.rfft());
+            f32 c{};
+            f64 defocus = 3.5;
+            for (f64 d{0}; d < 0.3; d += 0.01) {
+                ctf.set_defocus(defocus + d);
+                ns::ctf_isotropic<"h">(spectrum, shape, ctf);
+                noa::ewise(spectrum, sum, [](f32 s, f32& o) { o += s; });
+                ++c;
+            }
+            noa::ewise({}, sum, [&](f32& o) { o /= c; });
+            save_plot_xy(noa::Linspace{0., 0.5, true}, sum, settings.files.output_directory / "ctf_spectrum.txt");
+            panic();
+        }
         // return 0;
 
         // Register the input stack. The application loads the input stack many times. To save computation,

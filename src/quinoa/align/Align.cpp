@@ -55,7 +55,7 @@ namespace qn {
         // In this case, do a quick shift alignment and search for the rotation offset across the full angle range.
         // The resulting angle isn't the most accurate but should be close enough (+-5deg) to the provided rotation.
         if (settings.check_rotation) {
-            auto t1 = Logger::info_scope_time<false>("Rotation check");
+            auto t1 = Logger::info_scope_time("Rotation check");
             auto metadata_check = metadata.stack;
 
             for (auto i: noa::irange(2)) {
@@ -170,6 +170,8 @@ namespace qn {
             .resolution = 24.,
             .output_directory = settings.output_directory / "thickness",
         };
+        estimate_sample_thickness(stack_filename, metadata, thickness_settings);
+        panic();
 
         auto rotation_settings = RotationOffsetParameters{
             .angle_range = 4,

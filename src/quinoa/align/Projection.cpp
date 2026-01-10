@@ -163,6 +163,22 @@ namespace {
         }
     };
 
+    struct WeightCorrection {
+        SpanContiguous<const f32, 2, i32> weights_padded_rfft{};
+        SpanContiguous<f32, 2, i32> target_rfft{};
+
+        NOA_HD void operator()(const Vec<i32, 2>& indices) const {
+            // The weights are oversampled by 2 compared to the target.
+            // To get the weight at a given target frequency, a simple nearest-ish interpolation is fine.
+            const auto target_frequency = nf::index2frequency<true, true>(indices, target_rfft.shape());
+            const auto weight_frequency = target_frequency * 2;
+            const auto weight = weights_padded_rfft(weight_frequency);
+
+            // Downweight the target at frequencies that aren't fully sampled in the projected reference.
+            target_rfft(indices) *= noa::min(weight, 1.f);
+        }
+    };
+
     class Projector {
     private:
         View<f32> m_reference_padded;
@@ -867,7 +883,7 @@ namespace qn {
         // aligning from low-to-high tilts. When a tilt is aligned, it is added
         // to the set of reference images used to compute the projected reference.
         auto projection_metadata = metadata;
-        projection_metadata.sort("absolute_tilt");
+        projection_metadata.sort("absolute_tilt"); // FIXME time?
 
         for (isize target_index = 1; target_index < projection_metadata.ssize(); ++target_index) {
             const auto& new_reference_slice = projection_metadata[target_index - 1];
