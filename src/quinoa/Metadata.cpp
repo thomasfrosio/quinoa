@@ -96,14 +96,30 @@ namespace qn {
         auto metadata = Metadata{};
         auto& images = metadata.stack.images;
 
-        // "key = value" -> "value"
+        // Parse "key = value" to "value".
         std::string_view trimmed;
         auto get_substring = [&trimmed] {
             return noa::details::trim_left(trimmed.substr(trimmed.find_first_of('=') + 1));
         };
 
+        // Add the image.
         auto frame_path = Path{};
         bool is_header{true}, has_voltage{}, has_rotation{}, has_tilt{}, has_exposure{}, has_datetime{};
+        auto validate_last_image = [&] {
+            // Before switching to the next image, check that we collected the necessary fields.
+            check(has_rotation and has_tilt and has_exposure and has_datetime,
+                  "An image in the mdoc is missing a key value:\n"
+                  "has_rotation={}, has_tilt={}, has_exposure={} and has_datetime={}",
+                  has_rotation, has_tilt, has_exposure, has_datetime);
+            has_rotation = false;
+            has_tilt = false;
+            has_exposure = false;
+            has_datetime = false;
+
+            // Register the frame path.
+            images.back().frames = set_frame_path(images.back().time, std::move(frame_path));
+        };
+
         for (auto&& line : noa::read_lines(mdoc)) {
              trimmed = noa::details::trim(line);
 
@@ -127,20 +143,8 @@ namespace qn {
                     metadata.sample.thickness = 0.;
                     is_header = false;
                 }
-                if (not images.empty()) {
-                    // Before switching to the next image, check that we collected the necessary fields.
-                    check(has_rotation and has_tilt and has_exposure and has_datetime,
-                          "An image in the mdoc is missing a key value:\n"
-                          "has_rotation={}, has_tilt={}, has_exposure={} and has_datetime={}",
-                          has_rotation, has_tilt, has_exposure, has_datetime);
-                    has_rotation = false;
-                    has_tilt = false;
-                    has_exposure = false;
-                    has_datetime = false;
-
-                    // Register the frame path.
-                    images.back().frames = set_frame_path(images.back().time, std::move(frame_path));
-                }
+                if (not images.empty())
+                    validate_last_image();
                 images.push_back({});
                 continue;
             }
@@ -190,6 +194,7 @@ namespace qn {
                 has_datetime = true;
             }
         }
+        validate_last_image();
 
         // Compute pre- and post-exposure.
         // TODO If we can use PriorRecordDose, remove this.
