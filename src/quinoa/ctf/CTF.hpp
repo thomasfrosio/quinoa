@@ -72,8 +72,8 @@ namespace qn::ctf {
         const auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(n - 1);
 
         // Only loop through the fitting range.
-        const auto indices = noa::round((fitting_range - fftfreq_range[0]) / fftfreq_step).as<i64>();
-        const auto start = std::max(indices[0], i64{});
+        const auto indices = noa::round((fitting_range - fftfreq_range[0]) / fftfreq_step).as<isize>();
+        const auto start = std::max(indices[0], isize{});
         const auto end = std::min(indices[1] + 1, n);
 
         // Single-pass ZNCC.
@@ -83,7 +83,7 @@ namespace qn::ctf {
         f64 sum_rhs_rhs = 0.0;
         f64 sum_lhs_rhs = 0.0;
 
-        for (i64 i = start; i < end; ++i) {
+        for (isize i = start; i < end; ++i) {
             const auto fftfreq = fftfreq_range[0] + static_cast<f64>(i) * fftfreq_step;
 
             // Get the simulated (CTF * envelope)^2.

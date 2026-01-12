@@ -121,7 +121,7 @@ namespace {
         //    specimen is offset in Z.
         const auto image_min_size = static_cast<f64>(noa::min(image_shape));
         const auto maximum_specimen_thickness = std::min(500. / spacing_nm, image_min_size);
-        const auto volume_depth = static_cast<i64>(std::round(maximum_specimen_thickness * 3));
+        const auto volume_depth = static_cast<isize>(std::round(maximum_specimen_thickness * 3));
 
         const auto volume_shape = Shape{volume_depth, image_shape[0], image_shape[1]};
         const auto image_center = (image_shape.vec / 2).as<f64>();

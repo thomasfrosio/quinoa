@@ -187,24 +187,24 @@ namespace qn {
                 return *this;
             }
 
-            [[nodiscard]] auto size() const noexcept -> size_t { return images.size(); }
-            [[nodiscard]] auto ssize() const noexcept -> i64 { return static_cast<i64>(size()); }
+            [[nodiscard]] auto size() const noexcept -> usize { return images.size(); }
+            [[nodiscard]] auto ssize() const noexcept -> isize { return static_cast<isize>(size()); }
 
             /// Returns a view of the image at "idx", as currently sorted in this instance (see sort()).
             [[nodiscard]] constexpr auto operator[](std::integral auto index) noexcept -> Image& {
                 noa::bounds_check<true>(ssize(), index);
-                return images[static_cast<size_t>(index)];
+                return images[static_cast<usize>(index)];
             }
 
             /// Returns a view of the image at "idx", as currently sorted in this instance (see sort()).
             [[nodiscard]] constexpr auto operator[](std::integral auto index) const noexcept -> const Image& {
                 noa::bounds_check<true>(ssize(), index);
-                return images[static_cast<size_t>(index)];
+                return images[static_cast<usize>(index)];
             }
 
             /// Find the index (as currently sorted in this instance)
             /// of the slice with the lowest absolute tilt angle.
-            [[nodiscard]] auto find_lowest_tilt_index() const -> i64;
+            [[nodiscard]] auto find_lowest_tilt_index() const -> isize;
 
             [[nodiscard]] auto tilt_range() const -> Vec<f64, 2>;
             [[nodiscard]] auto time_range() const -> Vec<i64, 2>;

@@ -6,7 +6,7 @@ namespace qn::details {
     template<typename T, usize N>
     struct SplineGridSpanLike {
         Shape<isize, N> m_shape;
-        Vec<i64, N> m_node_index;
+        Vec<isize, N> m_node_index;
 
         SplineGridSpanLike(Shape<isize, N> shape, Vec<isize, N> node_index) : m_shape{shape}, m_node_index{node_index} {}
 

@@ -360,7 +360,7 @@ namespace qn {
 
     // This function could be simpler, but here I'm willing to pay the price of complexity
     // to gain performance and reduce the memory usage.
-    void StackLoader::read_slice_and_precision_pad_(i64 file_slice_index, const View<f32>& padded_slice) {
+    void StackLoader::read_slice_and_precision_pad_(isize file_slice_index, const View<f32>& padded_slice) {
         const bool has_initial_padding = m_input_slice_shape != m_padded_slice_shape;
         const bool is_gpu = compute_device().is_gpu();
 

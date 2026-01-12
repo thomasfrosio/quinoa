@@ -89,7 +89,7 @@ namespace qn {
         Array<c32> m_padded_slice_rfft{};
         Array<c32> m_cropped_slice_rfft{};
         Array<c32> m_bandpass_slice_rfft{};
-        std::vector<std::pair<i64, Array<f32>>> m_cache{}; // cache the pre-processed slices
+        std::vector<std::pair<isize, Array<f32>>> m_cache{}; // cache the pre-processed slices
     };
 
     struct LoadStackOutputs {

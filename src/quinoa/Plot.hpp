@@ -77,7 +77,7 @@ namespace qn {
             if constexpr (nt::varray<S> or nt::span_nd<S, 4, 3, 2>) {
                 // Convert to a contiguous 2d span.
                 constexpr size_t N = S::SIZE;
-                auto new_shape = Shape<i64, N>::from_value(1);
+                auto new_shape = Shape<isize, N>::from_value(1);
                 new_shape[0] = span.shape()[0];
                 new_shape[N - 1] = -1;
                 auto spand_2d = span.span().reshape(new_shape).as_strided().filter(0, N - 1).as_contiguous();

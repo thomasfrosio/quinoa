@@ -283,7 +283,7 @@ namespace {
             const Vec<f64, 3>& image_angles,
             f64 spacing_nm,
             f64 z_step_nm
-        ) -> Pair<f64, i64> {
+        ) -> Pair<f64, isize> {
             // The image is divided into z-strips centered at the image center. For instance, if z_step_nm=15,
             // the z-axis is divided such as: [..., -45, -30, -15,  +0, +15, +30, +45, ...]nm
             // These point to the z-height center of each strip and relative to the image center. In this case,
@@ -882,7 +882,7 @@ namespace {
         nx::Interp m_interp;
         i32 m_n_threads{};
 
-        Vec<i64, 3> m_left_padding{};
+        Vec<isize, 3> m_left_padding{};
         Shape3 m_subvolume_shape{};
         Shape3 m_subvolume_padded_shape{};
         Shape3 m_subvolume_padded_os_shape{};

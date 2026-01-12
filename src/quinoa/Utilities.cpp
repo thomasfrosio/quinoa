@@ -163,18 +163,18 @@ namespace qn {
     }
 
     auto find_best_peak(const SpanContiguous<const f32, 2>& data) -> Pair<Vec<f64, 2>, f32> {
-        constexpr i64 BLOCK_SIZE = 5;
-        constexpr i64 BLOCK_RADIUS = BLOCK_SIZE / 2;
-        constexpr i64 N_BLOCKS_Y = 3;
-        constexpr i64 N_BLOCKS_X = 7;
+        constexpr isize BLOCK_SIZE = 5;
+        constexpr isize BLOCK_RADIUS = BLOCK_SIZE / 2;
+        constexpr isize N_BLOCKS_Y = 3;
+        constexpr isize N_BLOCKS_X = 7;
         constexpr f32 THRESHOLD = 0.8f;
 
         // Get the position of the max within the block.
-        auto argmax = [&](const Vec<i64, 2>& block_center) {
+        auto argmax = [&](const Vec<isize, 2>& block_center) {
             auto max_value = std::numeric_limits<f32>::lowest();
-            auto max_indices = Vec<i64, 2>{};
-            for (i64 y{-BLOCK_RADIUS}; y <= BLOCK_RADIUS; ++y) {
-                for (i64 x{-BLOCK_RADIUS}; x <= BLOCK_RADIUS; ++x) {
+            auto max_indices = Vec<isize, 2>{};
+            for (isize y{-BLOCK_RADIUS}; y <= BLOCK_RADIUS; ++y) {
+                for (isize x{-BLOCK_RADIUS}; x <= BLOCK_RADIUS; ++x) {
                     const auto indices = block_center + Vec{y, x};
                     if (noa::is_inbound(data.shape(), indices)) {
                         const auto& value = data(indices);
@@ -190,10 +190,10 @@ namespace qn {
 
         // Find whether the given position points to a peak
         // by checking that the 8 neighbors have lower values.
-        auto is_a_peak = [&](const Vec<i64, 2>& position) {
+        auto is_a_peak = [&](const Vec<isize, 2>& position) {
             const auto& value = data(position);
-            for (i64 y{-1}; y <= 1; ++y) {
-                for (i64 x{-1}; x <= 1; ++x) {
+            for (isize y{-1}; y <= 1; ++y) {
+                for (isize x{-1}; x <= 1; ++x) {
                     const auto indices = position + Vec{y, x};
                     if (noa::is_inbound(data.shape(), indices)) {
                         if (value < data(indices))
@@ -209,19 +209,19 @@ namespace qn {
         // Indeed, it seems that the "true" peak is surrounded by low/negative CC values, as opposed to less sharp
         // peaks which are surrounded by the background noise/CC.
         // Selecting the sharpest peak doesn't seem to work well with multi-lobe peaks.
-        auto peak_base_value = [&](const Vec<i64, 2>& peak_position) {
+        auto peak_base_value = [&](const Vec<isize, 2>& peak_position) {
             const auto& peak_value = data(peak_position);
-            auto find_base = [&](i64 direction) {
+            auto find_base = [&](isize direction) {
                 f32 previous_base = peak_value;
 
                 // Find the base of the peak along that direction.
                 // Peaks should only be a few pixels wide.
-                for (i64 y{1}; y < 10; ++y) {
+                for (isize y{1}; y < 10; ++y) {
 
                     // Compute the base value at this y-offset.
                     // The base value is the average of the 3 values at y-offset.
                     f32 base{};
-                    for (i64 x{-1}; x <= 1; ++x) {
+                    for (isize x{-1}; x <= 1; ++x) {
                         auto position = peak_position + Vec{y * direction, x};
                         position = noa::index_at<noa::Border::REFLECT>(position, data.shape());
                         base += data(position);
@@ -242,12 +242,12 @@ namespace qn {
 
         // Fit a 3-points parabola along the y and x of the peak to get
         // the peak offset and value with subpixel accuracy.
-        auto subpixel_registration = [&](const Vec<i64, 2>& peak_position) {
+        auto subpixel_registration = [&](const Vec<isize, 2>& peak_position) {
             Vec<f64, 2> peak_offset{};
             Vec<f64, 2> peak_value{};
             for (auto i: {0, 1}) {
                 Vec<f32, 3> buffer{};
-                for (i64 j{}; j < 3; ++j) {
+                for (isize j{}; j < 3; ++j) {
                     auto indices = peak_position;
                     indices[i] = noa::index_at<noa::Border::REFLECT>(peak_position[i] + j - 1, data.shape()[i]);
                     buffer[j] = data(indices);
@@ -273,8 +273,8 @@ namespace qn {
         auto best_peak_value_adjusted = center_peak_adjusted_value;
         auto best_peak_coordinates_offset = center_peak_coordinates_offset;
 
-        for (i64 y = -(N_BLOCKS_Y / 2); y <= N_BLOCKS_Y / 2; ++y) {
-            for (i64 x = -(N_BLOCKS_X / 2); x <= N_BLOCKS_X / 2; ++x) {
+        for (isize y = -(N_BLOCKS_Y / 2); y <= N_BLOCKS_Y / 2; ++y) {
+            for (isize x = -(N_BLOCKS_X / 2); x <= N_BLOCKS_X / 2; ++x) {
                 if (y == 0 and x == 0)
                     continue;
 

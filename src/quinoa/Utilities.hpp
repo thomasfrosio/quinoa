@@ -61,11 +61,11 @@ namespace qn {
     }
 
 #ifndef QN_INCLUDE_CPU_ONLY
-    inline auto fourier_crop_to_resolution(i64 input_logical_size, f64 input_spacing, f64 target_resolution, bool fast_size) {
+    inline auto fourier_crop_to_resolution(isize input_logical_size, f64 input_spacing, f64 target_resolution, bool fast_size) {
         const f64 input_size = static_cast<f64>(input_logical_size);
         const f64 target_spacing = target_resolution / 2;
         const f64 target_size = input_size * input_spacing / target_spacing;
-        i64 final_size = std::max(static_cast<i64>(std::round(target_size)), i64{0});
+        isize final_size = std::max(static_cast<isize>(std::round(target_size)), isize{0});
 
         // Clamp within spectrum size and optionally optimize the final size for FFT.
         if (fast_size)
@@ -94,27 +94,27 @@ namespace qn {
         if (clamp)
             frequency = std::clamp(frequency, 0., last_index);
         const auto actual_fftfreq = frequency * fftfreq_step + fftfreq_range[0];
-        return Pair{static_cast<i64>(frequency), actual_fftfreq};
+        return Pair{static_cast<isize>(frequency), actual_fftfreq};
     }
 
-    void parallel_for(i32 n_threads, i64 size, auto&& func) {
+    void parallel_for(i32 n_threads, isize size, auto&& func) {
         #pragma omp parallel for num_threads(n_threads)
-        for (i64 c = 0; c < size; ++c) {
+        for (isize c = 0; c < size; ++c) {
             func(omp_get_thread_num(), c);
         }
     }
 
     template<size_t N>
-    void parallel_for(i32 n_threads, const Shape<i64, N>& shape, auto&& func) {
+    void parallel_for(i32 n_threads, const Shape<isize, N>& shape, auto&& func) {
         if constexpr (N == 1) {
             #pragma omp parallel for num_threads(n_threads)
-            for (i64 i = 0; i < shape[0]; ++i) {
+            for (isize i = 0; i < shape[0]; ++i) {
                 func(omp_get_thread_num(), i);
             }
         } else if constexpr (N == 2) {
             #pragma omp parallel for num_threads(n_threads) collapse(2)
-            for (i64 i = 0; i < shape[0]; ++i) {
-                for (i64 j = 0; j < shape[1]; ++j) {
+            for (isize i = 0; i < shape[0]; ++i) {
+                for (isize j = 0; j < shape[1]; ++j) {
                     func(omp_get_thread_num(), i, j);
                 }
             }
