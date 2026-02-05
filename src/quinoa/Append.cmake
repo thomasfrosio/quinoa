@@ -5,7 +5,7 @@ set(QUINOA_HEADERS
     src/quinoa/Logger.hpp
     src/quinoa/Metadata.hpp
     src/quinoa/Optimizer.hpp
-    src/quinoa/PostProcessing.hpp
+    src/quinoa/Reconstruct.hpp
     src/quinoa/Settings.hpp
     src/quinoa/SplineCurve.hpp
     src/quinoa/SplineGrid.hpp
@@ -25,6 +25,7 @@ set(QUINOA_HEADERS
     src/quinoa/ctf/Patches.hpp
     src/quinoa/ctf/Simulate.hpp
     src/quinoa/ctf/Thickness.hpp
+
 )
 
 set(QUINOA_SOURCES_CXX
@@ -38,7 +39,7 @@ set(QUINOA_SOURCES_UNIFIED
     src/quinoa/Entry.cpp
     src/quinoa/ExcludeViews.cpp
     src/quinoa/Plot.cpp
-    src/quinoa/PostProcessing.cpp
+    src/quinoa/Reconstruct.cpp
     src/quinoa/Stack.cpp
     src/quinoa/Thickness.cpp
 
@@ -52,4 +53,5 @@ set(QUINOA_SOURCES_UNIFIED
     src/quinoa/ctf/Coarse.cpp
     src/quinoa/ctf/Patches.cpp
     src/quinoa/ctf/Refine.cpp
+
 )

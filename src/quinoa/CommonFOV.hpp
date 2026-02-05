@@ -46,6 +46,7 @@ namespace qn {
             const auto mv = smooth_edge(local_coordinates[1], local_smoothness[1]);
             return mu * mv;
         }
+
         template<nt::integer T>
         NOA_HD auto operator()(const T& h, const T& w) const -> value_type {
             return (*this)(vec_type::from_values(h, w));

@@ -32,6 +32,7 @@ namespace qn {
 
     class AlignmentCoarse {
     public:
+        AlignmentCoarse() = default;
         AlignmentCoarse(
             const Shape4& shape,
             Device device

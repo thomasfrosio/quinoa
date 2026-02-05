@@ -32,7 +32,7 @@ namespace qn {
             /// Pre- and post-exposure, in e-/A2.
             Vec<f64, 2> exposure{};
 
-            /// Phase shift, in degrees.
+            /// Phase shift, in radians.
             f64 phase_shift{};
 
             /// Astigmatic defocus.

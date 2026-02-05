@@ -49,6 +49,11 @@ namespace {
             "alignment.ctf.fit_astigmatism"sv,
             "alignment.ctf.fit_thickness"sv,
             "alignment.refine.run"sv,
+            "alignment.refine.correct_ctf"sv,
+            "alignment.refine.phase_flip_strength"sv,
+            "alignment.refine.fit_rotation"sv,
+            "alignment.refine.fit_tilt"sv,
+            "alignment.refine.fit_pitch"sv,
             "alignment.refine.fit_thickness"sv,
             "postprocessing.run"sv,
             "postprocessing.resolution"sv,
@@ -60,7 +65,9 @@ namespace {
             "postprocessing.tomogram.correct_rotation"sv,
             "postprocessing.tomogram.interpolation"sv,
             "postprocessing.tomogram.dtype"sv,
-            "postprocessing.tomogram.oversample"sv,
+            "postprocessing.tomogram.algorithm"sv,
+            "postprocessing.tomogram.oversampling_factor"sv,
+            "postprocessing.tomogram.ramp_filter"sv,
             "postprocessing.tomogram.correct_ctf"sv,
             "postprocessing.tomogram.z_padding_percent"sv,
             "postprocessing.tomogram.phase_flip_strength"sv,
@@ -118,6 +125,8 @@ namespace {
             return nx::Interp::LINEAR;
         if (stack_interp == "cubic-bspline")
             return nx::Interp::CUBIC_BSPLINE;
+        if (stack_interp == "lanczos")
+            return nx::Interp::LANCZOS6;
         panic(R"({} should be "linear" or "cubic-bspline", but got "{}")", name, stack_interp);
     }
 
@@ -259,7 +268,16 @@ namespace {
         alignment.ctf_fit_thickness = parse_boolean_("alignment.ctf.fit_thickness", table, false);
 
         alignment.refine_run = parse_boolean_("alignment.refine.run", table, true);
+        alignment.refine_correct_ctf = parse_boolean_("alignment.refine.correct_ctf", table, true);
+        alignment.refine_fit_rotation = parse_boolean_("alignment.refine.fit_rotation", table, true);
+        alignment.refine_fit_tilt = parse_boolean_("alignment.refine.fit_tilt", table, true);
+        alignment.refine_fit_pitch = parse_boolean_("alignment.refine.fit_pitch", table, true);
         alignment.refine_fit_thickness = parse_boolean_("alignment.refine.fit_thickness", table, true);
+
+        alignment.refine_phase_flip_strength = parse_number_("alignment.refine.phase_flip_strength", table, 8.);
+        check(alignment.refine_phase_flip_strength >= 0 and alignment.refine_phase_flip_strength <= 10,
+              "postprocessing:tomogram_phase_flip_strength should be between 0 and 10, but got {}",
+              alignment.refine_phase_flip_strength);
 
         return alignment;
     }
@@ -278,15 +296,21 @@ namespace {
         postprocessing.tomogram_correct_rotation = parse_boolean_("postprocessing.tomogram.correct_rotation", table, true);
         postprocessing.tomogram_interpolation = parse_interp("postprocessing.tomogram.interpolation", table, "linear");
         postprocessing.tomogram_dtype = parse_dtype("postprocessing.tomogram.dtype", table, "f32");
-        postprocessing.tomogram_oversample = parse_boolean_("postprocessing.tomogram.oversample", table, false);
+        postprocessing.tomogram_oversampling_factor = parse_number_("postprocessing.tomogram.oversampling_factor", table, 2);
+        postprocessing.tomogram_ramp_filter = parse_boolean_("postprocessing.tomogram.ramp_filter", table, true);
         postprocessing.tomogram_correct_ctf = parse_boolean_("postprocessing.tomogram.correct_ctf", table, true);
+
+        postprocessing.tomogram_algorithm = parse_string_("postprocessing.tomogram.algorithm", table, "fourier-wbp");
+        check(postprocessing.tomogram_algorithm == "fourier-wbp" or postprocessing.tomogram_algorithm == "real-bp",
+              "postprocessing.tomogram_algorithm should be 'fourier-wbp' or 'real-bp', but got '{}'",
+              postprocessing.tomogram_algorithm);
 
         postprocessing.tomogram_z_padding_percent = parse_number_("postprocessing.tomogram.z_padding_percent", table, 10.);
         check(postprocessing.tomogram_z_padding_percent >= 0 and postprocessing.tomogram_z_padding_percent <= 200,
               "postprocessing:tomogram_z_padding_percent should be between 0 and 200, but got {}",
               postprocessing.tomogram_z_padding_percent);
 
-        postprocessing.tomogram_phase_flip_strength = parse_number_("postprocessing.tomogram.phase_flip_strength", table, 8);
+        postprocessing.tomogram_phase_flip_strength = parse_number_("postprocessing.tomogram.phase_flip_strength", table, 8.);
         check(postprocessing.tomogram_phase_flip_strength >= 0 and postprocessing.tomogram_phase_flip_strength <= 10,
               "postprocessing:tomogram_phase_flip_strength should be between 0 and 10, but got {}",
               postprocessing.tomogram_phase_flip_strength);

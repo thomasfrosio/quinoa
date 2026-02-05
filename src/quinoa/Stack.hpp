@@ -18,14 +18,14 @@ namespace qn {
         i64 rescale_max_size{0};
 
         // Signal processing after cropping:
-        bool exposure_filter{false};
-        noa::signal::Bandpass bandpass{
+        ns::Bandpass bandpass{
             .highpass_cutoff = 0.10,
             .highpass_width = 0.10,
             .lowpass_cutoff = 0.45,
             .lowpass_width = 0.05,
         };
         f64 bandpass_mirror_padding_factor{0};
+        f64 exposure_filter_voltage{0}; // kV, 0 turns off the exposure filter
 
         // Image processing after cropping:
         bool normalize_and_standardize{true};
@@ -45,7 +45,10 @@ namespace qn {
         /// If the file doesn't exist, it will throw an exception.
         StackLoader(const Path& filename, const LoadStackParameters& parameters);
 
-        void read_slice(const View<f32>& output_slice, isize file_slice_index, bool cache = false);
+        /// Loads and preprocess the slice.
+        /// \note If an image exists in the cache at the given file_slice_index, it is used regardless of the given
+        ///       exposure. In other words, when caching images, the exposure is assumed to be unchanged (or ignored).
+        void read_slice(const View<f32>& output_slice, isize file_slice_index, bool cache = false, f64 exposure = 0);
 
         /// Loads the slices in "stack" in the same order as the order of the slices in "metadata".
         /// The .index field of the slices in "metadata" are reset to the [0..n) range.

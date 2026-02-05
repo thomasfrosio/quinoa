@@ -92,13 +92,13 @@ namespace qn {
             .rescale_target_resolution = 20.,
             .rescale_min_size = 512,
             .rescale_max_size = 1024,
-            .exposure_filter = false,
             .bandpass{
                 .highpass_cutoff = 0.01,
                 .highpass_width = 0.01,
                 .lowpass_cutoff = 0.5,
                 .lowpass_width = 0.05,
             },
+            .exposure_filter_voltage = 0, // off
             .normalize_and_standardize = false,
             .smooth_edge_percent = 0.,
             .zero_pad_to_fast_fft_shape = false,

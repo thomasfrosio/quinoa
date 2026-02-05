@@ -81,10 +81,10 @@ namespace {
         // the target spacing isotropic within a maximum_relative_error.
         auto pad_to_align_cutoff = [maximum_relative_error](i64 i_size, f64 i_spacing, f64 o_spacing) -> i64
         {
-            isize MAXIMUM_SIZE = i_size + 256; // in all tested cases, we stop way before that (~0 to 6)
+            const isize maximum_size = i_size + 256; // in all tested cases, we stop way before that (~0 to 6)
             isize best_size = i_size;
             f64 best_error = std::numeric_limits<f64>::max();
-            while (i_size < MAXIMUM_SIZE) {
+            while (i_size < maximum_size) {
                 const auto new_size = std::round(static_cast<f64>(i_size) * i_spacing / o_spacing);
                 const auto new_spacing = i_spacing * static_cast<f64>(i_size) / new_size;
                 const auto relative_error = std::abs(new_spacing - o_spacing) / o_spacing;
@@ -132,6 +132,51 @@ namespace {
             .rescale_shifts = shift_to_add,
         };
     }
+
+    struct Filter {
+        SpanContiguous<f32, 2, i32> spectrum;
+
+        f32 highpass_cutoff;
+        f32 highpass_width;
+        f32 lowpass_cutoff;
+        f32 lowpass_width;
+
+        f32 exposure;
+        f32 spacing;
+        f32 k;
+
+        constexpr void operator()(i32 u, i32 v) const {
+            const auto& shape = spectrum.shape();
+            const auto frequency = nf::index2frequency<false, true>(Vec{u, v}, shape);
+            const auto fftfreq_2d = frequency.as<f32>() / shape.vec.as<f32>();
+            const auto fftfreq = sqrt(dot(fftfreq_2d, fftfreq_2d));
+
+            auto filter = f32{1};
+
+            // Bandpass.
+            constexpr auto PI = noa::Constant<f32>::PI;
+            filter *=
+                fftfreq <= lowpass_cutoff ? 1 :
+                lowpass_cutoff + lowpass_width <= fftfreq ? 0 :
+                (1.f + cos(PI * (lowpass_cutoff - fftfreq) / lowpass_width)) * 0.5f;
+            filter *=
+                highpass_cutoff <= fftfreq ? 1 :
+                fftfreq <= highpass_cutoff - highpass_width ? 0 :
+                (1.f + cos(PI * (fftfreq - highpass_cutoff) / highpass_width)) * 0.5f;
+
+            // Exposure filter.
+            if (exposure > 0) {
+                // DOI:10.7554/eLife.06980
+                constexpr f32 A = +0.24499f;
+                constexpr f32 B = -1.6649f;
+                constexpr f32 C = +2.8141f;
+                const f32 c0 = k * (A * pow(fftfreq * fftfreq / spacing, B) + C);
+                filter *= exp(-0.5f * exposure / c0);
+            }
+
+            spectrum(u, v) *= filter;
+        }
+    };
 }
 
 namespace qn {
@@ -187,6 +232,7 @@ namespace qn {
         m_input_slice_shape = file_shape.filter(2, 3);
 
         const auto options = ArrayOption(parameters.compute_device, parameters.allocator);
+        const auto bytes_before = Allocator::bytes_currently_allocated(options.device);
 
         // Reading the file.
         const auto input_shape = m_input_slice_shape.push_front<2>(1);
@@ -232,9 +278,11 @@ namespace qn {
             m_output_slice_shape[1] = noa::fft::next_fast_size(m_output_slice_shape[1]);
         }
 
+        const auto bytes_after = Allocator::bytes_currently_allocated(options.device);
+        const auto bytes_allocated = static_cast<f64>(bytes_after - bytes_before) * 1e-6;
         Logger::trace(
             "Stack loader:\n"
-            "  compute_device={}\n"
+            "  device={} (allocated={:.1f}MB, {})\n"
             "  exposure_filter={}\n"
             "  normalize={} (mean=0, stddev=1)\n"
             "  zero_taper={:.1f}%\n"
@@ -244,8 +292,8 @@ namespace qn {
             "  cropped_shape={} (rescale_shift={::.3f})\n"
             "  bandpass_shape={} (mirror_padding_factor={:.2f})\n"
             "  output_shape={}  (spacing={::.3f}, fast_shape={})",
-            parameters.compute_device,
-            parameters.exposure_filter,
+            parameters.compute_device, bytes_allocated, options.allocator,
+            parameters.exposure_filter_voltage > 0,
             parameters.normalize_and_standardize,
             parameters.smooth_edge_percent * 100.,
             file_shape[0],
@@ -258,7 +306,7 @@ namespace qn {
         );
     }
 
-    void StackLoader::read_slice(const View<f32>& output_slice, isize file_slice_index, bool cache) {
+    void StackLoader::read_slice(const View<f32>& output_slice, isize file_slice_index, bool cache, f64 exposure) {
         check(output_slice.device() == compute_device());
         check(output_slice.shape() == m_output_slice_shape.push_front<2>(1));
         check(file_slice_index < m_file_slice_count,
@@ -286,6 +334,24 @@ namespace qn {
         const bool needs_smooth_edge = m_parameters.smooth_edge_percent > 0;
         const bool needs_final_zero_pad = m_cropped_slice_shape != m_output_slice_shape;
 
+        // Bandpass and exposure filter.
+        // The exposure filter is essentially a very smooth lowpass that increases with the exposure.
+        // For 10A resolution, the filter is ~0.24 at Nyquist.
+        auto filter = Filter{
+            .spectrum = {}, // initialize below
+            .highpass_cutoff = static_cast<f32>(m_parameters.bandpass.highpass_cutoff),
+            .highpass_width = static_cast<f32>(m_parameters.bandpass.highpass_width),
+            .lowpass_cutoff = static_cast<f32>(m_parameters.bandpass.lowpass_cutoff),
+            .lowpass_width = static_cast<f32>(m_parameters.bandpass.lowpass_width),
+            .exposure = static_cast<f32>(exposure),
+            .spacing = static_cast<f32>(mean(m_output_spacing)), // isotropic, small deviations would have any significance
+            .k =
+                noa::allclose(m_parameters.exposure_filter_voltage, 300.) ? 1 :
+                noa::allclose(m_parameters.exposure_filter_voltage, 200.) ? 0.8f :
+                noa::allclose(m_parameters.exposure_filter_voltage, 120.) ? 0.45f :
+                1,
+        };
+
         // Read the slice, transfer to the compute device, and precision pad if necessary.
         read_slice_and_precision_pad_(file_slice_index, padded_slice);
 
@@ -293,8 +359,12 @@ namespace qn {
         nf::r2c(padded_slice, padded_slice_rfft);
         nf::resize<"h">(padded_slice_rfft, padded_shape, cropped_slice_rfft, cropped_shape);
         ns::phase_shift_2d<"h">(cropped_slice_rfft, cropped_slice_rfft, cropped_shape, m_rescale_shift.as<f32>());
-        if (not needs_mirror_pad) // no padding was asked for the bandpass, so we can do it here
-            ns::bandpass<"h">(cropped_slice_rfft, cropped_slice_rfft, cropped_shape, m_parameters.bandpass);
+        if (not needs_mirror_pad) {
+            // No padding was asked for the bandpass, so we can do it here.
+            const auto iwise_shape = cropped_slice_rfft.shape().filter(2, 3).as<i32>();
+            filter.spectrum = cropped_slice_rfft.span_contiguous<f32, 2, i32>();
+            noa::iwise(iwise_shape, cropped_slice_rfft.device(), filter);
+        }
         nf::c2r(cropped_slice_rfft, cropped_slice);
 
         // Optimize resizes and transfers as much as possible.
@@ -317,7 +387,11 @@ namespace qn {
 
             noa::resize(cropped_slice, bandpass_slice, noa::Border::REFLECT);
             nf::r2c(bandpass_slice, bandpass_slice_rfft);
-            ns::bandpass<"h">(bandpass_slice_rfft, bandpass_slice_rfft, bandpass_shape, m_parameters.bandpass);
+
+            const auto iwise_shape = bandpass_slice_rfft.shape().filter(2, 3).as<i32>();
+            filter.spectrum = bandpass_slice_rfft.span_contiguous<f32, 2, i32>();
+            noa::iwise(iwise_shape, bandpass_slice_rfft.device(), filter);
+
             nf::c2r(bandpass_slice_rfft, bandpass_slice);
             noa::resize(bandpass_slice, direct_bandpass_to_output ? output_slice : cropped_slice);
         }
@@ -398,7 +472,7 @@ namespace qn {
         auto timer = Logger::trace_scope_time("Loading the stack");
         // noa::Session::set_fft_cache_limit(4); // FIXME
         for (i32 batch{}; auto& image: metadata) {
-            read_slice(stack.subregion(batch), image.index_file);
+            read_slice(stack.subregion(batch), image.index_file, false, image.exposure[1]);
             image.index = batch; // reset order of the slices in the stack.
             ++batch;
         }

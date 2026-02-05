@@ -21,9 +21,12 @@ namespace qn {
 
     struct RefineAlignmentSettings {
         Device compute_device;
-        f64 maximum_resolution;
+        bool correct_ctf;
+        f64 phase_flip_strength;
+        bool fit_thickness;
         bool fit_rotation_offset;
         bool fit_tilt_offset;
+        bool fit_pitch_offset;
         Path output_directory;
     };
     void refine_alignment(

@@ -1,8 +1,8 @@
 [files]
 
-#stack_file = '~/Datasets/10304/tilt5.mrc'
+#stack_file = '~/Datasets/10304/tilt1_ali.mrc'
 #mdoc_file = '~/Datasets/10304/file.mdoc'
-#output_directory = '~/Tmp/quinoa/10304/003'
+#output_directory = '~/Tmp/quinoa/10304/pm003'
 #frames_directory = '~/Datasets/10304/frames'
 #star_file = '~/Tmp/quinoa/10304/001/tilt5.star'
 
@@ -11,23 +11,39 @@
 #output_directory = '~/Tmp/quinoa/12104/004'
 #star_file = '~/Tmp/quinoa/12104/002/TS_006.star'
 
-stack_file = '~/Datasets/12463/TS_001.mrc'
-mdoc_file = '~/Datasets/12463/TS_001.mrc.mdoc'
-output_directory = '~/Tmp/quinoa/12463/002'
+#stack_file = '~/Datasets/12463/TS_001.mrc'
+#mdoc_file = '~/Datasets/12463/TS_001.mrc.mdoc'
+#output_directory = '~/Tmp/quinoa/12463/002'
 #star_file = '~/Tmp/quinoa/12463/001/TS_001.star'
 
+#stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/kyprianos/Position_1_2_stack_445_flipy_xrayremoved.mrc'
+#mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/kyprianos/Position_1_2_stack_445_flipy_xrayremoved.mdoc'
+#star_file = '/dls/ebic/data/staff-scratch/thomas2/tmp/quinoa/kyprianos/100/Position_1_2_stack_445_flipy_xrayremoved.star'
+#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/quinoa/kyprianos/102'
+
+stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/10304/tilt1.mrc'
+mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/10304/tilt1.mdoc'
+output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/quinoa/10304/pm20'
+star_file = '/dls/ebic/data/staff-scratch/thomas2/tmp/quinoa/10304/pm00/tilt1.star'
+
+#stack_file = '~/Datasets/kyprianos/Position_1_2_stack_445_flipy_xrayremoved.mrc'
+#mdoc_file = '~/Datasets/kyprianos/Position_1_2_stack_445_flipy_xrayremoved.mdoc'
+#star_file = '~/Datasets/kyprianos/Position_1_2_stack_445_flipy_xrayremoved.star'
+#output_directory = '~/Tmp/quinoa/kyprianos/test_peak2'
+
+
 [experiment]
-#tilt_axis = 85.4
+#tilt_axis = 175.2361
 #add_specimen_tilt = 0
 #add_specimen_pitch = 0
 #voltage = 300
 #amplitude = 0.07
 #cs = 2.7
 #phase_shift = 0
-#thickness = 350
+thickness = 80
 
 [preprocessing]
-run = true
+run = false
 exclude_blank_views = true
 exclude_stack_images = []
 
@@ -49,26 +65,35 @@ fit_astigmatism = true
 fit_thickness = false
 
 [alignment.refine]
-run = false
+run = true
+correct_ctf = true
+phase_flip_strength = 8
+fit_rotation = false
+fit_tilt = true
+fit_pitch = true
 fit_thickness = false
 
 [postprocessing]
 run = false
-resolution = 20
+resolution = 16
 
 stack.run = true
-stack.correct_rotation = true
+stack.correct_rotation = false
 stack.interpolation = 'linear'
 stack.dtype = 'f16'
 
-tomogram.run = false
+tomogram.run = true
 tomogram.correct_rotation = true
-tomogram.interpolation = 'linear'
 tomogram.dtype = 'f16'
-tomogram.oversample = false
+
+tomogram.algorithm = 'fourier-wbp' # or real-wp
+tomogram.interpolation = 'linear'
+tomogram.oversampling_factor = 4
+tomogram.ramp_filter = false
+
 tomogram.correct_ctf = true
 tomogram.z_padding_percent = 10
-tomogram.phase_flip_strength = 8
+tomogram.phase_flip_strength = 0.7
 
 [compute]
 device = 'auto'

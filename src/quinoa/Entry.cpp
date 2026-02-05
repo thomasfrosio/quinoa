@@ -2,7 +2,6 @@
 #include <noa/Session.hpp>
 #include <noa/Signal.hpp>
 
-#include "Plot.hpp"
 #include "quinoa/align/Align.hpp"
 #include "quinoa/ctf/CTF.hpp"
 
@@ -12,12 +11,33 @@
 #include "quinoa/Settings.hpp"
 #include "quinoa/Stack.hpp"
 #include "quinoa/Thickness.hpp"
-#include "quinoa/PostProcessing.hpp"
+#include "quinoa/Reconstruct.hpp"
 
-// #include "quinoa/Tests.hpp"
+namespace {
+    using namespace qn;
 
-auto process_tilt_series() {
-
+    // auto test01() {
+    //     const auto spacing = 0.2;
+    //     const auto angles = noa::deg2rad(Vec{0., 60., 60.});
+    //     const auto plane_rotation = ( // TODO check
+    //         nx::rotate_z(angles[0]) *
+    //         nx::rotate_y(angles[1]) *
+    //         nx::rotate_x(angles[2])
+    //     );
+    //     const auto plane_normal = (plane_rotation * Vec{1., 0., 0.}).as<f32>();
+    //
+    //     auto image = Array<f32>({1, 1, 100, 100});
+    //     auto span = image.span_contiguous<f32, 2>();
+    //     noa::iwise(span.shape(), image.device(), [&](Vec<isize, 2> indices) {
+    //         auto coordinates = indices.as<f32>() - (image.shape().filter(2, 3).vec / 2).as<f32>();
+    //         const auto& [c, b, a] = plane_normal;
+    //         const auto volume_z_coordinate = -(a * coordinates[1] + b * coordinates[0]) / c;
+    //         const auto volume_z_coordinate_nm = volume_z_coordinate * 1;
+    //         span(indices) = volume_z_coordinate_nm;
+    //     });
+    //
+    //     noa::write_image(image, "~/Tmp/image_z.mrc");
+    // }
 }
 
 auto main(int argc, char* argv[]) -> int {
@@ -48,41 +68,8 @@ auto main(int argc, char* argv[]) -> int {
         auto metadata = Metadata::load_from_settings(settings);
         const auto basename = settings.files.stack_file.stem().string();
 
-        // tests::test_ctf_grid();
-        // tests::simulate_tilt_series();
-        // tests::test_stage_leveling();
-        // tests::test_find_shifts();
-        // tests::test_star_file();
-        // tests::test_common_fov2();
-        // tests::test_image_cross_correlation();
-        // tests::test_frc();
-        {
-            auto shape = Shape4{1,1,1,1024};
-            auto spectrum = Array<f32>(shape.rfft());
-            auto ctf = CTFIsotropic64({
-                .pixel_size = 5,
-                .defocus = 3.5,
-                .voltage = 300.,
-                .amplitude = 0.07,
-                .cs = 2.7,
-                .phase_shift = 0.,
-                .bfactor = 0.,
-                .scale = 1.,
-            });
-            auto sum = noa::zeros<f32>(shape.rfft());
-            f32 c{};
-            f64 defocus = 3.5;
-            for (f64 d{0}; d < 0.3; d += 0.01) {
-                ctf.set_defocus(defocus + d);
-                ns::ctf_isotropic<"h">(spectrum, shape, ctf);
-                noa::ewise(spectrum, sum, [](f32 s, f32& o) { o += s; });
-                ++c;
-            }
-            noa::ewise({}, sum, [&](f32& o) { o /= c; });
-            save_plot_xy(noa::Linspace{0., 0.5, true}, sum, settings.files.output_directory / "ctf_spectrum.txt");
-            panic();
-        }
-        // return 0;
+        // test01();
+        // return EXIT_SUCCESS;
 
         // Register the input stack. The application loads the input stack many times. To save computation,
         // load the stack to memory once and save it inside a static array. The StackLoader will
@@ -110,7 +97,7 @@ auto main(int argc, char* argv[]) -> int {
                 detect_and_exclude_blank_views(
                     settings.files.stack_file, metadata.stack, {
                         .compute_device = settings.compute.device,
-                        .output_directory = settings.files.output_directory,
+                        .output_directory = settings.files.output_directory / "diagnostics" / "preprocessing",
                     });
             }
         }
@@ -140,7 +127,7 @@ auto main(int argc, char* argv[]) -> int {
 
                         .patch_size_ang = 680,
                         .n_images_in_initial_average = 3,
-                        .resolution_range = {30, 4.}, // FIXME 4.5
+                        .resolution_range = {30, 4.}, // TODO 4.5?
                         .fit_phase_shift = settings.alignment.ctf_fit_phase_shift,
                         .fit_astigmatism = settings.alignment.ctf_fit_astigmatism,
                         .fit_thickness = settings.alignment.ctf_fit_thickness,
@@ -157,10 +144,13 @@ auto main(int argc, char* argv[]) -> int {
                 refine_alignment(
                     settings.files.stack_file, metadata, {
                         .compute_device = settings.compute.device,
-                        .maximum_resolution = 12.,
-                        .fit_rotation_offset = settings.alignment.coarse_fit_rotation,
-                        .fit_tilt_offset = settings.alignment.coarse_fit_tilt,
-                        .output_directory = settings.files.output_directory,
+                        .correct_ctf = settings.alignment.refine_correct_ctf,
+                        .phase_flip_strength = settings.alignment.refine_phase_flip_strength,
+                        .fit_thickness = settings.alignment.refine_fit_thickness,
+                        .fit_rotation_offset = settings.alignment.refine_fit_rotation,
+                        .fit_tilt_offset = settings.alignment.refine_fit_tilt,
+                        .fit_pitch_offset = settings.alignment.refine_fit_pitch,
+                        .output_directory = settings.files.output_directory / "diagnostics" / "refine",
                     }
                 );
             }
@@ -174,27 +164,29 @@ auto main(int argc, char* argv[]) -> int {
         // Postprocessing.
         if (settings.postprocessing.run) {
             auto scope_timer = Logger::status_scope_time("Postprocessing");
-            post_processing(settings.files.stack_file, metadata,
-                {
-                    .compute_device = settings.compute.device,
-                    .target_resolution = settings.postprocessing.resolution,
-                    .min_size = 512,
-                    .output_directory = settings.files.output_directory,
-                }, {
-                    .save_aligned_stack = settings.postprocessing.stack_run,
-                    .correct_rotation = settings.postprocessing.stack_correct_rotation,
-                    .interp = settings.postprocessing.stack_interpolation,
-                    .dtype = settings.postprocessing.stack_dtype,
-                }, {
-                    .save_tomogram = settings.postprocessing.tomogram_run,
-                    .correct_ctf = settings.postprocessing.tomogram_correct_ctf,
-                    .phase_flip_strength = settings.postprocessing.tomogram_phase_flip_strength,
-                    .defocus_step_nm = 15,
-                    .z_padding_percent = settings.postprocessing.tomogram_z_padding_percent / 100,
-                    .correct_rotation = settings.postprocessing.tomogram_correct_rotation,
-                    .oversample = settings.postprocessing.tomogram_oversample,
-                    .interp = settings.postprocessing.tomogram_interpolation,
-                    .dtype = settings.postprocessing.tomogram_dtype,
+            post_processing(settings.files.stack_file, metadata, {
+                .compute_device = settings.compute.device,
+                .target_resolution = settings.postprocessing.resolution,
+                .min_size = 512,
+                .output_directory = settings.files.output_directory,
+                .save_aligned_stack = settings.postprocessing.stack_run,
+                .stack_dtype = settings.postprocessing.stack_dtype,
+                .stack_correct_rotation = settings.postprocessing.stack_correct_rotation,
+                .stack_interp = settings.postprocessing.stack_interpolation,
+
+                .save_tomogram = settings.postprocessing.tomogram_run,
+                .tomogram_dtype = settings.postprocessing.tomogram_dtype,
+            }, {
+                .ramp_filter = settings.postprocessing.tomogram_ramp_filter,
+                .correct_ctf = settings.postprocessing.tomogram_correct_ctf,
+                .phase_flip_strength = settings.postprocessing.tomogram_phase_flip_strength,
+                .defocus_step_nm = 15,
+            }, {
+                .algorithm = settings.postprocessing.tomogram_algorithm,
+                .z_padding_percent = settings.postprocessing.tomogram_z_padding_percent / 100,
+                .correct_rotation = settings.postprocessing.tomogram_correct_rotation,
+                .oversampling_factor = settings.postprocessing.tomogram_oversampling_factor,
+                .interp = settings.postprocessing.tomogram_interpolation,
             });
         }
     } catch (...) {

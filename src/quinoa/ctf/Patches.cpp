@@ -89,7 +89,7 @@ namespace qn::ctf {
             wedges_phi_range = noa::Linspace{0., noa::Constant<f64>::PI, false};
             patches_polar = Array<f32>({grid.n_patches(), 1, target_phi_size, polar_width}, options);
             patches_polar_bin = patches_polar.view();
-            wedges_fmt = fmt::format("  phi=1 (initial={}, wedges=[180.0deg, size=180])\n", target_phi_size);
+            wedges_fmt = fmt::format("  phi=1 (initial={}, wedges=[180.0deg, size=180])\n", target_phi_size); // FIXME
 
         } else {
             const auto wedge_step = 180. / static_cast<f64>(n_wedges);

@@ -17,37 +17,6 @@ namespace {
 
     Path debug_dir;
 
-    template<usize N = 192>
-    struct BitMask {
-        static_assert(noa::is_multiple_of(N, 8));
-        static constexpr usize WORD_COUNT = 32;
-        static constexpr usize N_WORDS = N / 32;
-        u32 buffer[N_WORDS]{};
-
-        struct Ref {
-            u32& word;
-            u32 mask;
-
-            constexpr explicit operator bool() const { return (word & mask) != 0; }
-            constexpr auto operator=(bool value) -> Ref& {
-                if (value) word |= mask; else word &= ~mask;
-                return *this;
-            }
-        };
-
-        constexpr auto operator[](nt::integer auto i) const -> bool {
-            noa::bounds_check(N, i);
-            const u32 data = buffer[i / 32];
-            const u32 mask = 1 << (i % 32);
-            return data & mask;
-        }
-
-        constexpr auto operator[](nt::integer auto i) noexcept -> Ref {
-            noa::bounds_check(N, i);
-            return Ref{buffer[i / 32], 1u << (i % 32)};
-        }
-    };
-
     auto is_reference_included(
         const Metadata::Image& target,
         const Metadata::Image& candidate_reference,
@@ -59,11 +28,13 @@ namespace {
     // This is only used for the Fourier extraction step.
     // Given the iwise-index w and the blackman window size, return the fftfreq offset. For instance,
     // window_size=9: w=[0..8] -> [-0.2,-0.15,-0.1,-0.05,0.,0.05,0.1,0.15,0.2]
-    template<nt::integer Int, nt::real Coord>
-    constexpr NOA_FHD Coord w_index_to_fftfreq_offset(Int w, Int window_size, Coord spectrum_size) {
-        return static_cast<Coord>(w - window_size / 2) / spectrum_size;
+    template<nt::integer I, nt::real T>
+    constexpr NOA_FHD auto w_index_to_fftfreq_offset(I w, I window_size, T spectrum_size) -> T {
+        return static_cast<T>(w - window_size / 2) / spectrum_size;
     }
 
+    // Windowed-sinc. This function assumes fftfreq <= fftfreq_blackman,
+    // above that the blackman window will start again.
     template<bool FAST = false, typename T>
     NOA_FHD auto windowed_sinc_at(T fftfreq, T fftfreq_sinc, T fftfreq_blackman) -> T {
         // https://www.desmos.com/calculator/tu5b8aqg2e
@@ -86,57 +57,91 @@ namespace {
         return sinc * blackman;
     }
 
+    // Odd-sized blackman window for the sampling of the central-slice.
+    template<nt::integer I, nt::real T>
+    auto blackman_window_size(T fftfreq_blackman, T spectrum_size) -> I {
+        // Given a blackman window in range [0, fftfreq_blackman] and a spectrum logical-size
+        // (the z size in our case), what is the size of the blackman window, in elements.
+        // For instance:
+        //  spectrum_size=10, fftfreq_blackman=0.23
+        //  rfftfreq=[0.,0.05,0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5]
+        //  rfftfreq_samples=4.6->5, window_size=11
+        //  computed_window=[-0.25,-0.2,-0.15,-0.1,-0.05,0.,0.05,0.1,0.15,0.2,0.25]
+        auto rfftfreq_samples = static_cast<f64>(spectrum_size) * static_cast<f64>(fftfreq_blackman);
+        if (noa::allclose(rfftfreq_samples, 1.)) {
+            // Due to floating-point precision errors, the default value (1/spectrum_size)
+            // may be slightly greater than 1. In this case, we really mean 1.
+            rfftfreq_samples = round(rfftfreq_samples);
+        } else {
+            rfftfreq_samples = ceil(rfftfreq_samples); // include last fraction
+        }
+        const auto rfftfreq_samples_int = std::max(I{1}, static_cast<I>(rfftfreq_samples));
+        auto window_size = 2 * (rfftfreq_samples_int) + 1;
+
+        // Truncate the edges because at these indexes, the window is 0, so there's no need to compute it.
+        // So using the same example, computed_window=[-0.2,-0.15,-0.1,-0.05,0.,0.05,0.1,0.15,0.2]
+        return window_size - 2;
+    }
+
+    // This is only used for the Fourier extraction step.
+    // Compute the sum of the z-window, so that it can be directly applied to the extracted values,
+    // thereby correcting for the multiplicity on the fly.
+    template<nt::integer Int, nt::real Real>
+    Pair<Int, Real> w_window_spec(Real fftfreq_sinc, Real fftfreq_blackman, Real spectrum_size) {
+        auto window_size = blackman_window_size<Int>(fftfreq_blackman, spectrum_size);
+        Real sum{};
+        for (Int i{}; i < window_size; ++i) {
+            const auto fftfreq = w_index_to_fftfreq_offset(i, window_size, spectrum_size);
+            sum += windowed_sinc_at(fftfreq, fftfreq_sinc, fftfreq_blackman);
+        }
+        return {window_size, sum};
+    }
+
     class Sampler {
     public:
         using input_span_type = SpanContiguous<const c32, 3, i32>;
-        using input_interp_type = nx::InterpolatorSpectrum<2, "hc2h", nx::Interp::LINEAR, input_span_type>;
+        using input_interp_type = nx::InterpolatorSpectrum<2, nf::Layout::H2H, nx::Interp::LINEAR, input_span_type>;
 
-        input_interp_type input_slices{};
-        i32 n_input_slices{};
+        input_interp_type reference_slices{};
+        SpanContiguous<c32, 2, i32> projected_slice{};
 
-        SpanContiguous<c32, 2, i32> output_slice{};
-        SpanContiguous<f32, 2, i32> output_weights{};
-
-        SpanContiguous<const f32, 1, i32> windowed_sinc{};
-        SpanContiguous<nx::Quaternion<f32>> insertion_inverse_rotation{};
-        Mat<f32, 3, 3> extraction_forward_rotation{};
+        SpanContiguous<const f32, 1, i32> w_windowed_sinc{};
+        SpanContiguous<const u8, 1, i32> reference_indices{};
+        SpanContiguous<const nx::Quaternion<f32>, 1, i32> reference_rotations{};
+        Mat<f32, 3, 3> target_rotation{};
         Vec<f32, 2> f_shape{};
-        BitMask<> reference_mask{};
 
         f32 volume_z{};
         f32 insert_fftfreq_sinc{};
         f32 insert_fftfreq_blackman{};
         i32 extract_blackman_size{};
 
-        [[nodiscard]] NOA_HD auto sample_input_slices(const Vec<f32, 3>& fftfreq_3d) const {
+        [[nodiscard]] NOA_HD auto sample_virtual_volume_at(const Vec<f32, 3>& fftfreq_3d) const {
             c32 value{};
             f32 weight{};
-            for (i32 i{}; i < n_input_slices; ++i) {
-                if (not reference_mask[i])
-                    continue; // this slice isn't included, skip it
-
+            for (i32 i{}; i < reference_indices.n_elements(); ++i) {
                 // Project the 3d frequency onto the input central-slice.
-                const auto fftfreq_3d_slice = insertion_inverse_rotation[i].rotate(fftfreq_3d);
+                const auto fftfreq_3d_slice = reference_rotations[i].rotate(fftfreq_3d);
                 const auto fftfreq_from_slice = fftfreq_3d_slice[0]; // distance along the normal
 
-                // Add the contribution of the central-slice if it affects the current frequency.
+                // If the slice affects the current frequency, add its contribution.
                 if (noa::abs(fftfreq_from_slice) < insert_fftfreq_blackman) {
                     const auto sinc = windowed_sinc_at<true>(
                         fftfreq_from_slice, insert_fftfreq_sinc, insert_fftfreq_blackman
                     );
                     const auto frequency_yx = fftfreq_3d_slice.pop_front() * f_shape;
-                    value += input_slices.interpolate_spectrum_at(frequency_yx, i) * sinc;
+                    value += reference_slices.interpolate_spectrum_at(frequency_yx, reference_indices[i]) * sinc;
                     weight += sinc;
                 }
             }
             return Pair{value, weight};
         }
 
-        NOA_HD constexpr void operator()(i32 y, i32 x) const {
+        NOA_HD void operator()(i32 v, i32 u) const {
             // Compute the 3d fftfreq within the volume.
-            const auto frequency_2d = nf::index2frequency<false, true>(Vec{y, x}, output_slice.shape());
+            const auto frequency_2d = nf::index2frequency<false, true>(Vec{v, u}, projected_slice.shape());
             const auto fftfreq_2d = frequency_2d.as<f32>() / f_shape;
-            const auto fftfreq_3d = extraction_forward_rotation * fftfreq_2d.push_front(0);
+            const auto fftfreq_3d = target_rotation * fftfreq_2d.push_front(0);
 
             c32 ovalue{};
             f32 oweight{};
@@ -150,106 +155,241 @@ namespace {
                     continue;
 
                 // Sample the virtual volume at the required fftfreq.
-                const auto [value, weight] = sample_input_slices(fftfreq_3d_w);
+                const auto [value, weight] = sample_virtual_volume_at(fftfreq_3d_w);
 
                 // z-windowed sinc.
-                const auto convolution_weight = windowed_sinc[w];
+                const auto convolution_weight = w_windowed_sinc[w];
                 ovalue += value * convolution_weight;
                 oweight += weight * convolution_weight;
             }
 
-            output_slice(y, x) = ovalue / noa::max(oweight, 1.f);
-            output_weights(y, x) = oweight;
+            // Weighted back-projection. Downweight frequencies that are sampled more than once.
+            projected_slice(v, u) = ovalue / noa::max(abs(oweight), 1.f);
         }
     };
 
-    struct WeightCorrection {
-        SpanContiguous<const f32, 2, i32> weights_padded_rfft{};
-        SpanContiguous<f32, 2, i32> target_rfft{};
+    struct PrepareReferenceAndTarget {
+        SpanContiguous<const f32, 3, i32> stack{};
+        SpanContiguous<f32, 2, i32> reference_padded{};
+        SpanContiguous<f32, 2, i32> target_padded{};
 
-        NOA_HD void operator()(const Vec<i32, 2>& indices) const {
-            // The weights are oversampled by 2 compared to the target.
-            // To get the weight at a given target frequency, a simple nearest-ish interpolation is fine.
-            const auto target_frequency = nf::index2frequency<true, true>(indices, target_rfft.shape());
-            const auto weight_frequency = target_frequency * 2;
-            const auto weight = weights_padded_rfft(weight_frequency);
+        ParallelogramMask reference_mask{};
+        ParallelogramMask target_mask{};
+        Vec<i32, 2> right_edge{};
+        i32 reference_index{};
+        i32 target_index{};
 
-            // Downweight the target at frequencies that aren't fully sampled in the projected reference.
-            target_rfft(indices) *= noa::min(weight, 1.f);
-        }
-    };
-
-    class Projector {
-    private:
-        View<f32> m_reference_padded;
-        View<c32> m_references_padded_rfft;
-        View<c32> m_projected_padded_rfft;
-        View<f32> m_weights_padded_rfft;
-        View<f32> m_target_and_projected;
-        View<c32> m_target_and_projected_rfft;
-        View<f32> m_image_buffer;
-        View<f32> m_xmap;
-        View<f32> m_xmap_centered;
-
-        isize m_n_references{};
-        Array<f32> m_windowed_sinc;
-        Array<nx::Quaternion<f32>> m_insertion_inverse_rotations;
-        Sampler m_sampler;
-        std::vector<Metadata::Image> m_references_metadata;
-
-    public:
-        Projector(
-            const Array<f32>& reference_padded,
-            const Array<c32>& references_padded_rfft,
-            const Array<c32>& projected_padded_rfft,
-            const Array<f32>& weights_padded_rfft,
-            const Array<f32>& target_and_projected,
-            const Array<c32>& target_and_projected_rfft,
-            const Array<f32>& image_buffer,
-            const Array<f32>& xmap,
-            const Array<f32>& xmap_centered,
-            const ProjectionMatchingParameters& parameters
-        ) :
-            m_reference_padded(reference_padded.view()),
-            m_references_padded_rfft(references_padded_rfft.view()),
-            m_projected_padded_rfft(projected_padded_rfft.view()),
-            m_weights_padded_rfft(weights_padded_rfft.view()),
-            m_target_and_projected(target_and_projected.view()),
-            m_target_and_projected_rfft(target_and_projected_rfft.view()),
-            m_image_buffer(image_buffer.view()),
-            m_xmap(xmap.view()),
-            m_xmap_centered(xmap_centered.view())
-        {
-            // Allocate for the quaternions encoding the 3d rotation of the input central-slices.
-            const auto device = references_padded_rfft.device();
-            const auto options = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
-            m_insertion_inverse_rotations = Array<nx::Quaternion<f32>>(references_padded_rfft.shape()[0], options);
-
-            // Prepare the w-windowed-sinc convolution filter.
-            const auto volume_z = static_cast<f64>(size_padded());
-            const auto& esinc = parameters.extraction_sinc;
-            const auto [extract_blackman_size, extract_window_total_weight] = nx::details::z_window_spec<i32>(
-                esinc.fftfreq_sinc, esinc.fftfreq_blackman, volume_z);
-
-            m_windowed_sinc = Array<f32>(extract_blackman_size, options);
-            for (i32 i{}; auto& e: m_windowed_sinc.span_1d()) {
-                const auto fftfreq_z_offset = nx::details::w_index_to_fftfreq_offset(i++, extract_blackman_size, volume_z);
-                const auto convolution_weight =
-                    nx::details::windowed_sinc(fftfreq_z_offset, esinc.fftfreq_sinc, esinc.fftfreq_blackman) /
-                    extract_window_total_weight;
-                e = static_cast<f32>(convolution_weight);
+        NOA_HD void operator()(i32 y, i32 x) const {
+            // If inside the padding, set to zero.
+            const auto indices = Vec{y, x};
+            if (indices.any_ge(right_edge)) {
+                reference_padded(indices) = 0;
+                target_padded(indices) = 0;
+                return;
             }
 
-            // Initialize the sampler.
-            const auto references = m_references_padded_rfft.span_contiguous<const c32, 3, i32>();
-            const auto shape_2d = shape_padded().pop_front<2>().as<i32>();
+            // Otherwise copy and apply the mask.
+            auto reference = reference_mask(y, x);
+            if (reference > 1e-6f)
+                reference *= stack(reference_index, y, x);
+            reference_padded(indices) = reference;
+
+            auto target = target_mask(y, x);
+            if (target > 1e-6f)
+                target *= stack(target_index, y, x);
+            target_padded(indices) = target;
+        }
+    };
+
+    struct PrepareTargetAndProjected {
+        SpanContiguous<const f32, 3, i32> target_and_projected_padded{};
+        SpanContiguous<f32, 3, i32> target_and_projected{};
+        ParallelogramMask target_mask{};
+
+        NOA_HD void operator()(i32 y, i32 x) const {
+            // Crop and apply the mask.
+            const auto mask = target_mask(y, x);
+            if (mask > 1e-6f) {
+                target_and_projected(0, y, x) = target_and_projected_padded(0, y, x) * mask;
+                target_and_projected(1, y, x) = target_and_projected_padded(1, y, x) * mask;
+            } else {
+                target_and_projected(0, y, x) = 0;
+                target_and_projected(1, y, x) = 0;
+            }
+        }
+    };
+
+    struct CrossCorrelate {
+        SpanContiguous<const c32, 2, i32> projected_rfft{};
+        SpanContiguous<c32, 2, i32> target_rfft{};
+
+        NOA_HD void operator()(i32 y, i32 x) const {
+            const auto frequency = nf::index2frequency<false, true>(Vec{y, x}, projected_rfft.shape().filter(0));
+            const auto phase_shift = static_cast<f32>(product(1 - 2 * abs(frequency % 2))); // shift by +shape/2
+
+            auto& lhs = target_rfft(y, x);
+            auto rhs = projected_rfft(y, x);
+
+            auto cc = lhs * conj(rhs);
+            cc /= noa::sqrt(abs(lhs) * abs(rhs)) + 1e-6f;
+            cc *= phase_shift;
+
+            // TODO bandpass?
+            lhs = cc;
+        }
+    };
+
+    template<typename T>
+    struct ZNCC {
+        SpanContiguous<const f32, 2, i32> lhs{};
+        SpanContiguous<const f32, 2, i32> rhs{};
+        ParallelogramMask mask{};
+
+        using reduced_type = Vec<T, 6>;
+
+        NOA_HD void init(i32 y, i32 x, reduced_type& reduced) {
+            const auto m = mask(y, x);
+            reduced[0] += static_cast<T>(lhs(y, x) * m);
+            reduced[1] += static_cast<T>(rhs(y, x) * m);
+            reduced[2] += static_cast<T>(m);
+            reduced[3] += reduced[0] * reduced[0];
+            reduced[4] += reduced[1] * reduced[1];
+            reduced[5] += reduced[0] * reduced[1];
+        }
+
+        static NOA_HD void join(const reduced_type& reduced, reduced_type& joined) {
+            joined += reduced;
+        }
+
+        using remove_default_final = bool;
+        static NOA_HD void final(const reduced_type& stats, f64& zncc) {
+            const auto denom_x = stats[3] - (stats[0] * stats[0]) / stats[2];
+            const auto denom_y = stats[4] - (stats[1] * stats[1]) / stats[2];
+            auto denom = denom_x * denom_y;
+            if (denom <= 0) {
+                zncc = 0.;
+            } else {
+                const auto num = stats[5] - (stats[0] * stats[1]) / stats[2];
+                denom = noa::sqrt(denom);
+                zncc = num / denom;
+            }
+        }
+    };
+
+    struct Projector {
+        Array<c32> m_buffer_padded_rfft; // [references, ..., reference, target, projected]
+        Array<f32> m_buffer_padded; // 2 padded images
+        Array<f32> m_buffer; // 2 images
+        Array<c32> m_buffer_rfft; // 2 slices
+        Array<f32> m_xmap_centered; // small xmap
+
+        std::vector<Metadata::Image> m_references_metadata;
+        std::vector<Mat<f64, 3, 3>> m_references_metadata_rotations;
+
+        PrepareReferenceAndTarget m_prepare_reference_and_target;
+
+        Array<f32> m_windowed_sinc;
+
+        Array<u8> m_reference_indices;
+        Array<u8> m_reference_indices_device;
+        Array<nx::Quaternion<f32>> m_reference_rotations;
+        Array<nx::Quaternion<f32>> m_reference_rotations_device;
+
+        Sampler m_sampler;
+
+    public:
+        Projector() = default;
+
+        explicit Projector(isize n_slices, const Shape2& shape_2d, Device device) {
+            const auto n0 = Allocator::bytes_currently_allocated(device);
+
+            // TODO try higher interpolation with reduced padding?
+            const auto size_padded = nf::next_fast_size(noa::max(shape_2d) * 2);
+            const auto shape = Shape4{1, 1, shape_2d[0], shape_2d[1]};
+            const auto padded_shape = Shape4{1, 1, size_padded, size_padded};
+
+            // If there's enough memory use device-only as it seems more performant on some systems.
+            const bool has_enough_space = [&] {
+                const auto available = device.memory_capacity().free;
+                const auto n = size_padded * size_padded * (n_slices + 5);
+                const auto rough_estimate = static_cast<usize>(n) * sizeof(f32) * 2;
+                return available >= rough_estimate;
+            }();
+            const auto options = ArrayOption{
+                .device = device,
+                .allocator = has_enough_space ? Allocator::ASYNC : Allocator::MANAGED,
+            };
+
+            m_buffer_padded_rfft = Array<c32>(padded_shape.rfft().set<0>(n_slices + 3), options); // +target, +projected x2
+            m_buffer_padded = Array<f32>(padded_shape.set<0>(2), options);
+            m_buffer = Array<f32>(shape.set<0>(2), options);
+            m_buffer_rfft = Array<c32>(shape.rfft().set<0>(2), options);
+
+            // Small xmap centered on the peak, needs to be dereferenceable.
+            m_xmap_centered = Array<f32>({1, 1, 64, 64}, {device, Allocator::MANAGED});
+
+            // TODO FFT workspace
+            // TODO in-place FFTs
+
+            const auto n1 = Allocator::bytes_currently_allocated(device);
+
+            Logger::trace(
+                "Projection matching:\n"
+                "  image_shape={}\n"
+                "  spectrum_size={}\n"
+                "  n_bytes_allocated={:.2f}GB (device={}, allocator={})",
+                shape, size_padded, static_cast<f64>(n1 - n0) * 1e-9,
+                device, options.allocator
+            );
+        }
+
+        void initialize(const View<const f32>& stack, const ProjectionMatchingParameters& parameters) {
+            // Reset.
+            m_references_metadata.clear();
+            m_references_metadata_rotations.clear();
+
+            // Allocate for the quaternions encoding the 3d rotation of the input central-slices.
+            const auto max_n_slices = stack.shape()[0] - 1;
+            const auto device = m_buffer.device();
+            const auto options = ArrayOption{.device = device, .allocator = Allocator::ASYNC};
+
+            m_reference_indices = Array<u8>(max_n_slices);
+            m_reference_rotations = Array<nx::Quaternion<f32>>(max_n_slices);
+            if (device.is_gpu()) {
+                m_reference_indices_device = Array<u8>(max_n_slices, options);
+                m_reference_rotations_device = Array<nx::Quaternion<f32>>(max_n_slices, options);
+            } else {
+                m_reference_indices_device = m_reference_indices;
+                m_reference_rotations_device = m_reference_rotations;
+            }
+
+            // Prepare the w-windowed-sinc convolution filter.
+            const auto shape_padded = m_buffer_padded.shape().pop_front<2>();
+            const auto volume_z = static_cast<f64>(shape_padded[0]);
+            const auto& esinc = parameters.extraction_sinc;
+            const auto [extract_blackman_size, extract_window_total_weight] = w_window_spec<i32>(
+                esinc.fftfreq_sinc, esinc.fftfreq_blackman, volume_z);
+
+            m_windowed_sinc = Array<f32>(extract_blackman_size);
+            for (i32 i{}; auto& e: m_windowed_sinc.span_1d()) {
+                const auto fftfreq_z_offset = w_index_to_fftfreq_offset(i++, extract_blackman_size, volume_z);
+                const auto convolution_weight = windowed_sinc_at(fftfreq_z_offset, esinc.fftfreq_sinc, esinc.fftfreq_blackman);
+                e = static_cast<f32>(convolution_weight);
+            }
+            m_windowed_sinc = std::move(m_windowed_sinc).to(options);
+
+            // Initialize operators.
+            const auto shape = m_buffer.shape().vec.pop_front<2>().as<i32>();
+            m_prepare_reference_and_target = PrepareReferenceAndTarget{
+                .stack = stack.span_contiguous<const f32, 3, i32>(),
+                .right_edge = shape,
+            };
+
+            const auto references = m_buffer_padded_rfft.span_contiguous<const c32, 3, i32>();
             m_sampler = Sampler{
-                .input_slices = Sampler::input_interp_type(references, shape_2d),
-                .output_slice = m_projected_padded_rfft.span_contiguous<c32, 2, i32>(),
-                .output_weights = m_weights_padded_rfft.span_contiguous<f32, 2, i32>(),
-                .windowed_sinc = m_windowed_sinc.span_1d<const f32, i32>(),
-                .insertion_inverse_rotation = m_insertion_inverse_rotations.span_1d(),
-                .f_shape = shape_2d.vec.as<f32>(),
+                .reference_slices = Sampler::input_interp_type(references, shape_padded.as<i32>()),
+                .w_windowed_sinc = m_windowed_sinc.span_1d<const f32, i32>(),
+                .f_shape = shape_padded.vec.as<f32>(),
                 .volume_z = static_cast<f32>(volume_z),
                 .insert_fftfreq_sinc = static_cast<f32>(parameters.insertion_sinc.fftfreq_sinc),
                 .insert_fftfreq_blackman = static_cast<f32>(parameters.insertion_sinc.fftfreq_blackman),
@@ -257,649 +397,250 @@ namespace {
             };
         }
 
-        [[nodiscard]] auto project_and_correlate_next(
-            const View<const f32>& stack,
+        auto project_and_correlate_next(
             const Metadata::Image& reference_metadata,
             const Metadata::Image& target_metadata,
             const CommonFOV& common_fov,
-            const ProjectionMatchingParameters& parameters
-        ) -> Vec<f64, 2> {
-            preprocess_new_reference(stack, reference_metadata, common_fov, parameters);
-            compute_projected_reference(target_metadata, parameters.max_tilt_difference);
-
-            // Find the shift between the target and the projected-reference.
-            // TODO It seems that we need to iterate to have a stable shift. It's probably due to the
-            // selected the best shifts. Iterating here is not an issue performance-wise (most of the cost is the
-            // projection itself, which is done by now) and usually it needs 5 (at low tilts) to 75-125 (at high tilts)
-            // iterations to converge.
-
-            auto final_shifts = Vec<f64, 2>{};
-            auto updated_target_metadata = target_metadata;
-            constexpr i64 MAX_N_ITERATIONS = 1; // FIXME
-            i64 iteration{};
-            for (; iteration < MAX_N_ITERATIONS; iteration += 1) {
-                const auto shift = cross_correlate(stack, updated_target_metadata, common_fov, parameters);
-                updated_target_metadata.shifts += shift;
-                final_shifts += shift;
-                Logger::trace("shift={::.4f}", shift);
-
-                if (abs(shift) < parameters.shift_tolerance)
-                    break;
-            }
-            if (iteration == MAX_N_ITERATIONS)
-                Logger::warn("cross_correlate didn't converge");
-            return final_shifts;
-        }
-
-    public:
-        [[nodiscard]] auto size_padded() const noexcept -> isize {
-            return m_references_padded_rfft.shape().height();
-        }
-        [[nodiscard]] auto shape_padded() const noexcept -> Shape4 {
-            return {1, 1, size_padded(), size_padded()};
-        }
-        [[nodiscard]] auto shape_original() const noexcept -> Shape4 {
-            return m_image_buffer.shape().filter(2, 3).push_front<2>(1);
-        }
-        [[nodiscard]] auto center_original() const noexcept -> Vec<f64, 2> {
-            return (shape_original().filter(2, 3).vec / 2).as<f64>();
-        }
-        [[nodiscard]] auto padding() const noexcept -> Vec<isize, 4> {
-            return (shape_padded() - shape_original()).vec;
-        }
-
-        void preprocess_new_reference(
-            const View<const f32>& stack,
-            const Metadata::Image& reference_metadata,
-            const CommonFOV& common_fov,
-            const ProjectionMatchingParameters& parameters
+            bool compute_score,
+            f64 smooth_edge_percent,
+            f64 max_tilt_difference
         ) {
+            // Prepare the reference and target.
+            const auto reference_and_target_padded = m_buffer_padded.view();
+            m_prepare_reference_and_target.reference_padded = reference_and_target_padded.subregion(0).span_contiguous<f32, 2, i32>();
+            m_prepare_reference_and_target.target_padded = reference_and_target_padded.subregion(1).span_contiguous<f32, 2, i32>();
+
+            const auto fov_options = FOVMaskOptions{
+                .smooth_edge_percent = smooth_edge_percent,
+                .add_shifts = true,
+
+                // In theory, removing the region that are not visible in the lower tilts should help.
+                // However, it ends up removing too much perpendicular to the tilt-axis, where the image tilts
+                // already limit the available signal. While we could mask based only on the nearby images (the images
+                // that provide most of the signal) so that the tilt difference isn't that big, we would effectively
+                // end up aligning images on different tomograms. Clearly not an ideal situation either way, but NOT
+                // applying the tilt/pitch to the mask seem to produce better alignments (beads are more symmetric)
+                // by preventing high-tilt images to drift away too much orthogonal to the tilt-axis.
+                .add_tilt_and_pitch = false,
+            };
+            m_prepare_reference_and_target.reference_mask = common_fov.set_fov(reference_metadata, fov_options);
+            m_prepare_reference_and_target.target_mask = common_fov.set_fov(target_metadata, fov_options);
+            m_prepare_reference_and_target.reference_index = reference_metadata.index;
+            m_prepare_reference_and_target.target_index = target_metadata.index;
+
+            const auto device = m_buffer.device();
+            const auto shape_padded_2d = reference_and_target_padded.shape().filter(2, 3).as<i32>();
+            const auto shape_padded = shape_padded_2d.as<isize>().push_front<2>(1);
+            noa::iwise(shape_padded_2d, device, m_prepare_reference_and_target);
+
             // Register the new central-slice.
-            m_n_references += 1;
-            m_sampler.n_input_slices = static_cast<i32>(m_n_references);
+            const auto insertion_angles = noa::deg2rad(reference_metadata.angles);
             m_references_metadata.push_back(reference_metadata);
+            m_references_metadata_rotations.push_back((
+                nx::rotate_x(+insertion_angles[2]) *
+                nx::rotate_y(+insertion_angles[1]) *
+                nx::rotate_z(-insertion_angles[0])
+            ).transpose());
 
-            // Keep only the common field-of-view.
-            common_fov.apply_fov(
-                stack.subregion(reference_metadata.index), m_image_buffer, reference_metadata, {
-                    .smooth_edge_percent = parameters.smooth_edge_percent,
-                    .add_shifts = true,
-                });
-
-            // Prepare the central-slice.
-            // 1. Zero-pad the image and place it at the end of the main buffer with the other references.
-            // 1. The Fourier insertion is done on centered central-slices, so remap.
-            // 2. Place the rotation center of the image at the origin.
-            const auto reference_padded_rfft = m_references_padded_rfft.subregion(m_n_references - 1);
-            noa::resize(m_image_buffer, m_reference_padded, {}, padding());
-            nf::r2c(m_reference_padded, reference_padded_rfft);
-            nf::remap("h2hc", reference_padded_rfft, reference_padded_rfft, shape_padded());
-            ns::phase_shift_2d<"hc">(
-                reference_padded_rfft, reference_padded_rfft, shape_padded(),
-                (-center_original() - reference_metadata.shifts).as<f32>()
+            // Compute the central-slice of the new reference (centered onto the origin) and the target.
+            // The buffer is organized as [references..., reference, target, projected].
+            const auto n_references = std::ssize(m_references_metadata);
+            const auto reference_padded_rfft = m_buffer_padded_rfft.subregion(n_references - 1);
+            const auto reference_and_target_padded_rfft = m_buffer_padded_rfft.subregion(Slice{n_references - 1, n_references + 1});
+            const auto shape_2d = m_buffer.shape().filter(2, 3).as<i32>();
+            const auto original_center = (shape_2d.vec / 2).as<f64>();
+            nf::r2c(reference_and_target_padded, reference_and_target_padded_rfft);
+            ns::phase_shift_2d<"h">(
+                reference_padded_rfft, reference_padded_rfft, shape_padded,
+                (-original_center - reference_metadata.shifts).as<f32>()
             );
 
-            // Transform to place the central-slice inside the 3d Fourier (virtual) volume.
-            const auto insertion_angles = noa::deg2rad(reference_metadata.angles);
-            m_insertion_inverse_rotations.span_1d()[m_n_references - 1] = nx::matrix2quaternion((
-                nx::rotate_x(insertion_angles[2]) *
-                nx::rotate_y(insertion_angles[1]) *
-                nx::rotate_z(-insertion_angles[0])
-            ).transpose()).as<f32>();
-        }
+            // Filter out the references that are not included for this projection (based on the tilt difference).
+            // This makes the quaternions contiguous in memory and removes the need to 'continue' the per-slice loop
+            // when sampling. Without this, the kernel performance significantly drops as more slices are added,
+            // even when using a per-slice bitmask stored directly in the operator.
+            usize count{};
+            const auto reference_indices = m_reference_indices.span_1d();
+            const auto reference_rotations = m_reference_rotations.span_1d();
+            for (usize i{}; i < m_references_metadata.size(); ++i) {
+                if (is_reference_included(target_metadata, m_references_metadata[i], max_tilt_difference)) {
+                    reference_rotations[count] = nx::matrix2quaternion(m_references_metadata_rotations[i]).as<f32>();
+                    reference_indices[count] = noa::safe_cast<u8>(i);
+                    ++count;
+                }
+            }
+            if (m_reference_indices_device.device().is_gpu()) {
+                m_reference_indices.view().to(m_reference_indices_device.view());
+                m_reference_rotations.view().to(m_reference_rotations_device.view());
+            }
+            m_sampler.reference_indices = m_reference_indices_device.span_contiguous<const u8, 1, i32>().subregion(Slice{0, count});
+            m_sampler.reference_rotations = m_reference_rotations_device.span_contiguous<const nx::Quaternion<f32>, 1, i32>().subregion(Slice{0, count});
 
-        void compute_projected_reference(const Metadata::Image& target_metadata, f64 max_tilt_difference) {
-            // Transform of the central-slice to extract from the 3d Fourier (virtual) volume.
-            const auto extraction_angles = noa::deg2rad(target_metadata.angles);
-            m_sampler.extraction_forward_rotation = (
-                nx::rotate_x(extraction_angles[2]) *
-                nx::rotate_y(extraction_angles[1]) *
-                nx::rotate_z(-extraction_angles[0])
-            ).as<f32>();
-
-            // Exclude certain references based on their tilt difference with the target.
-            m_sampler.reference_mask = {};
-            for (i32 i{}; const auto& metadata: m_references_metadata)
-                m_sampler.reference_mask[i++] = is_reference_included(target_metadata, metadata, max_tilt_difference);
+            // auto& stream = Stream::current(device);
+            // auto start = noa::Event{};
+            // auto end = noa::Event{};
+            // start.record(stream);
+            // end.record(stream);
+            // end.synchronize();
+            // Logger::trace("sampling1 {}", Event::elapsed(start, end));
 
             // Sample the central-slice from the virtual volume.
-            const auto padded_size = static_cast<i32>(size_padded());
-            noa::iwise(Shape{padded_size, padded_size}.rfft(), m_weights_padded_rfft.device(), m_sampler);
+            // This is the most expensive step of this function, especially for thin samples.
+            auto target_and_projected_padded_rfft = m_buffer_padded_rfft.view().subregion(Slice{n_references, n_references + 2});
+            auto projected_padded_rfft = target_and_projected_padded_rfft.subregion(1);
+            const auto extraction_angles = noa::deg2rad(target_metadata.angles);
+            m_sampler.projected_slice = projected_padded_rfft.span_contiguous<c32, 2, i32>();
+            m_sampler.target_rotation = (
+                 nx::rotate_x(+extraction_angles[2]) *
+                 nx::rotate_y(+extraction_angles[1]) *
+                 nx::rotate_z(-extraction_angles[0])
+             ).as<f32>();
+            noa::iwise(shape_padded_2d.rfft(), device, m_sampler);
 
+            // Keep a copy of the projected central-slice for the ZNCC.
+            auto projected_padded_rfft_copy = m_buffer_padded_rfft.view().subregion(n_references + 2);
+            if (compute_score)
+                projected_padded_rfft.to(projected_padded_rfft_copy);
+
+            // Center the projected slice onto the target.
             ns::phase_shift_2d<"h">(
-                m_projected_padded_rfft,
-                m_projected_padded_rfft,
-                shape_padded(),
-                center_original().as<f32>(),
-                0.5
+                projected_padded_rfft, projected_padded_rfft, shape_padded,
+                (original_center + target_metadata.shifts).as<f32>(), 0.5
             );
 
-            // Go back to real space and removing the zero-padding.
-            nf::c2r(m_projected_padded_rfft, m_reference_padded);
-            noa::resize(m_reference_padded, m_target_and_projected.subregion(1), {}, -padding());
-        }
+            // Back to real-space.
+            const auto target_and_projected_padded = m_buffer_padded.view();
+            nf::c2r(target_and_projected_padded_rfft, target_and_projected_padded);
 
-        auto cross_correlate(
-            const View<const f32>& stack,
-            const Metadata::Image& target_metadata,
-            const CommonFOV& common_fov,
-            const ProjectionMatchingParameters& parameters
-        ) -> Vec<f64, 2> {
-            // Mask the target and projected image with the common FOV.
-            common_fov.apply_fov(
-                stack.subregion(target_metadata.index),
-                m_target_and_projected.subregion(0),
-                target_metadata, {
-                    .smooth_edge_percent = parameters.smooth_edge_percent,
-                    .add_shifts = true,
-                });
-            common_fov.apply_fov(
-                m_target_and_projected.subregion(1), target_metadata, {
-                .smooth_edge_percent = parameters.smooth_edge_percent,
-                .add_shifts = true,
+            // Remove the padding and mask again to remove small projection/weighting artifacts.
+            const auto target_and_projected = m_buffer.view();
+            noa::iwise(shape_2d, device, PrepareTargetAndProjected{
+                .target_and_projected_padded = target_and_projected_padded.span_contiguous<const f32, 3, i32>(),
+                .target_and_projected = target_and_projected.span_contiguous<f32, 3, i32>(),
+                .target_mask = common_fov.set_fov(target_metadata, fov_options),
             });
-            // TODO normalize within the mask? have an operator doing everything at once
-            noa::write_image(m_target_and_projected, debug_dir / fmt::format("target_and_projected_{:0>2}.mrc", target_metadata.index), {.dtype = "f16"});
 
-            nf::r2c(m_target_and_projected, m_target_and_projected_rfft);
+            // if (not debug_dir.empty()) {
+            //     auto filename = debug_dir / fmt::format("tp_{:0>2}.mrc", target_metadata.index);
+            //     noa::write_image(target_and_projected, filename);
+            // }
 
-            // Downweight the frequencies that are not well-sampled in the projected reference.
-            // TODO how useful is this?
-            // FIXME weights are padded! have a operator that does the sampling conversion
-            // noa::ewise(
-            //     m_weights_padded_rfft, target_rfft,
-            //     []NOA_HD(const f32& w, c32& t) { t *= noa::min(w, 1.f); }
-            // );
+            // Phase-like (i.e. mutual) cross-correlation.
+            // Note that using the conventional CC isn't as good; the peaks are less sharp
+            // up to the point that, for some samples, high tilts failed to pick reliably.
+            const auto target_and_projected_rfft = m_buffer_rfft.view();
+            nf::r2c(target_and_projected, target_and_projected_rfft, {.norm = nf::Norm::NONE});
+            noa::iwise(shape_2d.rfft(), device, CrossCorrelate{
+                .projected_rfft = target_and_projected_rfft.subregion(1).span_contiguous<const c32, 2, i32>(),
+                .target_rfft = target_and_projected_rfft.subregion(0).span_contiguous<c32, 2, i32>(), // save xmap
+            });
 
-            // Shift the projected reference onto the target.
-            const auto origin_to_target_center = center_original() + target_metadata.shifts;
-            ns::phase_shift_2d<"h">(
-                m_target_and_projected_rfft.subregion(1),
-                m_target_and_projected_rfft.subregion(1),
-                m_image_buffer.shape(),
-                target_metadata.shifts.as<f32>(),
-                0.5
-            );
-
-            //
-            noa::write_image(
-                m_target_and_projected_rfft,
-                debug_dir / fmt::format("target_and_projected_rfft_{:0>2}.mrc", target_metadata.index),
-                {.dtype = "c32"}
-            );
-
-            // Cross-correlate.
-            // The resulting shift is by how much the target is from the projected reference.
-            ns::cross_correlation_map<"h2fc">(
-                m_target_and_projected_rfft.subregion(0),
-                m_target_and_projected_rfft.subregion(1), m_xmap, {
-                    .mode = ns::Correlation::CONVENTIONAL,
-                    .ifft_norm = nf::Norm::NONE
-                });
-            auto shift = find_peak<"fc">(m_xmap, m_xmap_centered, {
+            // Find the best CC peak. The resulting shift should be added to the target.
+            const auto xmap = target_and_projected_rfft.subregion(0);
+            const auto centered_xmap = target_and_projected.subregion(0);
+            nf::c2r(xmap, centered_xmap, {.norm = nf::Norm::ORTHO}); // nice scale
+            const auto shift = find_peak<"fc">(centered_xmap, m_xmap_centered.view(), {
                 .distortion_angle_deg = target_metadata.angles[0],
                 .max_shift_percent = 0.15,
             }).first;
-            noa::write_image(m_xmap, debug_dir / fmt::format("xmap_{:0>2}.mrc", target_metadata.index), {.dtype = "f16"});
-            // noa::write_image(m_xmap_centered, debug_dir / "xmap_centered.mrc", {.dtype = noa::io::DataType::F16});
 
-            return shift;
-        }
-    };
+            // if (not debug_dir.empty()) {
+            //     auto filename = debug_dir / fmt::format("xmap_{:0>2}.mrc", target_metadata.index);
+            //     noa::write_image(centered_xmap, filename);
+            //     auto filename = debug_dir / fmt::format("xmap_centered_{:0>2}.mrc", target_metadata.index);
+            //     noa::write_image(m_xmap_centered, filename);
+            // }
 
-    class Sampler2 {
-    public:
-        using input_span_type = SpanContiguous<const c32, 3, i32>;
-        using input_interp_type = nx::InterpolatorSpectrum<2, "hc2h", nx::Interp::LINEAR, input_span_type>;
+            // Compute the ZNCC.
+            // Performance wise, this is trivial (~1ms vs ~28ms for the reprojection).
+            f64 zncc{};
+            if (compute_score) {
+                // Apply the shift.
+                auto final_metadata = target_metadata;
+                final_metadata.shifts += shift;
+                const auto fov = common_fov.set_fov(final_metadata, fov_options);
 
-        input_interp_type input_slices{};
-        i32 n_input_slices{};
+                // Move the projection to its newly found center.
+                ns::phase_shift_2d<"h">(
+                    projected_padded_rfft_copy, projected_padded_rfft_copy, shape_padded,
+                    (original_center + final_metadata.shifts).as<f32>(), 0.5
+                );
 
-        SpanContiguous<c32, 2, i32> output_slice{};
-        SpanContiguous<f32, 2, i32> output_weights{};
-
-        SpanContiguous<const f32, 1, i32> windowed_sinc{};
-        SpanContiguous<nx::Quaternion<f32>> insertion_inverse_rotation{};
-        Mat<f32, 3, 3> extraction_forward_rotation{};
-        Vec<f32, 2> f_shape{};
-        BitMask<> reference_mask{};
-
-        f32 volume_z{};
-        f32 insert_fftfreq_sinc{};
-        f32 insert_fftfreq_blackman{};
-        i32 extract_blackman_size{};
-
-        [[nodiscard]] NOA_HD auto sample_input_slices(const Vec<f32, 3>& fftfreq_3d) const {
-            c32 value{};
-            f32 weight{};
-            for (i32 i{}; i < n_input_slices; ++i) {
-                if (not reference_mask[i])
-                    continue; // this slice isn't included, skip it
-
-                // Project the 3d frequency onto the input central-slice.
-                const auto fftfreq_3d_slice = insertion_inverse_rotation[i].rotate(fftfreq_3d);
-                const auto fftfreq_from_slice = fftfreq_3d_slice[0]; // distance along the normal
-
-                // Add the contribution of the central-slice if it affects the current frequency.
-                if (noa::abs(fftfreq_from_slice) < insert_fftfreq_blackman) {
-                    const auto sinc = windowed_sinc_at<true>(
-                        fftfreq_from_slice, insert_fftfreq_sinc, insert_fftfreq_blackman
-                    );
-                    const auto frequency_yx = fftfreq_3d_slice.pop_front() * f_shape;
-                    value += input_slices.interpolate_spectrum_at(frequency_yx, i) * sinc;
-                    weight += sinc;
-                }
-            }
-            return Pair{value, weight};
-        }
-
-        NOA_HD constexpr void operator()(i32 y, i32 x) const {
-            // Compute the 3d fftfreq within the volume.
-            const auto frequency_2d = nf::index2frequency<false, true>(Vec{y, x}, output_slice.shape());
-            const auto fftfreq_2d = frequency_2d.as<f32>() / f_shape;
-            const auto fftfreq_3d = extraction_forward_rotation * fftfreq_2d.push_front(0);
-
-            c32 ovalue{};
-            f32 oweight{};
-            for (i32 w{}; w < extract_blackman_size; ++w) {
-                // Offset the volume z for the z-windowed-sinc.
-                const auto fftfreq_z_offset = w_index_to_fftfreq_offset(w, extract_blackman_size, volume_z);
-                auto fftfreq_3d_w = fftfreq_3d;
-                fftfreq_3d_w[0] += fftfreq_z_offset;
-
-                if (dot(fftfreq_3d_w, fftfreq_3d_w) > 0.25f)
-                    continue;
-
-                // Sample the virtual volume at the required fftfreq.
-                const auto [value, weight] = sample_input_slices(fftfreq_3d_w);
-
-                // z-windowed sinc.
-                const auto convolution_weight = windowed_sinc[w];
-                ovalue += value * convolution_weight;
-                oweight += weight * convolution_weight;
-            }
-
-            output_slice(y, x) = ovalue;
-            output_weights(y, x) = oweight;
-        }
-    };
-
-    class Projector2 {
-    private:
-        Array<f32> m_reference_padded;
-        Array<c32> m_references_padded_rfft;
-        Array<c32> m_projected_padded_rfft;
-        Array<c32> m_projected2_padded_rfft;
-        Array<f32> m_weights_padded_rfft;
-
-        Array<f32> m_target_padded;
-        Array<c32> m_target_padded_rfft;
-
-        Array<f32> m_target_and_projected;
-        Array<c32> m_target_and_projected_rfft;
-
-        Array<f32> m_image_buffer;
-        Array<f32> m_xmap;
-        Array<f32> m_xmap_centered;
-
-        isize m_n_references{};
-        Array<f32> m_windowed_sinc;
-        Array<nx::Quaternion<f32>> m_insertion_inverse_rotations;
-        Sampler2 m_sampler;
-        std::vector<Metadata::Image> m_references_metadata;
-
-    public:
-        Projector2(
-            const View<f32>& stack,
-            const ProjectionMatchingParameters& parameters
-        ) {
-
-            auto device = stack.device();
-            auto n_slices = stack.shape()[0];
-            {
-                auto shape_2d = stack.shape().filter(2, 3);
-
-                const auto size_padded = nf::next_fast_size(noa::max(shape_2d) * 2);
-                const auto maximum_n_references = n_slices;
-                const auto shape = Shape4{1, 1, shape_2d[0], shape_2d[1]};
-                const auto padded_shape = Shape4{1, 1, size_padded, size_padded};
-                const auto options = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
-
-                m_image_buffer = Array<f32>(shape, options);
-                m_xmap = Array<f32>(shape, options);
-                m_xmap_centered = Array<f32>({1, 1, 128, 128}, options);
-
-                m_reference_padded = Array<f32>(padded_shape, options);
-                m_target_padded = Array<f32>(padded_shape, options);
-                m_projected_padded_rfft = Array<c32>(padded_shape.rfft(), options);
-                m_projected2_padded_rfft = Array<c32>(padded_shape.rfft(), options);
-
-                m_weights_padded_rfft = Array<f32>(padded_shape.rfft(), options);
-                m_references_padded_rfft = Array<c32>(padded_shape.set<0>(maximum_n_references).rfft(), options);
-                m_target_padded_rfft = Array<c32>(padded_shape.rfft(), options);
-
-                m_target_and_projected = Array<f32>(shape.set<0>(2), options);
-                m_target_and_projected_rfft = Array<c32>(shape.set<0>(2).rfft(), options);
-            }
-
-            // Allocate for the quaternions encoding the 3d rotation of the input central-slices.
-            const auto options = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
-            m_insertion_inverse_rotations = Array<nx::Quaternion<f32>>(n_slices - 1, options);
-
-            // Prepare the w-windowed-sinc convolution filter.
-            const auto volume_z = static_cast<f64>(size_padded());
-            const auto [extract_blackman_size, extract_window_total_weight] = nx::details::z_window_spec<i32>(
-                parameters.extraction_sinc.fftfreq_sinc, parameters.extraction_sinc.fftfreq_blackman, volume_z);
-
-            m_windowed_sinc = Array<f32>(extract_blackman_size, options);
-            for (i32 i{}; auto& e: m_windowed_sinc.span_1d()) {
-                const auto fftfreq_z_offset = nx::details::w_index_to_fftfreq_offset(i++, extract_blackman_size, volume_z);
-                const auto convolution_weight =
-                    nx::details::windowed_sinc(fftfreq_z_offset, parameters.extraction_sinc.fftfreq_sinc, parameters.extraction_sinc.fftfreq_blackman) /
-                    extract_window_total_weight;
-                e = static_cast<f32>(convolution_weight);
-            }
-
-            // Initialize the sampler.
-            const auto references = m_references_padded_rfft.span_contiguous<const c32, 3, i32>();
-            const auto shape_2d = shape_padded().pop_front<2>().as<i32>();
-            m_sampler = Sampler2{
-                .input_slices = Sampler::input_interp_type(references, shape_2d),
-                .output_slice = m_projected_padded_rfft.span_contiguous<c32, 2, i32>(),
-                .output_weights = m_weights_padded_rfft.span_contiguous<f32, 2, i32>(),
-                .windowed_sinc = m_windowed_sinc.span_1d<const f32, i32>(),
-                .insertion_inverse_rotation = m_insertion_inverse_rotations.span_1d(),
-                .f_shape = shape_2d.vec.as<f32>(),
-                .volume_z = static_cast<f32>(volume_z),
-                .insert_fftfreq_sinc = static_cast<f32>(parameters.insertion_sinc.fftfreq_sinc),
-                .insert_fftfreq_blackman = static_cast<f32>(parameters.insertion_sinc.fftfreq_blackman),
-                .extract_blackman_size = extract_blackman_size,
-            };
-        }
-
-        [[nodiscard]] auto project_and_correlate_next(
-            const View<const f32>& stack,
-            const Metadata::Image& reference_metadata,
-            const Metadata::Image& target_metadata,
-            const CommonFOV& common_fov,
-            const ProjectionMatchingParameters& parameters
-        ) -> Vec<f64, 2> {
-            preprocess_new_reference(stack, reference_metadata, common_fov, parameters.smooth_edge_percent);
-            compute_projected_reference(target_metadata, parameters.max_tilt_difference);
-            return cross_correlate(stack, target_metadata, common_fov, parameters);
-        }
-
-    public:
-        [[nodiscard]] auto size_padded() const noexcept -> isize {
-            return m_references_padded_rfft.shape().height();
-        }
-        [[nodiscard]] auto shape_padded() const noexcept -> Shape4 {
-            return {1, 1, size_padded(), size_padded()};
-        }
-        [[nodiscard]] auto shape_original() const noexcept -> Shape4 {
-            return m_image_buffer.shape().filter(2, 3).push_front<2>(1);
-        }
-        [[nodiscard]] auto center_original() const noexcept -> Vec<f64, 2> {
-            return (shape_original().filter(2, 3).vec / 2).as<f64>();
-        }
-        [[nodiscard]] auto padding() const noexcept -> Vec<isize, 4> {
-            return (shape_padded() - shape_original()).vec;
-        }
-
-        void preprocess_new_reference(
-            const View<const f32>& stack,
-            const Metadata::Image& reference_metadata,
-            const CommonFOV& common_fov,
-            f64 smooth_edge_percent
-        ) {
-            // Register the new central-slice.
-            m_n_references += 1;
-            m_sampler.n_input_slices = static_cast<i32>(m_n_references);
-            m_references_metadata.push_back(reference_metadata);
-
-            // Keep only the common field-of-view.
-            common_fov.apply_fov(
-                stack.subregion(reference_metadata.index), m_image_buffer.view(), reference_metadata, {
-                    .smooth_edge_percent = smooth_edge_percent,
-                    .add_shifts = true,
+                // Remove the padding and mask again to remove small projection/weighting artifacts.
+                // The target_padded is still valid from the previous CC.
+                nf::c2r(projected_padded_rfft_copy, target_and_projected_padded.subregion(1));
+                noa::iwise(shape_2d, device, PrepareTargetAndProjected{
+                    .target_and_projected_padded = target_and_projected_padded.span_contiguous<const f32, 3, i32>(),
+                    .target_and_projected = target_and_projected.span_contiguous<f32, 3, i32>(),
+                    .target_mask = fov,
                 });
 
-            // Prepare the central-slice. [references..., reference, target, ...]
-            const auto reference_padded_rfft = m_references_padded_rfft.subregion(m_n_references - 1);
-            noa::resize(m_image_buffer, m_reference_padded, {}, padding());
-            nf::r2c(m_reference_padded, reference_padded_rfft);
-            nf::remap("h2hc", reference_padded_rfft, reference_padded_rfft, shape_padded());
-            ns::phase_shift_2d<"hc">(
-                reference_padded_rfft.subregion(0), reference_padded_rfft.subregion(0), shape_padded(),
-                (-center_original() - reference_metadata.shifts).as<f32>()
-            );
+                // if (not debug_dir.empty()) {
+                //     auto filename = debug_dir / fmt::format("tpf_{:0>2}.mrc", target_metadata.index);
+                //     noa::write_image(target_and_projected, filename);
+                // }
 
-            // Transform to place the central-slice inside the 3d Fourier (virtual) volume.
-            const auto insertion_angles = noa::deg2rad(reference_metadata.angles);
-            m_insertion_inverse_rotations.span_1d()[m_n_references - 1] = nx::matrix2quaternion((
-                nx::rotate_x(insertion_angles[2]) *
-                nx::rotate_y(insertion_angles[1]) *
-                nx::rotate_z(-insertion_angles[0])
-            ).transpose()).as<f32>();
-        }
+                // Compute the zero-normalized cross-correlation score within the mask.
+                noa::reduce_iwise(shape_2d, device, ZNCC<f64>::reduced_type{}, zncc, ZNCC<f64>{
+                    .lhs = target_and_projected.subregion(0).span_contiguous<f32, 2, i32>(),
+                    .rhs = target_and_projected.subregion(1).span_contiguous<f32, 2, i32>(),
+                    .mask = fov,
+                });
+            }
 
-        void compute_projected_reference(const Metadata::Image& target_metadata, f64 max_tilt_difference) {
-            // Transform of the central-slice to extract from the 3d Fourier (virtual) volume.
-            const auto extraction_angles = noa::deg2rad(target_metadata.angles);
-            m_sampler.extraction_forward_rotation = (
-                nx::rotate_x(extraction_angles[2]) *
-                nx::rotate_y(extraction_angles[1]) *
-                nx::rotate_z(-extraction_angles[0])
-            ).as<f32>();
-
-            // Exclude certain references based on their tilt difference with the target.
-            m_sampler.reference_mask = {};
-            for (i32 i{}; const auto& metadata: m_references_metadata)
-                m_sampler.reference_mask[i++] = is_reference_included(target_metadata, metadata, max_tilt_difference);
-
-            // Sample the central-slice from the virtual volume.
-            const auto padded_size = static_cast<i32>(size_padded());
-            noa::iwise(Shape{padded_size, padded_size}.rfft(), m_weights_padded_rfft.device(), m_sampler);
-        }
-
-        auto cross_correlate(
-            const View<const f32>& stack,
-            const Metadata::Image& target_metadata,
-            const CommonFOV& common_fov,
-            const ProjectionMatchingParameters& parameters
-        ) -> Vec<f64, 2> {
-            // center the projected slice onto the target
-            ns::phase_shift_2d<"h">(
-                m_projected_padded_rfft, m_projected_padded_rfft, shape_padded(),
-                (center_original() + target_metadata.shifts).as<f32>(), 0.5
-            );
-
-            // Zero-pad the target.
-            common_fov.apply_fov(
-                stack.subregion(target_metadata.index), m_image_buffer.view(), target_metadata, {
-                .smooth_edge_percent = parameters.smooth_edge_percent,
-                .add_shifts = true,
-            });
-            noa::write_image(m_image_buffer, debug_dir / fmt::format("target_{:0>2}.mrc", target_metadata.index)); // , {.dtype = "f16"}
-            noa::resize(m_image_buffer, m_target_padded, {}, padding());
-            nf::r2c(m_target_padded, m_target_padded_rfft);
-
-            // Compute the weighted projection with and without the target.
-            noa::ewise(
-                noa::wrap(m_target_padded_rfft, m_weights_padded_rfft),
-                noa::wrap(m_projected_padded_rfft, m_projected2_padded_rfft),
-                []NOA_HD(c32 t, f32 w, c32& projected, c32& projected2) {
-                    projected2 = (projected + t) / (w + 1.f);
-                    projected  = projected / noa::max(w, 1.f);
-                }
-            );
-
-            // Go back to real space and removing the zero-padding.
-            nf::c2r(m_projected_padded_rfft, m_reference_padded);
-            noa::resize(m_reference_padded, m_target_and_projected.subregion(0), {}, -padding());
-            nf::c2r(m_projected2_padded_rfft, m_reference_padded);
-            noa::resize(m_reference_padded, m_target_and_projected.subregion(1), {}, -padding());
-
-            // mask
-            common_fov.apply_fov(
-                m_target_and_projected.view().subregion(0), target_metadata, {
-                .smooth_edge_percent = parameters.smooth_edge_percent,
-                .add_shifts = true,
-            });
-            common_fov.apply_fov(
-                m_target_and_projected.view().subregion(1), target_metadata, {
-                .smooth_edge_percent = parameters.smooth_edge_percent,
-                .add_shifts = true,
-            });
-            noa::write_image(m_target_and_projected, debug_dir / fmt::format("target_and_projected_{:0>2}.mrc", target_metadata.index)); // , {.dtype = "f16"}
-
-            // Cross-correlate.
-            // The resulting shift is by how much the target is from the projected reference.
-            // nf::r2c(m_target_and_projected, m_target_and_projected_rfft);
-            // ns::cross_correlation_map<"h2fc">(
-            //     m_target_and_projected_rfft.subregion(0),
-            //     m_target_and_projected_rfft.subregion(1), m_xmap, {
-            //         .mode = ns::Correlation::CONVENTIONAL,
-            //         .ifft_norm = nf::Norm::NONE
-            //     });
-            // auto shift = find_peak<"fc">(m_xmap.view(), m_xmap_centered.view(), {
-            //     .distortion_angle_deg = target_metadata.angles[0],
-            //     .max_shift_percent = 0.15,
-            // }).first;
-            // noa::write_image(m_xmap, debug_dir / fmt::format("xmap_{:0>2}.mrc", target_metadata.index), {.dtype = "f16"});
-
-            return {}; //shift
+            return Pair{shift, zncc};
         }
     };
+
+    // Keep the implementation hidden from the header.
+    // Each thread has its own to support for multi-GPU processing.
+    thread_local Projector projector{};
 }
 
 namespace qn {
     ProjectionMatcher::ProjectionMatcher(isize n_slices, const Shape2& shape_2d, Device device) {
-
-        // TODO try higher interpolation and reduce size?
-        const auto size_padded = nf::next_fast_size(noa::max(shape_2d) * 2);
-
-        const auto maximum_n_references = n_slices - 1;
-        const auto shape = Shape4{1, 1, shape_2d[0], shape_2d[1]};
-        const auto padded_shape = Shape4{1, 1, size_padded, size_padded};
-        const auto options = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
-
-        const auto n0 = Allocator::bytes_currently_allocated(device);
-
-        m_image_buffer = Array<f32>(shape, options);
-        m_xmap = Array<f32>(shape, options);
-        m_xmap_centered = Array<f32>({1, 1, 128, 128}, options);
-
-        m_reference_padded = Array<f32>(padded_shape, options);
-        m_projected_padded_rfft = Array<c32>(padded_shape.rfft(), options);
-        m_weights_padded_rfft = Array<f32>(padded_shape.rfft(), options);
-        m_references_padded_rfft = Array<c32>(padded_shape.set<0>(maximum_n_references).rfft(), options);
-
-        m_target_and_projected = Array<f32>(shape.set<0>(2), options);
-        m_target_and_projected_rfft = Array<c32>(shape.set<0>(2).rfft(), options);
-
-        const auto n1 = Allocator::bytes_currently_allocated(device);
-
-        Logger::trace(
-            "Projection matching:\n"
-            "  image_shape={}\n"
-            "  spectrum_size={}\n"
-            "  n_bytes_allocated={:.2f}GB (device={}, allocator={})",
-            shape, size_padded, static_cast<f64>(n1 - n0) * 1e-9,
-            device, options.allocator
-        );
+        projector = Projector(n_slices, shape_2d, device);
     }
 
-    void ProjectionMatcher::update_shifts(
+    ProjectionMatcher::~ProjectionMatcher() {
+        projector = Projector{};
+    }
+
+    [[nodiscard]] auto ProjectionMatcher::spectrum_size() const -> isize {
+        return projector.m_buffer_padded.shape().height();
+    }
+
+    auto ProjectionMatcher::update_shifts(
         const View<f32>& stack,
         Metadata::Stack& metadata,
-        const ProjectionMatchingParameters& parameters
-    ) const {
-        auto t = Logger::info_scope_time("Projection-matching: shift alignment");
-
-        auto common_fov = CommonFOV(
-            stack.shape().filter(2, 3),
-            metadata
-        );
-        auto projector = Projector(
-            m_reference_padded,
-            m_references_padded_rfft,
-            m_projected_padded_rfft,
-            m_weights_padded_rfft,
-            m_target_and_projected,
-            m_target_and_projected_rfft,
-            m_image_buffer,
-            m_xmap,
-            m_xmap_centered,
-            parameters
-        );
-
-        // FIXME
-        debug_dir = parameters.debug_directory;
-        Stream::current({}).set_thread_limit(8);
+        const ProjectionMatchingParameters& settings
+    ) const -> f64 {
+        // debug_dir = settings.debug_directory; // FIXME
+        projector.initialize(stack, settings);
 
         // Projection matching, using the lowest tilt as the initial reference,
         // aligning from low-to-high tilts. When a tilt is aligned, it is added
         // to the set of reference images used to compute the projected reference.
         auto projection_metadata = metadata;
-        projection_metadata.sort("absolute_tilt");
+        projection_metadata.sort("time"); // TODO
 
+        f64 zncc{};
+        const auto common_fov = CommonFOV(stack.shape().filter(2, 3), projection_metadata);
         for (isize target_index = 1; target_index < projection_metadata.ssize(); ++target_index) {
             const auto& new_reference_slice = projection_metadata[target_index - 1];
             auto& target_slice = projection_metadata[target_index];
 
-            target_slice.shifts += projector.project_and_correlate_next(
-                stack, new_reference_slice, target_slice,
-                common_fov, parameters
+            const auto [peak_shift, peak_value] = projector.project_and_correlate_next(
+                new_reference_slice, target_slice, common_fov,
+                false, settings.smooth_edge_percent, settings.max_tilt_difference
             );
+            target_slice.shifts += peak_shift;
+            zncc += static_cast<f64>(peak_value);
         }
+        zncc /= static_cast<f64>(projection_metadata.ssize() - 1);
 
-        save_plot_xy(
-            projection_metadata | stdv::transform([](auto& slice) { return slice.angles[1]; }),
-            projection_metadata | stdv::transform([](auto& slice) { return slice.shifts[1]; }),
-                debug_dir / "shifts.txt");
-
-        metadata.update_from(projection_metadata, {.update_shifts = true});
-    }
-
-    void update_shifts2(
-        const View<f32>& stack,
-        Metadata::Stack& metadata,
-        const ProjectionMatchingParameters& parameters
-    ) {
-        auto t = Logger::info_scope_time("Projection-matching: shift alignment");
-
-        auto common_fov = CommonFOV(
-            stack.shape().filter(2, 3),
-            metadata
-        );
-        auto projector = Projector2(stack, parameters);
-
-        // FIXME
-        debug_dir = parameters.debug_directory;
-        Stream::current({}).set_thread_limit(8);
-
-        // Projection matching, using the lowest tilt as the initial reference,
-        // aligning from low-to-high tilts. When a tilt is aligned, it is added
-        // to the set of reference images used to compute the projected reference.
-        auto projection_metadata = metadata;
-        projection_metadata.sort("absolute_tilt"); // FIXME time?
-
-        for (isize target_index = 1; target_index < projection_metadata.ssize(); ++target_index) {
-            const auto& new_reference_slice = projection_metadata[target_index - 1];
-            auto& target_slice = projection_metadata[target_index];
-
-            target_slice.shifts += projector.project_and_correlate_next(
-                stack, new_reference_slice, target_slice,
-                common_fov, parameters
-            );
-        }
-
-        // save_plot_xy(
-        //     projection_metadata | stdv::transform([](auto& slice) { return slice.angles[1]; }),
-        //     projection_metadata | stdv::transform([](auto& slice) { return slice.shifts[1]; }),
-        //         debug_dir / "shifts.txt");
-        //
-        // metadata.update_from(projection_metadata, {.update_shifts = true});
+        if (settings.update_metadata)
+            metadata.update_from(projection_metadata, {.update_shifts = true});
+        return zncc;
     }
 }

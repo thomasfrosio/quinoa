@@ -1321,7 +1321,7 @@ namespace qn::ctf {
         auto phase_shift_buffer = Array<f64>(5);
         auto phase_shift = SplineGridCubic<f64, 1>(phase_shift_buffer.span_1d());
         for (auto& s: phase_shift.span)
-            s = metadata.stack[0].phase_shift;
+            s = metadata.stack[0].phase_shift; // radians
 
         // Tilt-resolved astigmatism value.
         auto astigmatism_value_buffer = Array<f64>(5);

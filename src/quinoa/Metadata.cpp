@@ -82,7 +82,7 @@ namespace {
 
     void check_metadata(const Metadata& metadata) {
         // Check that the tilts are within a reasonable range.
-        for (auto& e: metadata.stack) {
+        for (const auto& e: metadata.stack) {
             if (std::abs(e.angles[1]) > 75.)
                 panic("Tilt angle is greater than -+75deg, this is likely a input error");
         }
@@ -390,6 +390,10 @@ namespace qn {
                     check(index == FIELDS.size(),
                           "Missing value in data_stack at line {}. {} values are expected per line, but got {}",
                           line_number, FIELDS.size(), index);
+
+                    // CTF-related angles are stored in radians.
+                    image.defocus.angle = noa::deg2rad(image.defocus.angle);
+                    image.phase_shift = noa::deg2rad(image.phase_shift);
 
                     image.index = image.index_file;
                     image.frames = frame_path == "<NA>" ? nullptr : set_frame_path(image.time, frame_path);

@@ -19,13 +19,13 @@ namespace qn::ctf {
             .rescale_target_resolution = 0, // load at original spacing
 
             // Signal processing after cropping:
-            .exposure_filter = false,
             .bandpass{
                 .highpass_cutoff = 0.02, // FIXME is this necessary?
                 .highpass_width = 0.02,
                 .lowpass_cutoff = 0.5,
                 .lowpass_width = 0.05,
             },
+            .exposure_filter_voltage = 0, // turn off
 
             // Image processing after cropping:
             .normalize_and_standardize = true, // TODO do we need any kind of preprocessing here?

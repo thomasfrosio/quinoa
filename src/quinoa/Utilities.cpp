@@ -28,6 +28,9 @@
 #define QN_INCLUDE_CPU_ONLY
 #include "quinoa/Utilities.hpp"
 
+// FIXME
+#include "quinoa/Logger.hpp"
+
 namespace qn {
     template<nt::any_of<f32, f64> T>
     void asymmetric_least_squares_smoothing(
@@ -273,31 +276,32 @@ namespace qn {
         auto best_peak_value_adjusted = center_peak_adjusted_value;
         auto best_peak_coordinates_offset = center_peak_coordinates_offset;
 
-        for (isize y = -(N_BLOCKS_Y / 2); y <= N_BLOCKS_Y / 2; ++y) {
-            for (isize x = -(N_BLOCKS_X / 2); x <= N_BLOCKS_X / 2; ++x) {
-                if (y == 0 and x == 0)
-                    continue;
-
-                const auto block_center = center + Vec{y, x} * BLOCK_SIZE;
-                const auto peak_position = argmax(block_center);
-                if (not is_a_peak(peak_position))
-                    continue;
-
-                const auto peak_value = data(peak_position);
-                if (peak_value >= center_peak_value * THRESHOLD) {
-                    // This peak is quite close to the central peak, so correct for its base and
-                    // do the subpixel-registration to get the "actual" peak value.
-                    const auto base = peak_base_value(peak_position);
-                    const auto registration = subpixel_registration(peak_position);
-                    const auto peak_value_adjusted = registration.second - base;
-
-                    if (peak_value_adjusted > best_peak_value_adjusted) {
-                        best_peak_value_adjusted = peak_value_adjusted;
-                        best_peak_coordinates_offset = peak_position.as<f64>() - center.as<f64>() + registration.first ;
-                    }
-                }
-            }
-        }
+        // for (isize y = -(N_BLOCKS_Y / 2); y <= N_BLOCKS_Y / 2; ++y) {
+        //     for (isize x = -(N_BLOCKS_X / 2); x <= N_BLOCKS_X / 2; ++x) {
+        //         if (y == 0 and x == 0)
+        //             continue;
+        //
+        //         const auto block_center = center + Vec{y, x} * BLOCK_SIZE;
+        //         const auto peak_position = argmax(block_center);
+        //         if (not is_a_peak(peak_position))
+        //             continue;
+        //
+        //         const auto peak_value = data(peak_position);
+        //         if (peak_value >= center_peak_value * THRESHOLD) {
+        //             // This peak is quite close to the central peak, so correct for its base and
+        //             // do the subpixel-registration to get the "actual" peak value.
+        //             const auto base = peak_base_value(peak_position);
+        //             const auto registration = subpixel_registration(peak_position);
+        //             const auto peak_value_adjusted = registration.second - base;
+        //
+        //             if (peak_value_adjusted > best_peak_value_adjusted) {
+        //                 Logger::trace("found new peak: new_pos={}, peak_value_adjusted={}, orig={}", peak_position, peak_value_adjusted, best_peak_value_adjusted);
+        //                 best_peak_value_adjusted = peak_value_adjusted;
+        //                 best_peak_coordinates_offset = peak_position.as<f64>() - center.as<f64>() + registration.first ;
+        //             }
+        //         }
+        //     }
+        // }
         // FIXME Returning the original peak value seem to be the right choice... isn't it?
         return {best_peak_coordinates_offset, center_peak_registration.second};
     }

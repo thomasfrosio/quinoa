@@ -54,6 +54,11 @@ namespace qn {
             bool ctf_fit_thickness{};
 
             bool refine_run{};
+            bool refine_correct_ctf{};
+            f64 refine_phase_flip_strength{};
+            bool refine_fit_rotation{};
+            bool refine_fit_tilt{};
+            bool refine_fit_pitch{};
             bool refine_fit_thickness{};
         } alignment;
 
@@ -70,10 +75,12 @@ namespace qn {
             bool tomogram_correct_rotation{};
             nx::Interp tomogram_interpolation{};
             noa::io::DataType tomogram_dtype{};
-            bool tomogram_oversample{};
+            std::string tomogram_algorithm{};
+            i32 tomogram_oversampling_factor{};
+            bool tomogram_ramp_filter{};
             bool tomogram_correct_ctf{};
             f64 tomogram_z_padding_percent{};
-            i32 tomogram_phase_flip_strength{};
+            f64 tomogram_phase_flip_strength{};
         } postprocessing;
 
         struct Compute {
