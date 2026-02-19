@@ -134,7 +134,8 @@ namespace {
     }
 
     struct Filter {
-        SpanContiguous<f32, 2, i32> spectrum;
+        SpanContiguous<c32, 2, i32> spectrum;
+        Shape<i32, 2> logical_shape;
 
         f32 highpass_cutoff;
         f32 highpass_width;
@@ -146,9 +147,8 @@ namespace {
         f32 k;
 
         constexpr void operator()(i32 u, i32 v) const {
-            const auto& shape = spectrum.shape();
-            const auto frequency = nf::index2frequency<false, true>(Vec{u, v}, shape);
-            const auto fftfreq_2d = frequency.as<f32>() / shape.vec.as<f32>();
+            const auto frequency = nf::index2frequency<false, true>(Vec{u, v}, logical_shape);
+            const auto fftfreq_2d = frequency.as<f32>() / logical_shape.vec.as<f32>();
             const auto fftfreq = sqrt(dot(fftfreq_2d, fftfreq_2d));
 
             auto filter = f32{1};
@@ -339,6 +339,7 @@ namespace qn {
         // For 10A resolution, the filter is ~0.24 at Nyquist.
         auto filter = Filter{
             .spectrum = {}, // initialize below
+            .logical_shape = {}, // initialize below
             .highpass_cutoff = static_cast<f32>(m_parameters.bandpass.highpass_cutoff),
             .highpass_width = static_cast<f32>(m_parameters.bandpass.highpass_width),
             .lowpass_cutoff = static_cast<f32>(m_parameters.bandpass.lowpass_cutoff),
@@ -361,9 +362,10 @@ namespace qn {
         ns::phase_shift_2d<"h">(cropped_slice_rfft, cropped_slice_rfft, cropped_shape, m_rescale_shift.as<f32>());
         if (not needs_mirror_pad) {
             // No padding was asked for the bandpass, so we can do it here.
-            const auto iwise_shape = cropped_slice_rfft.shape().filter(2, 3).as<i32>();
-            filter.spectrum = cropped_slice_rfft.span_contiguous<f32, 2, i32>();
-            noa::iwise(iwise_shape, cropped_slice_rfft.device(), filter);
+            const auto iwise_shape = cropped_slice.shape().filter(2, 3).as<i32>();
+            filter.spectrum = cropped_slice_rfft.span_contiguous<c32, 2, i32>();
+            filter.logical_shape = iwise_shape;
+            noa::iwise(iwise_shape.rfft(), cropped_slice_rfft.device(), filter);
         }
         nf::c2r(cropped_slice_rfft, cropped_slice);
 
@@ -388,9 +390,10 @@ namespace qn {
             noa::resize(cropped_slice, bandpass_slice, noa::Border::REFLECT);
             nf::r2c(bandpass_slice, bandpass_slice_rfft);
 
-            const auto iwise_shape = bandpass_slice_rfft.shape().filter(2, 3).as<i32>();
-            filter.spectrum = bandpass_slice_rfft.span_contiguous<f32, 2, i32>();
-            noa::iwise(iwise_shape, bandpass_slice_rfft.device(), filter);
+            const auto iwise_shape = bandpass_slice.shape().filter(2, 3).as<i32>();
+            filter.spectrum = bandpass_slice_rfft.span_contiguous<c32, 2, i32>();
+            filter.logical_shape = iwise_shape;
+            noa::iwise(iwise_shape.rfft(), bandpass_slice_rfft.device(), filter);
 
             nf::c2r(bandpass_slice_rfft, bandpass_slice);
             noa::resize(bandpass_slice, direct_bandpass_to_output ? output_slice : cropped_slice);
