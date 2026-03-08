@@ -29,9 +29,7 @@ namespace qn {
             const auto shape = this->shape();
             for (usize i{}; i < shape.n_elements(); ++i) {
                 const auto indices = noa::offset2index(i, shape);
-                [&]<usize... I>(std::index_sequence<I...>) {
-                    function(eval_step<I>(indices[I])...);
-                }(std::make_index_sequence<SIZE>{});
+                for_each_(function, indices, std::make_index_sequence<SIZE>{});
             }
         }
 
@@ -55,6 +53,13 @@ namespace qn {
             const auto& range = m_ranges[Tag<N>{}];
             using value_t = nt::value_type_t<decltype(range)>;
             return range.start + range.step * static_cast<value_t>(i);
+        }
+
+    private:
+        // nvcc: separate function to appease the demon
+        template<typename Function, usize... I, typename Indices>
+        constexpr void for_each_(Function&& function, const Indices& indices, std::index_sequence<I...>) const {
+            function(eval_step<I>(indices[I])...);
         }
 
     private:

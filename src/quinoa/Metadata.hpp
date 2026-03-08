@@ -89,7 +89,11 @@ namespace qn {
 
             /// (Stable) sorts the images based on a given key.
             /// Valid keys: "index", "index_file", "tilt", "absolute_tilt", "exposure", "time".
-            auto sort(std::string_view key, bool ascending = true) -> Stack&;
+            auto sort(std::string_view key, bool ascending = true) & -> Stack&;
+            auto sort(std::string_view key, bool ascending = true) && -> Stack&& {
+                this->sort(key, ascending);
+                return std::move(*this);
+            }
 
             struct UpdateOptions {
                 bool update_angles{false};
@@ -298,6 +302,14 @@ namespace qn {
                 .bfactor = 0,
                 .scale = 1.,
             }.to_ctf();
+        }
+
+        [[nodiscard]] auto has_astigmatism(f64 threshold) const -> bool {
+            // TODO better detection, mean(abs(value))?
+            for (const auto& image: stack)
+                if (std::abs(image.defocus.astigmatism) > threshold)
+                    return true;
+            return false;
         }
     };
 }

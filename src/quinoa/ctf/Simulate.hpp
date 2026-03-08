@@ -10,10 +10,12 @@ namespace qn::ctf {
     public:
         constexpr static usize SIMULATED_LOGICAL_SIZE = 8192;
         constexpr static f64 SIMULATED_FREQ_STEP = 1 / static_cast<f64>(SIMULATED_LOGICAL_SIZE);
+
     public:
         /// Sample the spectrum at the given fftfreq.
+        template<nt::real T>
         [[nodiscard]] static auto sample_at(
-            SpanContiguous<const f32> spectrum,
+            SpanContiguous<T> spectrum,
             const Vec<f64, 2>& fftfreq_range,
             f64 fftfreq
         ) -> f64 {
@@ -46,6 +48,9 @@ namespace qn::ctf {
         public:
             [[nodiscard]] constexpr auto fftfreq() const -> f64 {
                 return static_cast<f64>(m_index) * SIMULATED_FREQ_STEP;
+            }
+            [[nodiscard]] constexpr auto fftfreq_step() const -> f64 {
+                return SIMULATED_FREQ_STEP;
             }
 
             /// Given the current position i, retrieve the slope [i-1,i] and [i,i+1].

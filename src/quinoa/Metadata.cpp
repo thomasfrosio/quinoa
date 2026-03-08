@@ -479,7 +479,7 @@ namespace qn {
         noa::write_text(buffer, filename);
     }
 
-    auto Metadata::Stack::sort(std::string_view key, bool ascending) -> Metadata::Stack& {
+    auto Metadata::Stack::sort(std::string_view key, bool ascending) & -> Metadata::Stack& {
         std::string lower_key = noa::details::to_lower(key);
         if (lower_key == "index") {
             stdr::stable_sort(

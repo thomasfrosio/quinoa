@@ -34,7 +34,7 @@ namespace {
             "experiment.thickness"sv,
             "preprocessing.run"sv,
             "preprocessing.exclude_blank_views"sv,
-            "preprocessing.exclude_stack_images"sv,
+            "preprocessing.exclude_stack_indices"sv,
             "alignment.coarse.run"sv,
             "alignment.coarse.check_rotation"sv,
             "alignment.coarse.fit_rotation"sv,

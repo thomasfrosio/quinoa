@@ -2,7 +2,7 @@
 
 #include <cmath>
 #include <vector>
-#include <noa/Runtime.hpp>
+#include <algorithm>
 
 #include "quinoa/Types.hpp"
 
@@ -72,7 +72,7 @@ namespace qn::details {
             // preconditioning
             // normalize column i so that a_ii=1
             for (isize i{}; i < dim(); ++i) {
-                check(self(i, i) != 0.0);
+                check(std::abs(self(i, i)) > 1e-18); // Check epsilon for numerical stability
                 saved_diag(i) = 1.0 / self(i, i);
                 const isize j_min = std::max(isize{}, i - num_lower());
                 const isize j_max = std::min(dim() - 1, i + num_upper());
@@ -131,7 +131,7 @@ namespace qn::details {
             SpanContiguous<value_type> x,
             bool is_lu_decomposed = false
         ) {
-            if (is_lu_decomposed == false)
+            if (not is_lu_decomposed)
                 lu_decompose();
             l_solve(b, y);
             r_solve(y, x);
@@ -182,8 +182,8 @@ namespace qn {
         Spline() = default;
 
         Spline(
-            const SpanContiguous<value_type>& x,
-            const SpanContiguous<value_type>& y,
+            const SpanContiguous<const value_type>& x,
+            const SpanContiguous<const value_type>& y,
             const Parameters& parameters
         ) {
             fit(x, y, parameters);
@@ -199,8 +199,8 @@ namespace qn {
 
         /// Creates a spline.
         void fit(
-            const SpanContiguous<value_type>& x,
-            const SpanContiguous<value_type>& y,
+            const SpanContiguous<const value_type>& x,
+            const SpanContiguous<const value_type>& y,
             const Parameters& parameters
         ) {
             set_points(x, y, parameters);
@@ -210,8 +210,8 @@ namespace qn {
 
         /// Set all data points.
         void set_points(
-            const SpanContiguous<value_type>& x,
-            const SpanContiguous<value_type>& y,
+            const SpanContiguous<const value_type>& x,
+            const SpanContiguous<const value_type>& y,
             const Parameters& parameters
         ) {
             // not-a-knot with 3 points has many solutions, so require a minimum of 4.
@@ -307,7 +307,7 @@ namespace qn {
                     A(n - 1, n - 3) = -(m_x[n - 1] - m_x[n - 2]);
                     A(n - 1, n - 2) = m_x[n - 1] - m_x[n - 3];
                     A(n - 1, n - 1) = -(m_x[n - 2] - m_x[n - 3]);
-                    rhs[0] = 0.0; // FIXME shouldn't this be rhs[n-1]?
+                    rhs[n - 1] = 0.0;
                 }
 
                 // Solve the equation system to get the parameters c.
@@ -361,7 +361,6 @@ namespace qn {
                 } else if (m_right == SECOND_DERIVATIVE) {
                     const auto h = m_x[n - 1] - m_x[n - 2];
                     m_b[n - 1] = 0.5 * (-m_b[n - 2] + 0.5 * m_right_value * h + 3.0 * (m_y[n - 1] - m_y[n - 2]) / h);
-                    m_c[n - 1] = 0.5 * m_right_value;
                 } else if (m_right == NOT_A_KNOT) {
                     // f''' continuous at x[n-2]
                     const auto h0 = m_x[n - 2] - m_x[n - 3];
@@ -369,13 +368,19 @@ namespace qn {
                     m_b[n - 1] =
                         -m_b[n - 2] + 2.0 * (m_y[n - 1] - m_y[n - 2]) / h1 + h1 * h1 / (h0 * h0) *
                         (m_b[n - 3] + m_b[n - 2] - 2.0 * (m_y[n - 2] - m_y[n - 3]) / h0);
-                    // f'' continuous at x[n-1]: c[n-1] = 3*d[n-2]*h[n-2] + c[n-1]
-                    m_c[n - 1] = (m_b[n - 2] + 2.0 * m_b[n - 1]) / h1 - 3.0 * (m_y[n - 1] - m_y[n - 2]) / (h1 * h1);
                 }
                 m_d[n - 1] = 0.0;
 
                 // Parameters c and d are determined by continuity and differentiability.
                 set_coeffs_from_b_();
+
+                // Assign boundary values for c, specifically after the coeffs have been set.
+                if (m_right == SECOND_DERIVATIVE) {
+                    m_c[n - 1] = 0.5 * m_right_value;
+                } else if (m_right == NOT_A_KNOT) {
+                    const auto h1 = m_x[n - 1] - m_x[n - 2];
+                    m_c[n - 1] = (m_b[n - 2] + 2.0 * m_b[n - 1]) / h1 - 3.0 * (m_y[n - 1] - m_y[n - 2]) / (h1 * h1);
+                }
             }
 
             // For left extrapolation coefficients.
@@ -386,8 +391,7 @@ namespace qn {
         /// This is done by adjusting the slope at grid points by a non-negative factor.
         /// This breaks C^2, and if adjustments need to be made at the boundary points,
         /// this can also break boundary conditions.
-        ///
-        /// \returns false if no adjustments have been made, true otherwise
+        /// Returns whether adjustments have been made.
         bool make_monotonic() {
             bool modified = false;
             const isize n = m_x.ssize();
@@ -430,7 +434,7 @@ namespace qn {
                 }
             }
 
-            if (modified == true) {
+            if (modified) {
                 set_coeffs_from_b_();
                 m_made_monotonic = true;
             }
@@ -440,11 +444,7 @@ namespace qn {
 
         /// Evaluates the spline at point x.
         [[nodiscard]] constexpr auto interpolate_at(value_type x) const -> value_type {
-            // polynomial evaluation using Horner's scheme
-            // TODO: consider more numerically accurate algorithms, e.g.:
-            //   - Clenshaw
-            //   - Even-Odd method by A.C.R. Newbery
-            //   - Compensated Horner Scheme
+            // Polynomial evaluation using Horner's scheme.
             const isize n = m_x.ssize();
             const isize idx = find_closest_(x);
             const auto h = x - m_x[idx];
@@ -464,7 +464,6 @@ namespace qn {
             const isize n = m_x.ssize();
             const isize idx = find_closest_(x);
             const auto h = x - m_x[idx];
-
             if (x < m_x[0]) { // extrapolation to the left
                 switch (order) {
                     case 1: return 2 * m_c0 * h + m_b[0];
@@ -472,7 +471,6 @@ namespace qn {
                     default: return 0;
                 }
             }
-
             if (x > m_x[n - 1]) { // extrapolation to the right
                 switch (order) {
                     case 1: return 2 * m_c[n - 1] * h + m_b[n - 1];
@@ -480,7 +478,6 @@ namespace qn {
                     default: return 0;
                 }
             }
-
             switch (order) { // interpolation
                 case 1: return (3 * m_d[idx] * h + 2 * m_c[idx]) * h + m_b[idx];
                 case 2: return 6 * m_d[idx] * h + 2 * m_c[idx];
@@ -491,6 +488,9 @@ namespace qn {
 
         [[nodiscard]] constexpr auto x() const -> SpanContiguous<value_type> { return m_x; }
         [[nodiscard]] constexpr auto y() const -> SpanContiguous<value_type> { return m_y; }
+        [[nodiscard]] constexpr auto b() const -> SpanContiguous<value_type> { return m_b; }
+        [[nodiscard]] constexpr auto c() const -> SpanContiguous<value_type> { return m_c; }
+        [[nodiscard]] constexpr auto d() const -> SpanContiguous<value_type> { return m_d; }
         [[nodiscard]] auto is_empty() const -> bool { return m_buffer == nullptr; }
 
     private:
@@ -498,7 +498,9 @@ namespace qn {
             // Reuse the buffer if you can.
             const isize n_to_allocate = n * 5;
             if (m_buffer == nullptr or n_allocated < n_to_allocate) {
-                n_allocated = n_to_allocate;
+                // Allocate a bit more to increase the chance of reusing the buffer
+                // when the fitting is done with slightly different fitting ranges.
+                n_allocated = (n_to_allocate + 200) * 5;
                 m_buffer = std::make_unique<value_type[]>(static_cast<size_t>(n_allocated));
             }
             if (reserve_only)
@@ -528,18 +530,17 @@ namespace qn {
 
         // Closest idx so that m_x[idx] <= x.
         [[nodiscard]] constexpr auto find_closest_(value_type x) const -> isize {
-            // x is sorted, so stop when we passed x.
-            for (isize i{}; i < m_x.ssize(); ++i)
-                if (m_x[i] > x)
-                    return std::max(i - 1, isize{0});
-            return m_x.ssize() - 1;
+            auto it = stdr::lower_bound(m_x, x);
+            if (it == m_x.begin()) return 0;
+            if (it == m_x.end()) return m_x.ssize() - 1;
+            return std::distance(m_x.begin(), it) - 1;
         }
 
     private:
         std::unique_ptr<value_type[]> m_buffer;
         isize n_allocated{};
 
-        // interpolation parameters
+        // Cubic spline expressed as a set of cubic polynomials.
         // f(x) = a_i + b_i*(x-x_i) + c_i*(x-x_i)^2 + d_i*(x-x_i)^3
         // where a_i = y_i, or else it won't go through grid points
         SpanContiguous<value_type> m_x;
@@ -549,35 +550,11 @@ namespace qn {
         SpanContiguous<value_type> m_d;
 
         value_type m_c0{}; // for left extrapolation
-        Type m_type{};
-        Boundary m_left{};
-        Boundary m_right{};
+        Type m_type{LINEAR};
+        Boundary m_left{FIRST_DERIVATIVE};
+        Boundary m_right{FIRST_DERIVATIVE};
         value_type m_left_value{};
         value_type m_right_value{};
         bool m_made_monotonic{};
     };
-
-    /// Samples the spline from 0 to 1.
-    template<nt::real T, typename Op = noa::Copy>
-    void sample_spline_1d(
-        const Spline& spline,
-        const SpanContiguous<T, 1>& output,
-        Op&& op = Op{}
-    ) {
-        const f64 norm = 1 / static_cast<f64>(output.ssize() - 1);
-        for (isize i{}; i < output.ssize(); ++i) {
-            const f64 coordinate = static_cast<f64>(i) * norm; // [0,1]
-            output[i] = static_cast<T>(op(spline.interpolate_at(coordinate)));
-        }
-    }
-
-    /// Samples the spline from 0 to 1.
-    template<nt::writable_varray_of_real Output, typename Op = noa::Copy>
-    void sample_cubic_bspline_1d(
-        const Spline& spline,
-        const Output& output,
-        Op&& op = Op{}
-    ) {
-        sample_spline_1d(spline, output.span_1d_contiguous(), std::forward<Op>(op));
-    }
 }
