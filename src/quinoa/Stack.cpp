@@ -180,130 +180,72 @@ namespace {
 }
 
 namespace qn {
-    Array<f32> StackLoader::s_input_stack{};
+    Array<std::byte> StackLoader::s_input_stack{};
+    noa::io::DataType StackLoader::s_input_stack_dtype{};
 
     void StackLoader::register_input_stack(const Path& filename) {
         auto timer = Logger::info_scope_time("Loading and decoding the input stack");
 
         using namespace noa::io;
         auto file = ImageFile(filename, {.read = true});
-        const auto n_elements = file.shape().n_elements();
-        const auto encoded_size = static_cast<f32>(file.dtype().n_bytes(n_elements));
-        const auto decoded_size = static_cast<f32>(DataType::n_bytes(DataType::F32, n_elements));
+        const auto file_dtype = file.dtype();
+        s_input_stack_dtype = file_dtype.closest_static_type();
+
+        const auto file_shape = file.shape();
+        const auto n_elements = file_shape.n_elements();
+        const auto encoded_size = static_cast<f32>(file_dtype.n_bytes(n_elements));
+        const auto decoded_size = static_cast<f32>(s_input_stack_dtype.n_bytes(n_elements));
 
         // Adding more threads is only useful when the file is compressed. Without compression, we're just
         // waiting for the filesystem, and having multiple threads in the mix seems to make it worse.
-        const i32 n_threads = file.is_compressed() ? 4 : 1;
+        const bool is_compressed = file.is_compressed();
+        const i32 n_threads = is_compressed ? 4 : 1;
 
         Logger::trace(
             "Stack registry:\n"
             "  path={}\n"
-            "  shape={}\n"
-            "  dtype={}->f32\n"
+            "  shape={} (compressed={})\n"
+            "  dtype={}->{}\n"
             "  size={:.2f}GB->{:.2f}GB\n"
             "  n_threads={}",
-            filename, file.shape(), file.dtype(),
+            filename, file_shape, is_compressed,
+            file_dtype, s_input_stack_dtype,
             encoded_size / 1e9f, decoded_size / 1e9f,
             n_threads
         );
 
-        // TODO Use managed memory? This makes reading slices faster, but may increase pressure when loading patches.
-        s_input_stack = Array<f32>(file.shape());
-        file.read_all(s_input_stack.span(), {.n_threads = n_threads});
+        const auto type_erased_shape = file_shape.set<3>(file_shape[3] * s_input_stack_dtype.n_bytes(1));
+        s_input_stack = Array<std::byte>(type_erased_shape);
+        file.read_all(s_input_stack.span_1d(), s_input_stack_dtype, {.n_threads = n_threads});
 
         // Some files are not encoded correctly; reinterpret a volume as a stack of images.
-        if (s_input_stack.shape()[0] == 1 and s_input_stack.shape()[1] > 1)
+        if (s_input_stack.shape()[0] == 1 and s_input_stack.shape()[1] > 1) {
+            Logger::trace("Input stack encoded as a 3d volume... reinterpreting it to a stack of 2d images");
             s_input_stack = std::move(s_input_stack).permute({1, 0, 2, 3});
+        }
     }
+
+    StackLoader::StackLoader(ni::ImageFile&& file, const LoadStackParameters& parameters)
+        : m_file(std::move(file)), m_parameters(parameters) { init_(); }
 
     StackLoader::StackLoader(const Path& filename, const LoadStackParameters& parameters) : m_parameters(parameters) {
         m_file.open(filename, {.read = true});
-        auto file_shape = m_file.shape();
-        if (file_shape[0] == 1 and file_shape[1] > 1) {
-            Logger::warn(
-                "{}. A tilt-series was expected, but the image file encodes a volume. To continue, we will assume "
-                "the file metadata is not encoded properly and will interpret this volume as a stack of 2d images",
-                filename
-            );
-            std::swap(file_shape[0], file_shape[1]);
+        init_();
+    }
+
+    void StackLoader::record_fft() const {
+        const bool needs_mirror_pad = not m_bandpass_slice_rfft.is_empty();
+        if (m_has_cropping or (m_has_filter and not needs_mirror_pad)) {
+            const auto [padded_slice, padded_slice_rfft] = padded_slice_();
+            const auto [cropped_slice, cropped_slice_rfft] = cropped_slice_();
+            nf::r2c(padded_slice, padded_slice_rfft, {.record_and_share_workspace = true});
+            nf::c2r(cropped_slice_rfft, cropped_slice, {.record_and_share_workspace = true});
         }
-        check(file_shape[1] == 1, "{}. A tilt-series was expected, but got image file with shape {}", filename, file_shape);
-        m_file_slice_count = file_shape[0];
-        m_input_slice_shape = file_shape.filter(2, 3);
-
-        const auto options = ArrayOption(parameters.compute_device, parameters.allocator);
-        const auto bytes_before = Allocator::bytes_currently_allocated(options.device);
-
-        // Reading the file.
-        const auto input_shape = m_input_slice_shape.push_front<2>(1);
-        const bool use_gpu = parameters.compute_device.is_gpu();
-        const bool has_initial_padding = m_input_slice_shape != m_padded_slice_shape;
-        const bool has_register = not s_input_stack.is_empty();
-        if (not has_register and use_gpu)
-            m_input_slice_io = Array<f32>(input_shape);
-        if (has_initial_padding and ((has_register and use_gpu) or not has_register))
-            m_input_slice = Array<f32>(input_shape, options);
-
-        // Fourier cropping.
-        m_input_spacing = m_file.spacing().pop_front().as<f64>();
-        const auto target_spacing = Vec<f64, 2>::from_value(parameters.rescale_target_resolution / 2);
-        const auto relative_freq_error = parameters.precise_cutoff ? 2.5e-4 : 1.;
-        const FourierCropDimensions fourier_crop = fourier_crop_dimensions(
-            m_input_slice_shape, m_input_spacing,
-            target_spacing, relative_freq_error,
-            parameters.rescale_min_size, parameters.rescale_max_size
-        );
-        m_padded_slice_shape = fourier_crop.padded_shape;
-        m_cropped_slice_shape = fourier_crop.cropped_shape;
-        m_output_spacing = fourier_crop.cropped_spacing;
-        m_rescale_shift = fourier_crop.rescale_shifts;
-        m_padded_slice_rfft = Array<c32>(m_padded_slice_shape.push_front<2>(1).rfft(), options);
-        m_cropped_slice_rfft = Array<c32>(m_cropped_slice_shape.push_front<2>(1).rfft(), options);
-
-        // Mirror padding for bandpass.
-        m_bandpass_slice_shape = m_cropped_slice_shape;
-        if (parameters.bandpass_mirror_padding_factor > 0) {
-            auto padding = m_bandpass_slice_shape.vec.as<f64>() * parameters.bandpass_mirror_padding_factor;
-            m_bandpass_slice_shape += Shape{noa::round(padding).as<isize>()};
-            m_bandpass_slice_shape = noa::max(2 * m_cropped_slice_shape, nf::next_fast_shape(m_bandpass_slice_shape));
-            m_bandpass_slice_rfft = Array<c32>(m_bandpass_slice_shape.push_front<2>(1).rfft(), options);
+        if (m_has_filter and needs_mirror_pad) {
+            const auto [bandpass_slice, bandpass_slice_rfft] = bandpass_slice_();
+            nf::r2c(bandpass_slice, bandpass_slice_rfft, {.record_and_share_workspace = true});
+            nf::c2r(bandpass_slice_rfft, bandpass_slice, {.record_and_share_workspace = true});
         }
-
-        // Final zero-padding.
-        m_output_slice_shape = m_cropped_slice_shape;
-        if (parameters.zero_pad_to_square_shape)
-            m_output_slice_shape = noa::max(m_output_slice_shape);
-        if (parameters.zero_pad_to_fast_fft_shape) {
-            m_output_slice_shape[0] = noa::fft::next_fast_size(m_output_slice_shape[0]);
-            m_output_slice_shape[1] = noa::fft::next_fast_size(m_output_slice_shape[1]);
-        }
-
-        const auto bytes_after = Allocator::bytes_currently_allocated(options.device);
-        const auto bytes_allocated = static_cast<f64>(bytes_after - bytes_before) * 1e-6;
-        Logger::trace(
-            "Stack loader:\n"
-            "  device={} (allocated={:.1f}MB, {})\n"
-            "  exposure_filter={}\n"
-            "  normalize={} (mean=0, stddev=1)\n"
-            "  zero_taper={:.1f}%\n"
-            "  n_slices={}\n"
-            "  input_shape={}   (spacing={::.3f}, registered={})\n"
-            "  padded_shape={}  (precise_cutoff={})\n"
-            "  cropped_shape={} (rescale_shift={::.3f})\n"
-            "  bandpass_shape={} (mirror_padding_factor={:.2f})\n"
-            "  output_shape={}  (spacing={::.3f}, fast_shape={})",
-            parameters.compute_device, bytes_allocated, options.allocator,
-            parameters.exposure_filter_voltage > 0,
-            parameters.normalize_and_standardize,
-            parameters.smooth_edge_percent * 100.,
-            file_shape[0],
-            m_input_slice_shape, m_input_spacing, has_register,
-            m_padded_slice_shape, parameters.precise_cutoff,
-            m_cropped_slice_shape, m_rescale_shift,
-            m_bandpass_slice_shape, parameters.bandpass_mirror_padding_factor,
-            m_output_slice_shape, m_output_spacing,
-            parameters.zero_pad_to_fast_fft_shape
-        );
     }
 
     void StackLoader::read_slice(const View<f32>& output_slice, isize file_slice_index, bool cache, f64 exposure) {
@@ -314,7 +256,7 @@ namespace qn {
               "Trying to access slice index {}, but the file stack has a total of {} slices",
               file_slice_index, m_file_slice_count);
 
-        // Check if it's in the cache.
+        // Use the cached slice if it exists.
         for (const auto& [index, buffer]: m_cache) {
             if (index == file_slice_index) {
                 buffer.to(output_slice);
@@ -322,17 +264,13 @@ namespace qn {
             }
         }
 
-        const auto padded_shape = m_padded_slice_shape.push_front<2>(1);
-        const auto cropped_shape = m_cropped_slice_shape.push_front<2>(1);
-
-        const auto padded_slice_rfft = m_padded_slice_rfft.view();
-        const auto padded_slice = nf::alias_to_real(padded_slice_rfft, padded_shape);
-        const auto cropped_slice_rfft = m_cropped_slice_rfft.view();
-        const auto cropped_slice = nf::alias_to_real(cropped_slice_rfft, cropped_shape);
-
         const bool needs_mirror_pad = not m_bandpass_slice_rfft.is_empty();
         const bool needs_smooth_edge = m_parameters.smooth_edge_percent > 0;
         const bool needs_final_zero_pad = m_cropped_slice_shape != m_output_slice_shape;
+        const bool needs_normalized = m_parameters.normalize_and_standardize;
+        const bool has_preprocessing =
+            m_has_cropping or m_has_filter or needs_smooth_edge or
+            needs_final_zero_pad or needs_normalized;
 
         // Bandpass and exposure filter.
         // The exposure filter is essentially a very smooth lowpass that increases with the exposure.
@@ -353,21 +291,51 @@ namespace qn {
                 1,
         };
 
-        // Read the slice, transfer to the compute device, and precision pad if necessary.
-        read_slice_and_precision_pad_(file_slice_index, padded_slice);
+        //
+        auto [input_slice, input_slice_rfft] = input_slice_();
+        auto [padded_slice, padded_slice_rfft] = padded_slice_();
+        auto [cropped_slice, cropped_slice_rfft] = cropped_slice_();
 
-        // Fourier-space cropping.
-        nf::r2c(padded_slice, padded_slice_rfft);
-        nf::resize<"h">(padded_slice_rfft, padded_shape, cropped_slice_rfft, cropped_shape);
-        ns::phase_shift_2d<"h">(cropped_slice_rfft, cropped_slice_rfft, cropped_shape, m_rescale_shift.as<f32>());
-        if (not needs_mirror_pad) {
-            // No padding was asked for the bandpass, so we can do it here.
-            const auto iwise_shape = cropped_slice.shape().filter(2, 3).as<i32>();
-            filter.spectrum = cropped_slice_rfft.span_contiguous<c32, 2, i32>();
-            filter.logical_shape = iwise_shape;
-            noa::iwise(iwise_shape.rfft(), cropped_slice_rfft.device(), filter);
+        // Synchronize to not overwrite the io buffer in GPU case.
+        input_slice.eval();
+
+        // Read the slice.
+        // We use an intermediary buffer, creating an extra copy, but this is to keep things contiguous
+        // when reading from the file or register, and to not have to rely on unified memory.
+        if (not s_input_stack.is_empty())
+            ni::cast(s_input_stack.view().subregion(file_slice_index), s_input_stack_dtype, m_io_slice.view());
+        else
+            m_file.read_slice(m_io_slice.span(), {.bd_offset = {file_slice_index, 0}, .clamp = false});
+
+        // If no preprocessing, we can copy directly to the output slice and return;
+        m_io_slice.view().to(has_preprocessing ? input_slice : output_slice);
+
+        // Optional padding of the input slice for accurate Fourier cropping cutoff.
+        if (m_has_padding) {
+            const auto padding_right = (padded_slice.shape() - input_slice.shape()).vec;
+            noa::resize(input_slice, padded_slice, {}, padding_right, noa::Border::REFLECT);
         }
-        nf::c2r(cropped_slice_rfft, cropped_slice);
+
+        // Fourier cropping and/or filtering if there's no mirror-padding needed for the highpass.
+        if (m_has_cropping or (m_has_filter and not needs_mirror_pad)) {
+            nf::r2c(padded_slice, padded_slice_rfft);
+            if (m_has_cropping) {
+                nf::resize<"h">(
+                    padded_slice_rfft, padded_slice.shape(),
+                    cropped_slice_rfft, cropped_slice.shape());
+                ns::phase_shift_2d<"h">(
+                    cropped_slice_rfft, cropped_slice_rfft,
+                    cropped_slice.shape(), m_rescale_shift.as<f32>());
+            }
+            if (m_has_filter and not needs_mirror_pad) {
+                // No mirror-padding was required for the highpass, so we can filter here.
+                const auto iwise_shape = cropped_slice.shape().filter(2, 3).as<i32>();
+                filter.spectrum = cropped_slice_rfft.span_contiguous<c32, 2, i32>();
+                filter.logical_shape = iwise_shape;
+                noa::iwise(iwise_shape.rfft(), cropped_slice_rfft.device(), filter);
+            }
+            nf::c2r(cropped_slice_rfft, cropped_slice);
+        }
 
         // Optimize resizes and transfers as much as possible.
         const bool direct_bandpass_to_output =
@@ -382,11 +350,8 @@ namespace qn {
         // removed. In practice, with smooth passes, similar results can be achieved with just a fraction of that
         // (10%-50%). However, with sharper passes, I would recommend at least 50%. Since this depends on the bandpass
         // and affects (runtime) performance, this was made a parameter we can change depending on the context.
-        if (needs_mirror_pad) {
-            const auto bandpass_shape = m_bandpass_slice_shape.push_front<2>(1);
-            const auto bandpass_slice_rfft = m_bandpass_slice_rfft.view();
-            const auto bandpass_slice = nf::alias_to_real(bandpass_slice_rfft, bandpass_shape);
-
+        if (m_has_filter and needs_mirror_pad) {
+            auto [bandpass_slice, bandpass_slice_rfft] = bandpass_slice_();
             noa::resize(cropped_slice, bandpass_slice, noa::Border::REFLECT);
             nf::r2c(bandpass_slice, bandpass_slice_rfft);
 
@@ -403,16 +368,16 @@ namespace qn {
         // We assume there's always at least a small highpass that sets the mean to zero and
         // removes the large contrast gradients. Otherwise, this mask will not look good.
         if (needs_smooth_edge) {
-            const auto input_slice = direct_bandpass_to_output ? output_slice : cropped_slice;
-            const auto tapered_slice = direct_taper_to_output ? output_slice : input_slice;
+            const auto untapered_slice = direct_bandpass_to_output ? output_slice : cropped_slice;
+            const auto tapered_slice = direct_taper_to_output ? output_slice : untapered_slice;
 
-            const auto center = (input_slice.shape().filter(2, 3).vec / 2).as<f64>();
+            const auto center = (untapered_slice.shape().filter(2, 3).vec / 2).as<f64>();
             const auto radius = (cropped_slice.shape().filter(2, 3).vec / 2).as<f64>();
             const auto smooth_edge_size =
-                static_cast<f64>(noa::max(cropped_shape.filter(2, 3))) *
+                static_cast<f64>(noa::max(cropped_slice.shape().filter(2, 3))) *
                 m_parameters.smooth_edge_percent;
 
-            nx::draw(input_slice, tapered_slice, nx::Rectangle{
+            nx::draw(untapered_slice, tapered_slice, nx::Rectangle{
                 .center = center,
                 .radius = radius - smooth_edge_size,
                 .smoothness = smooth_edge_size,
@@ -420,13 +385,13 @@ namespace qn {
         }
 
         // Copy to the output slice, or final zero-padding to the output shape.
-        if (not direct_bandpass_to_output and not direct_taper_to_output)
+        if (has_preprocessing and (not direct_bandpass_to_output and not direct_taper_to_output))
             noa::resize(cropped_slice, output_slice);
 
         // Final normalization (mean=0, stddev=1).
         // If a highpass is applied, the mean should be close to zero at this point,
         // but the zero-taper and zero-padding can slightly offset the mean.
-        if (m_parameters.normalize_and_standardize)
+        if (needs_normalized)
             noa::normalize(output_slice, output_slice, {.mode = noa::Norm::MEAN_STD});
 
         // Cache the output. Since we only get a view, make sure to synchronize before quitting (.eval())
@@ -435,45 +400,135 @@ namespace qn {
             m_cache.emplace_back(file_slice_index, output_slice.to_cpu());
     }
 
-    // This function could be simpler, but here I'm willing to pay the price of complexity
-    // to gain performance and reduce the memory usage.
-    void StackLoader::read_slice_and_precision_pad_(isize file_slice_index, const View<f32>& padded_slice) {
-        const bool has_initial_padding = m_input_slice_shape != m_padded_slice_shape;
-        const bool is_gpu = compute_device().is_gpu();
+    void StackLoader::init_() {
+        auto file_shape = m_file.shape();
+        if (file_shape[0] == 1 and file_shape[1] > 1) {
+            Logger::warn(
+                "{}. A tilt-series was expected, but the image file encodes a volume. To continue, we will assume "
+                "the file metadata is not encoded properly and will interpret this volume as a stack of 2d images",
+                m_file.path()
+            );
+            std::swap(file_shape[0], file_shape[1]);
+        }
+        check(file_shape[1] == 1, "{}. A tilt-series was expected, but got image file with shape {}", m_file.path(), file_shape);
+        m_file_slice_count = file_shape[0];
+        m_input_slice_shape = file_shape.filter(2, 3);
 
-        // Load the input slice to the compute device.
-        View<f32> input_slice;
-        if (not s_input_stack.is_empty()) { // has_register
-            const auto registered_slice = s_input_stack.view().subregion(file_slice_index);
-            if (not has_initial_padding) {
-                registered_slice.to(padded_slice);
-                return;
-            }
-            if (is_gpu) {
-                input_slice = m_input_slice.view();
-                registered_slice.to(input_slice);
-            } else {
-                input_slice = registered_slice;
-            }
-        } else {
-            input_slice = has_initial_padding ? m_input_slice.view() : padded_slice;
-            auto input_slice_io = is_gpu ? m_input_slice_io.view() : input_slice;
+        // Fourier cropping parameters.
+        m_input_spacing = m_file.spacing().pop_front().as<f64>();
+        const auto target_spacing = Vec<f64, 2>::from_value(m_parameters.rescale_target_resolution / 2);
+        const auto relative_freq_error = m_parameters.precise_cutoff ? 2.5e-4 : 1.;
+        const auto fourier_crop = fourier_crop_dimensions(
+            m_input_slice_shape, m_input_spacing,
+            target_spacing, relative_freq_error,
+            m_parameters.rescale_min_size, m_parameters.rescale_max_size
+        );
+        m_padded_slice_shape = fourier_crop.padded_shape;
+        m_cropped_slice_shape = fourier_crop.cropped_shape;
+        m_output_spacing = fourier_crop.cropped_spacing;
+        m_rescale_shift = fourier_crop.rescale_shifts;
 
-            m_file.read_slice(input_slice_io.eval().span(), {.bd_offset = {file_slice_index, 0}, .clamp = false});
-            if (is_gpu)
-                noa::copy(input_slice_io, input_slice);
+        // Bypass flags.
+        m_has_padding = m_input_slice_shape != m_padded_slice_shape;
+        m_has_cropping = m_padded_slice_shape != m_cropped_slice_shape;
+        m_has_filter =
+            m_parameters.exposure_filter_voltage > 0 or
+            m_parameters.bandpass.highpass_cutoff > 0 or
+            m_parameters.bandpass.lowpass_cutoff > 0;
+
+        const auto options = ArrayOption(m_parameters.compute_device, m_parameters.allocator);
+        const auto bytes_before = Allocator::bytes_currently_allocated(options.device);
+
+        m_io_slice = Array<f32>(m_input_slice_shape.push_front<2>(1));
+        m_input_slice_rfft = Array<c32>(m_input_slice_shape.push_front<2>(1).rfft(), options);
+        m_padded_slice_rfft = m_has_padding ? Array<c32>(m_padded_slice_shape.push_front<2>(1).rfft(), options) : m_input_slice_rfft;
+        m_cropped_slice_rfft = m_has_cropping ? Array<c32>(m_cropped_slice_shape.push_front<2>(1).rfft(), options) : m_padded_slice_rfft;
+
+        // Mirror padding for bandpass.
+        m_bandpass_slice_shape = m_cropped_slice_shape;
+        if (m_has_filter and m_parameters.bandpass_mirror_padding_factor > 0) {
+            const auto padding = m_bandpass_slice_shape.vec.as<f64>() * m_parameters.bandpass_mirror_padding_factor;
+            m_bandpass_slice_shape += Shape{noa::round(padding).as<isize>()};
+            m_bandpass_slice_shape = nf::next_fast_shape(m_bandpass_slice_shape);
+            // m_bandpass_slice_shape = noa::max(2 * m_cropped_slice_shape, nf::next_fast_shape(m_bandpass_slice_shape)); // FIXME
+            m_bandpass_slice_rfft = Array<c32>(m_bandpass_slice_shape.push_front<2>(1).rfft(), options);
         }
 
-        // Optional adding of the input slice for accurate Fourier cropping cutoff.
-        if (has_initial_padding) {
-            const auto padding_right = (padded_slice.shape() - input_slice.shape()).vec;
-            noa::resize(input_slice, padded_slice, {}, padding_right, noa::Border::REFLECT); // TODO Zero?
+        // Final zero-padding.
+        m_output_slice_shape = m_cropped_slice_shape;
+        if (m_parameters.zero_pad_to_square_shape)
+            m_output_slice_shape = noa::max(m_output_slice_shape);
+        if (m_parameters.zero_pad_to_fast_fft_shape) {
+            m_output_slice_shape[0] = noa::fft::next_fast_size(m_output_slice_shape[0]);
+            m_output_slice_shape[1] = noa::fft::next_fast_size(m_output_slice_shape[1]);
         }
+
+        // To save as much memory as possible, share the FFT workspace.
+        if (m_parameters.allocate_fft_workspace and options.device.is_gpu()) {
+            record_fft();
+            if (const auto workspace_size = nf::workspace_left_to_allocate(options.device)) {
+                const auto n_plans_set = nf::set_workspace(options.device, Array<std::byte>(workspace_size, options));
+                if (n_plans_set == 0)
+                    Logger::warn("FFT workspace couldn't be set, please report this");
+            }
+        }
+
+        const auto bytes_after = Allocator::bytes_currently_allocated(options.device);
+        const auto bytes_allocated = static_cast<f64>(bytes_after - bytes_before) * 1e-6;
+        const bool has_register = not s_input_stack.is_empty();
+        Logger::trace(
+            "Stack loader:\n"
+            "  device={} (allocated={:.1f}MB, {})\n"
+            "  exposure_filter={}\n"
+            "  normalize={} (mean=0, stddev=1)\n"
+            "  zero_taper={:.1f}%\n"
+            "  n_slices={}\n"
+            "  input_shape={}   (spacing={::.3f}, registered={})\n"
+            "  padded_shape={}  (precise_cutoff={})\n"
+            "  cropped_shape={} (rescale_shift={::.3f})\n"
+            "  bandpass_shape={} (mirror_padding_factor={:.2f})\n"
+            "  output_shape={}  (spacing={::.3f}, fast_shape={})",
+            m_parameters.compute_device, bytes_allocated, options.allocator,
+            m_parameters.exposure_filter_voltage > 0,
+            m_parameters.normalize_and_standardize,
+            m_parameters.smooth_edge_percent * 100.,
+            file_shape[0],
+            m_input_slice_shape, m_input_spacing, has_register,
+            m_padded_slice_shape, m_parameters.precise_cutoff,
+            m_cropped_slice_shape, m_rescale_shift,
+            m_bandpass_slice_shape, m_parameters.bandpass_mirror_padding_factor,
+            m_output_slice_shape, m_output_spacing,
+            m_parameters.zero_pad_to_fast_fft_shape
+        );
+    }
+
+    auto StackLoader::input_slice_() const -> Pair<View<f32>, View<c32>> {
+        const auto input_shape = m_input_slice_shape.push_front<2>(1);
+        const auto input_slice_rfft = m_input_slice_rfft.view();
+        const auto input_slice = nf::alias_to_real(input_slice_rfft, input_shape);
+        return {input_slice, input_slice_rfft};
+    }
+    auto StackLoader::padded_slice_() const -> Pair<View<f32>, View<c32>> {
+        const auto padded_shape = m_padded_slice_shape.push_front<2>(1);
+        const auto padded_slice_rfft = m_padded_slice_rfft.view();
+        const auto padded_slice = nf::alias_to_real(padded_slice_rfft, padded_shape);
+        return {padded_slice, padded_slice_rfft};
+    }
+    auto StackLoader::cropped_slice_() const -> Pair<View<f32>, View<c32>> {
+        const auto cropped_shape = m_cropped_slice_shape.push_front<2>(1);
+        const auto cropped_slice_rfft = m_cropped_slice_rfft.view();
+        const auto cropped_slice = nf::alias_to_real(cropped_slice_rfft, cropped_shape);
+        return {cropped_slice, cropped_slice_rfft};
+    }
+    auto StackLoader::bandpass_slice_() const -> Pair<View<f32>, View<c32>> {
+        const auto bandpass_shape = m_bandpass_slice_shape.push_front<2>(1);
+        const auto bandpass_slice_rfft = m_bandpass_slice_rfft.view();
+        const auto bandpass_slice = nf::alias_to_real(bandpass_slice_rfft, bandpass_shape);
+        return {bandpass_slice, bandpass_slice_rfft};
     }
 
     void StackLoader::read_stack(Metadata::Stack& metadata, const View<f32>& stack) {
         auto timer = Logger::trace_scope_time("Loading the stack");
-        // noa::Session::set_fft_cache_limit(4); // FIXME
         for (i32 batch{}; auto& image: metadata) {
             read_slice(stack.subregion(batch), image.index_file, false, image.exposure[1]);
             image.index = batch; // reset order of the slices in the stack.

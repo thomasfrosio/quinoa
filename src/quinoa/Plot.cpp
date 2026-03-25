@@ -24,6 +24,66 @@ namespace qn::details {
 }
 
 namespace qn {
+    void save_plot_ctf_fit(
+        const noa::Linspace<f64>& fftfreq_range,
+        const SpanContiguous<const f32, 2>& spectra,
+        const SpanContiguous<const f32, 2>& backgrounds,
+        const SpanContiguous<CTFIsotropic64, 1>& ctfs,
+        const Path& path,
+        const SavePlotCTFFitOptions& options
+    ) {
+        const bool has_uuid = details::has_plot_file_uuid(path);
+        const bool append = options.append and has_uuid;
+        auto text_file = noa::io::OutputTextFile(path, noa::io::Open{
+            .write = true,
+            .append = append,
+            .backup = not append,
+        });
+
+        if (not append) {
+            text_file.write(
+                fmt::format("uuid={}\ntitle={}\nxname=fftfreq\nyname=amplitudes\n\n",
+                            Logger::s_uuid, options.title));
+        }
+
+        text_file.write("type=ctf_fit\n");
+        text_file.write(fmt::format("batch={}\n", spectra.shape()[0]));
+        text_file.write(fmt::format("linspace={},{},{},{}\n",
+            fftfreq_range.start, fftfreq_range.stop, spectra.shape()[1], fftfreq_range.endpoint));
+
+        auto tmp = Array<f32>({2, 1, 1, spectra.shape()[1]});
+        auto simulate_ctf = [&](CTFIsotropic64 ctf) {
+            ctf.set_bfactor(-50);
+            auto span = tmp.subregion(1).span_1d();
+            auto fftfreq_step = fftfreq_range.for_size(spectra.shape()[1]).step;
+            for (isize i{}; i < spectra.shape()[1]; ++i) {
+                auto fftfreq = fftfreq_range.start + static_cast<f64>(i) * fftfreq_step;
+                auto lhs = ctf.value_at(fftfreq);
+                lhs *= lhs;
+                auto envelope = ctf.envelope_at(fftfreq);
+                envelope *= envelope;
+                lhs -= envelope / 2; // [0,1] -> [-0.5, 0.5]
+                span[i] = lhs;
+            }
+            return span;
+        };
+        auto bs_spectrum = [&](auto lhs, auto rhs) {
+            auto span = tmp.subregion(0).span_1d();
+            for (isize i{}; i < spectra.shape()[1]; ++i) {
+                span[i] = lhs[i] - rhs[i];
+            }
+            return span;
+        };
+        for (isize i{}; i < spectra.shape()[0]; ++i) {
+            text_file.write(fmt::format("spectrum={}\n", bs_spectrum(spectra[i], backgrounds[i])));
+            if (options.plot_ctf)
+                text_file.write(fmt::format("ctf={}\n", simulate_ctf(ctfs[i])));
+        }
+        text_file.write("\n");
+
+        Logger::trace("{} {}", path, append ? "appended" : "saved");
+    }
+
     void save_plot_shifts(
         const Metadata::Stack& metadata,
         const Path& path,

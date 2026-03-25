@@ -7,6 +7,17 @@
 #include "quinoa/ctf/Grid.hpp"
 
 namespace qn::ctf {
+    void test05(const CTFAnisotropic64& ctf,
+        isize polar_width,
+        f64 target_bin_angle,
+        isize target_phi_size,
+        nx::Interp polar_interp,
+        noa::Linspace<f64> rho_range,
+        noa::Linspace<f64> phi_range,
+        View<f32> patches_padded_rfft_ps,
+        Shape4 patches_padded_shape,
+        const Vec<f64, 2>& fftfreq_range);
+
     class Patches {
     public:
         // Use half-precision floating-points to store the patches.
@@ -16,9 +27,26 @@ namespace qn::ctf {
         using value_type = f16;
 
     public:
+        static constexpr LoadStackParameters LOADING_STACK_PARAMETERS {
+            .compute_device = {}, // to be set later
+            .allocator = {}, // to be set later
+
+            .precise_cutoff = true, // ensure isotropic spacing
+            .rescale_target_resolution = 0, // load at original spacing
+
+            // Turn everything else off; this is done on the patches directly.
+            .bandpass{-1,-1,-1,-1},
+            .exposure_filter_voltage = 0,
+            .normalize_and_standardize = false,
+            .smooth_edge_percent = 0.0,
+            .zero_pad_to_fast_fft_shape = false,
+            .zero_pad_to_square_shape = false,
+            .allocate_fft_workspace = false,
+        };
+
         static auto from_stack(
             StackLoader& stack_loader,
-            const Metadata::Stack& metadata,
+            const Metadata& metadata,
             const Grid& grid,
             const Vec<f64, 2>& resolution_range,
             isize patch_size,
@@ -57,7 +85,7 @@ namespace qn::ctf {
         [[nodiscard]] auto height() const noexcept -> isize { return m_polar.shape().height(); }
         [[nodiscard]] auto width() const noexcept -> isize { return m_polar.shape().width(); }
 
-    private:
+    public: // FIXME
         Array<value_type> m_polar{}; // (n,p,phi,rho)
         noa::Linspace<f64> m_phi_range{};
         noa::Linspace<f64> m_rho_range{};

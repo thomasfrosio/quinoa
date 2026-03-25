@@ -41,6 +41,10 @@ namespace {
             "alignment.coarse.fit_tilt"sv,
             "alignment.coarse.fit_pitch"sv,
             "alignment.ctf.run"sv,
+            "alignment.ctf.patch_size_ang"sv,
+            "alignment.ctf.patch_size"sv,
+            "alignment.ctf.resolution_range"sv,
+            "alignment.ctf.n_images_in_initial_average"sv,
             "alignment.ctf.check_defocus_gradient"sv,
             "alignment.ctf.fit_rotation"sv,
             "alignment.ctf.fit_tilt"sv,
@@ -266,6 +270,16 @@ namespace {
         alignment.ctf_fit_phase_shift = parse_boolean_("alignment.ctf.fit_phase_shift", table, false);
         alignment.ctf_fit_astigmatism = parse_boolean_("alignment.ctf.fit_astigmatism", table, true);
         alignment.ctf_fit_thickness = parse_boolean_("alignment.ctf.fit_thickness", table, false);
+
+        //
+        // alignment.ctf_patch_size_ang = parse_number_("alignment.ctf.patch_size_ang", table, 750.);
+        // alignment.ctf_patch_size = parse_number_("alignment.ctf.patch_size_ang", table, 0);
+        // Vec<f64, 2> alignment.ctf_resolution_range = ;
+        // i32 alignment.ctf_n_images_in_initial_average = ;
+        // "alignment.ctf.patch_size_ang"sv,
+        //     "alignment.ctf.patch_size"sv,
+        //     "alignment.ctf.resolution_range"sv,
+        //     "alignment.ctf.n_images_in_initial_average"sv,
 
         alignment.refine_run = parse_boolean_("alignment.refine.run", table, true);
         alignment.refine_correct_ctf = parse_boolean_("alignment.refine.correct_ctf", table, true);

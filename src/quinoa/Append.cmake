@@ -23,8 +23,7 @@ set(QUINOA_HEADERS
     src/quinoa/ctf/Baseline.hpp
     src/quinoa/ctf/Grid.hpp
     src/quinoa/ctf/Patches.hpp
-    src/quinoa/ctf/Simulate.hpp
-    src/quinoa/ctf/Thickness.hpp
+    src/quinoa/ctf/Utilities.hpp
 
 )
 
@@ -53,5 +52,6 @@ set(QUINOA_SOURCES_UNIFIED
     src/quinoa/ctf/Coarse.cpp
     src/quinoa/ctf/Patches.cpp
     src/quinoa/ctf/Refine.cpp
+    src/quinoa/ctf/Utilities.cpp
 
 )

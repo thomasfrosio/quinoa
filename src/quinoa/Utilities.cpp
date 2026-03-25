@@ -28,141 +28,129 @@
 #define QN_INCLUDE_CPU_ONLY
 #include "quinoa/Utilities.hpp"
 
-// FIXME
-#include "quinoa/Logger.hpp"
-
 namespace qn {
-    template<nt::any_of<f32, f64> T>
     void asymmetric_least_squares_smoothing(
-        SpanContiguous<const T> spectrum,
+        SpanContiguous<const f64> x_span,
+        SpanContiguous<const f64> y_span,
         SpanContiguous<f64> baseline,
         const ALSSOptions& options
     ) {
-        // Convert to f64 precision fp.
-        const auto n = spectrum.ssize();
-        auto y = Eigen::VectorXd(n);
-        for (i64 i{}; i < n; ++i)
-            y[i] = static_cast<f64>(spectrum[i]);
+        const auto n = y_span.ssize();
+        if (n <= 3) {
+            panic("Not enough samples");
+        }
 
-        // Construct the second-difference operator.
+        // Set up internal coordinate scaling [0, 1].
+        // This provides numerical stability and fixed domain length for N-invariance.
+        const f64 x_start = x_span[0];
+        const f64 x_end = x_span[n - 1];
+        const f64 x_phys_range = x_end - x_start;
+        const f64 inv_phys_range = 1.0 / x_phys_range;
+
+        auto get_scaled_x = [&](i64 i) {
+            return (static_cast<f64>(x_span[i]) - x_start) * inv_phys_range;
+        };
+
+        const auto y = Eigen::Map<const Eigen::VectorXd>(y_span.data(), n);
+
+        // 2. Build D, the second-difference operator.
         auto D = Eigen::SparseMatrix<f64>(n - 2, n);
         {
             auto triplets = std::vector<Eigen::Triplet<f64>>{};
-            triplets.reserve(static_cast<size_t>(3 * (n - 2)));
+            triplets.reserve(static_cast<usize>(3 * (n - 2)));
             for (i64 i{}; i < n - 2; ++i) {
-                triplets.emplace_back(i, i + 0, +1.0);
-                triplets.emplace_back(i, i + 1, -2.0);
-                triplets.emplace_back(i, i + 2, +1.0);
+                const f64 h1 = get_scaled_x(i + 1) - get_scaled_x(i);
+                const f64 h2 = get_scaled_x(i + 2) - get_scaled_x(i + 1);
+
+                // 2nd derivative in [0, 1] range
+                triplets.emplace_back(i, i + 0, +2.0 / (h1 * (h1 + h2)));
+                triplets.emplace_back(i, i + 1, -2.0 / (h1 * h2));
+                triplets.emplace_back(i, i + 2, +2.0 / (h2 * (h1 + h2)));
             }
             D.setFromTriplets(triplets.begin(), triplets.end());
         }
 
-        // Construct the varying smoothing (diagonal matrix).
+        // Build L, the varying smoothing (diagonal) matrix.
         auto L = Eigen::SparseMatrix<f64>(n - 2, n - 2);
         {
             auto triplets = std::vector<Eigen::Triplet<f64>>{};
-            triplets.reserve(static_cast<size_t>(n - 2));
+            triplets.reserve(static_cast<usize>(n - 2));
+            const auto& sm = options.smoothing;
+            const f64 decay_cut = sm.base_width;
+            const f64 gaussian_decay = std::sqrt(-std::log(sm.base_value / sm.peak_value)) / decay_cut;
 
-            // Gaussian decay.
-            const auto& smoothing = options.smoothing;
-            const f64 decay_cut = static_cast<f64>(n) * smoothing.base_width;
-            const f64 gaussian_decay = std::sqrt(-std::log(smoothing.base_value / smoothing.peak_value)) / decay_cut;
             for (i64 i{}; i < n - 2; ++i) {
-                auto x = static_cast<f64>(i + 2 * (i + 1) + (i + 2)) / 4.0;
-                auto x_offset = x - smoothing.peak_coordinate * static_cast<f64>(n);
-                auto lambda_i = smoothing.peak_value * std::exp(-std::pow(x_offset * gaussian_decay, 2.));
-                triplets.emplace_back(i, i, lambda_i);
+                const f64 x_norm = get_scaled_x(i + 1);
+                const f64 x_offset = x_norm - sm.peak_coordinate;
+
+                f64 value = sm.peak_value * std::exp(-std::pow(x_offset * gaussian_decay, 2.));
+                value = std::clamp(value, sm.base_value, sm.peak_value);
+
+                // The magic scaling for N-invariance in [0, 1] space:
+                // This represents the 'dx' for the integral of curvature.
+                const f64 local_dx = (get_scaled_x(i + 2) - get_scaled_x(i)) * 0.5;
+                triplets.emplace_back(i, i, value * local_dx);
             }
             L.setFromTriplets(triplets.begin(), triplets.end());
         }
 
-        // Precompute the smoothing penalty.
-        Eigen::SparseMatrix<f64> DtLD = D.transpose() * L * D;
+        // Precompute density weights and asymmetry.
+        Eigen::VectorXd dx_weights(n);
+        Eigen::VectorXd asymmetric_penalty(n);
+        {
+            const auto& as = options.asymmetry;
+            const f64 decay_cut = as.base_width;
+            const f64 gaussian_decay = std::sqrt(-std::log(as.base_value / as.peak_value)) / decay_cut;
 
-        // Diagonal weight (sparse) matrix W and related vector buffers.
-        auto W = Eigen::SparseMatrix<f64>(n, n);
-        auto w = Eigen::VectorXd(n);
-        auto w_new = Eigen::VectorXd(n);
-        W.reserve(n);
-        for (i64 i{}; i < n; ++i) {
-            W.insert(i, i) = 1.0;
-            w[i] = 1.0;
+            for (i64 i{}; i < n; ++i) {
+                dx_weights[i] =
+                    i == 0 ? get_scaled_x(1) - get_scaled_x(0) :
+                    i == n - 1 ? get_scaled_x(n - 1) - get_scaled_x(n - 2) :
+                    (get_scaled_x(i + 1) - get_scaled_x(i - 1)) * 0.5;
+
+                const f64 x_norm = get_scaled_x(i);
+                const f64 x_off = x_norm - as.peak_coordinate;
+                asymmetric_penalty[i] =
+                    std::clamp(as.peak_value * std::exp(-std::pow(x_off * gaussian_decay, 2.0)),
+                               as.base_value, as.peak_value);
+            }
         }
-        W.makeCompressed();
 
         // Solve z, as in (W+DtLD)z = (Wy), using sparse Cholesky decomposition.
+        Eigen::SparseMatrix<f64> DtLD = D.transpose() * L * D;
         Eigen::SimplicialLDLT<Eigen::SparseMatrix<f64>> solver;
-        Eigen::Map<Eigen::VectorXd> z(baseline.data(), n);
+        Eigen::VectorXd w = asymmetric_penalty;
+        Eigen::VectorXd w_new(n);
+        auto z = Eigen::Map<Eigen::VectorXd>(baseline.data(), n);
+
+        Eigen::SparseMatrix<f64> A = DtLD;
+        for (i64 i{}; i < n; ++i)
+            A.coeffRef(i, i) += w[i] * dx_weights[i];
+
+        solver.analyzePattern(A);
+
         for (i32 iter{}; iter < options.max_iter; ++iter) {
-            solver.compute(W + DtLD);
+            solver.factorize(A);
             check(solver.info() == Eigen::Success, "Decomposition failed");
-            z = solver.solve(w.cwiseProduct(y));
+
+            z = solver.solve((w.array() * dx_weights.array() * y.array()).matrix());
             check(solver.info() == Eigen::Success, "Solving failed");
 
-            // Compute the new weights, with optional relaxation for faster convergence.
+            // Compute the new weights.
             for (i64 i{}; i < n; ++i) {
-                const auto new_w = (y[i] > z[i]) ? options.asymmetric_penalty : (1.0 - options.asymmetric_penalty);
-                w_new[i] = options.relaxation * new_w + (1.0 - options.relaxation) * w[i];
+                const f64 residual = y[i] - z[i];
+                const f64 target_p = residual > 0 ? asymmetric_penalty[i] : (1.0 - asymmetric_penalty[i]);
+                w_new[i] = options.relaxation * target_p + (1.0 - options.relaxation) * w[i];
             }
 
-            // Check convergence (and stop), otherwise, try again with updated weights.
-            if ((w - w_new).cwiseAbs().maxCoeff() < options.tol)
+            const f64 diff = (w - w_new).cwiseAbs().maxCoeff();
+            if (diff < options.tol)
                 break;
-            w.swap(w_new);
+
             for (i64 i{}; i < n; ++i)
-                W.coeffRef(i, i) = w[i];
+                A.coeffRef(i, i) += (w_new[i] - w[i]) * dx_weights[i];
+            w.swap(w_new);
         }
-    }
-    template void asymmetric_least_squares_smoothing<f32>(SpanContiguous<const f32>, SpanContiguous<f64>, const ALSSOptions&);
-    template void asymmetric_least_squares_smoothing<f64>(SpanContiguous<const f64>, SpanContiguous<f64>, const ALSSOptions&);
-
-    void interpolating_uniform_cubic_spline(
-        SpanContiguous<const f64> a,
-        SpanContiguous<f64> b,
-        SpanContiguous<f64> c,
-        SpanContiguous<f64> d
-    ) {
-        const auto n = a.ssize();
-
-        auto triplets = std::vector<Eigen::Triplet<f64>>{};
-        triplets.reserve(static_cast<size_t>(n) * 3 + 4);
-
-        // Use b as a temporary buffer for rhs.
-        auto rhs = Eigen::Map<Eigen::VectorXd>(b.data(), n);
-
-        // Left boundary conditions (clamped-spline).
-        triplets.emplace_back(0, 0, 2.0);
-        rhs(0) = 0; // second-derivative = 0
-
-        for (i64 i = 1; i < n - 1; i++) {
-            triplets.emplace_back(i, i - 1, 1.0);
-            triplets.emplace_back(i, i,     4.0);
-            triplets.emplace_back(i, i + 1, 1.0);
-            rhs(i) = 3.0 * (a[i + 1] - 2.0 * a[i] + a[i - 1]);
-        }
-
-        // Right boundary conditions (clamped-spline).
-        triplets.emplace_back(n - 1, n - 1, 2.0);
-        rhs(n - 1) = 0.; // second-derivative = 0.
-
-        auto A = Eigen::SparseMatrix<f64>(n, n);
-        A.setFromTriplets(triplets.begin(), triplets.end());
-
-        // Solve for Ac=w.
-        auto solver = Eigen::SimplicialLLT<Eigen::SparseMatrix<f64>>{};
-        solver.compute(A);
-        check(solver.info() == Eigen::Success, "Decomposition failed");
-        Eigen::Map<Eigen::VectorXd> cc(c.data(), n);
-        cc = solver.solve(rhs); // save in-place
-        check(solver.info() == Eigen::Success, "Solving failed");
-
-        // Compute and save polynomial coefficients.
-        for (i64 i = 0; i < n - 1; i++) {
-            d[i] = (c[i + 1] - c[i]) / 3.0;
-            b[i] = a[i + 1] - a[i] - (c[i] + d[i]);
-        }
-        b[n - 1] = b[n - 2] + 2.0 * c[n - 2] + 3.0 * d[n - 2];
-        d[n - 1] = 0.0;
     }
 
     auto find_best_peak(const SpanContiguous<const f32, 2>& data) -> Pair<Vec<f64, 2>, f32> {

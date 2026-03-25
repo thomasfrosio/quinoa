@@ -148,8 +148,8 @@ namespace qn {
 
             // Fourier cropping:
             .precise_cutoff = true, // ensure isotropic spacing
-            .rescale_target_resolution = 10,
-            .rescale_min_size = 1000,
+            .rescale_target_resolution = 24, // FIXME
+            .rescale_min_size = 500,
             .rescale_max_size = 2000,
 
             // Signal processing after cropping:
@@ -184,6 +184,11 @@ namespace qn {
             .defocus_step_nm = 15, // TODO probably not worth it, decrease it
             .bfactor = -50,
         });
+
+        metadata.sample.thickness = estimate_sample_thickness(tilt_series.view(), metadata, {
+            .output_directory = settings.output_directory / "thickness",
+        });
+        panic();
 
         // Prepare for the projection matching.
         const auto n_images = metadata.stack.ssize();

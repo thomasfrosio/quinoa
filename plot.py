@@ -59,9 +59,49 @@ def add_linspace(lines: Iterator[str], style):
 
     offset = 0
     for batch in data:
-        plt.plot(x, np.array(batch) + offset, label=label[1], alpha=0.8, linestyle=style, linewidth=2)
+        plt.plot(x, np.array(batch) + offset, label=label[1], alpha=0.8, linestyle=style, linewidth=2, markersize=3, marker='.')
         offset += 0.15
         # plt.show()
+
+@static_vars(index=0)
+def add_ctf_fit(lines: Iterator[str], style):
+    batch = next(lines).strip().split('=', 1)
+    linspace = next(lines).strip().split('=', 1)
+    assert batch[0] == 'batch' and linspace[0] == 'linspace'
+    batch = int(batch[1])
+
+    linspace = linspace[1].split(',')
+    assert len(linspace) == 4
+    x = np.linspace(float(linspace[0]), float(linspace[1]), int(linspace[2]), endpoint=bool(linspace[3]))
+
+    colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+
+    offset = 0
+    for i in range(batch):
+        color_idx = add_ctf_fit.index % len(colors)  # Cycle through available colors
+        add_ctf_fit.index += 1
+
+        spectrum = next(lines).strip().split('=', 1)
+        ctf = next(lines).strip().split('=', 1)
+        assert spectrum[0] == 'spectrum' and ctf[0] == 'ctf'
+
+        spectrum = spectrum[1].split(',')
+        spectrum[0] = spectrum[0].removeprefix('[')
+        spectrum[-1] = spectrum[-1].removesuffix(']')
+        y = np.array([float(i) for i in spectrum])
+        plt.plot(x, y + offset, color=colors[color_idx], alpha=0.7, linestyle='solid', linewidth=2, markersize=3, marker='.')
+
+        if len(ctf[1]) > 1:
+            ctf = ctf[1].split(',')
+            ctf[0] = ctf[0].removeprefix('[')
+            ctf[-1] = ctf[-1].removesuffix(']')
+            z = np.array([float(i) for i in ctf])
+
+            y_range = y.max() - y.min()
+            z_range = z.max() - z.min()
+            z = z * (y_range / z_range)
+            plt.plot(x, z + offset, color=colors[color_idx], alpha=0.7, linestyle='dashed', linewidth=2)
+            offset += 0.15
 
 
 def add_scatter(lines: Iterator[str], size):
@@ -145,6 +185,8 @@ def plotter(filenames: List[str]):
                         add_arange(lines, style[jj % 3])
                     elif plot_type == 'linspace':
                         add_linspace(lines, style[jj % 3])
+                    elif plot_type == 'ctf_fit':
+                        add_ctf_fit(lines, style[jj % 3])
                     elif plot_type == 'scatter-shifts':
                         add_scatter_shifts(lines)
                     else:

@@ -32,6 +32,8 @@ namespace qn {
         f64 smooth_edge_percent{0.01};
         bool zero_pad_to_fast_fft_shape{true};
         bool zero_pad_to_square_shape{false};
+
+        bool allocate_fft_workspace{true};
     };
 
     class StackLoader {
@@ -43,6 +45,7 @@ namespace qn {
 
         /// Allocate buffers and set up the pre-processing and rescaling parameters.
         /// If the file doesn't exist, it will throw an exception.
+        StackLoader(ni::ImageFile&& file, const LoadStackParameters& parameters);
         StackLoader(const Path& filename, const LoadStackParameters& parameters);
 
         /// Loads and preprocess the slice.
@@ -63,19 +66,28 @@ namespace qn {
         [[nodiscard]] auto slice_shape() const noexcept -> Shape2 { return m_output_slice_shape; }
         [[nodiscard]] auto n_slices_in_file() const noexcept -> isize { return m_file_slice_count; }
 
-        [[nodiscard]] static auto registered_stack() noexcept -> View<const f32> { return s_input_stack.view(); }
-
+        void record_fft() const;
         void clear_cache() { m_cache.clear(); }
 
     private:
-        void read_slice_and_precision_pad_(isize file_slice_index, const View<f32>& padded_slice);
+        void init_();
+        // void read_slice_and_precision_pad_(isize file_slice_index, const View<f32>& padded_slice);
+        auto input_slice_() const -> Pair<View<f32>, View<c32>>;
+        auto padded_slice_() const -> Pair<View<f32>, View<c32>>;
+        auto cropped_slice_() const -> Pair<View<f32>, View<c32>>;
+        auto bandpass_slice_() const -> Pair<View<f32>, View<c32>>;
 
     private:
-        static Array<f32> s_input_stack; // register the input stack
+        static Array<std::byte> s_input_stack; // register the input stack
+        static noa::io::DataType s_input_stack_dtype;
 
-        noa::io::ImageFile m_file{};
+        ni::ImageFile m_file{};
         isize m_file_slice_count{};
         LoadStackParameters m_parameters{};
+
+        bool m_has_padding{};
+        bool m_has_cropping{};
+        bool m_has_filter{};
 
         Shape2 m_input_slice_shape{};
         Shape2 m_padded_slice_shape{};
@@ -87,8 +99,8 @@ namespace qn {
         Vec<f64, 2> m_output_spacing{};
         Vec<f64, 2> m_rescale_shift{};
 
-        Array<f32> m_input_slice{}; // empty if no padding
-        Array<f32> m_input_slice_io{}; // empty if compute is on the cpu, otherwise, this is cpu array
+        Array<f32> m_io_slice{};
+        Array<c32> m_input_slice_rfft{};
         Array<c32> m_padded_slice_rfft{};
         Array<c32> m_cropped_slice_rfft{};
         Array<c32> m_bandpass_slice_rfft{};

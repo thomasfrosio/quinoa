@@ -20,7 +20,7 @@ namespace {
         SpanContiguous<const Mat<f32, 2, 3>> matrices{};
         SpanContiguous<const ParallelogramMask> fov_masks{};
 
-        NOA_HD void init(isize i, isize h, isize w, f32& sum) const {
+        NOA_HD void operator()(isize i, isize h, isize w, f32& sum) const {
             const auto image_coordinates = matrices[i] * Vec<f32, 3>::from_values(h, w, 1);
             const auto mask = fov_masks[i](image_coordinates);
 

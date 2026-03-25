@@ -5,8 +5,7 @@
 #include "quinoa/ctf/Baseline.hpp"
 #include "quinoa/ctf/Grid.hpp"
 #include "quinoa/ctf/Patches.hpp"
-#include "quinoa/ctf/Simulate.hpp"
-#include "quinoa/ctf/Thickness.hpp"
+#include "quinoa/ctf/Utilities.hpp"
 
 namespace qn::ctf {
     /// Computes the minimum logical size necessary for the Thon-rings to not alias.
@@ -39,24 +38,6 @@ namespace qn::ctf {
         if (noa::is_odd(minimum_logical_size))
             minimum_logical_size += 1;
         return minimum_logical_size;
-    }
-
-    constexpr auto power_spectrum_bfactor_at(
-        CTFIsotropic64 ctf,
-        f64 fftfreq,
-        f64 weight
-    ) {
-        f64 bfactor{};
-        f64 step = weight < 1. ? -1. : 1.;
-        for (i32 i{}; i < 500; ++i) {
-            ctf.set_bfactor(bfactor);
-            auto iweight = ctf.envelope_at(fftfreq);
-            iweight *= iweight;
-            if (iweight <= weight)
-                break;
-            bfactor += step;
-        }
-        return bfactor;
     }
 
     template<nt::almost_any_of<f32, f64> T, typename B = Empty, typename M = Empty>
@@ -183,6 +164,7 @@ namespace qn::ctf {
     );
 
     struct FitRefineOptions {
+        bool full_fit{};
         bool fit_rotation{};
         bool fit_tilt{};
         bool fit_pitch{};
@@ -190,11 +172,19 @@ namespace qn::ctf {
         bool fit_astigmatism{};
         Path output_directory{};
     };
+    struct FitRefineState {
+        Array<f64> phase_shift{};
+        Array<f64> astigmatism_value{};
+        Array<f64> astigmatism_angle{};
+        Array<Vec<f64, 2>> fitting_ranges{};
+        Vec<f64, 3> angle_offsets{};
+    };
     void refine_fit(
         Metadata& metadata,
+        FitRefineState& state,
         const Grid& grid,
         const Patches& patches,
-        const FitRefineOptions& fit
+        const FitRefineOptions& options
     );
 
     struct FitSettings {

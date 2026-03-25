@@ -62,7 +62,7 @@ namespace {
             create_stacks(i, y, x);
         }
 
-        NOA_HD void init(i32 i, i32 y, i32 x, reduce_type& reduce) const {
+        NOA_HD void operator()(i32 i, i32 y, i32 x, reduce_type& reduce) const {
             auto [reference, stretched_target, fov_mask] = create_stacks(i, y, x);
             reduce[0] += reference;
             reduce[1] += stretched_target;

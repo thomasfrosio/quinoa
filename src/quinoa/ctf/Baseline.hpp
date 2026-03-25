@@ -2,6 +2,7 @@
 
 #include <noa/Runtime.hpp>
 #include "quinoa/Types.hpp"
+#include "quinoa/SplineCurve.hpp"
 
 namespace qn::ctf {
     struct BaselineTuningOptions {
@@ -40,27 +41,27 @@ namespace qn::ctf {
     /// Smooth baseline of a 1d power-spectrum.
     class Baseline {
     public:
-        /// Get the best fitting-range for the baseline fit.
-        static auto best_baseline_fitting_range(
+        Spline spline;
+
+    public:
+        /// Fits a smooth spline through the spectrum.
+        /// Returns the adjusted fitting range used for the fitting.
+        auto fit(
+            SpanContiguous<const f32> spectrum,
+            const Vec<f64, 2>& fftfreq_range,
+            const Vec<f64, 2>& fitting_range
+        ) -> Vec<f64, 2>;
+
+        /// Fits a smooth spline through the spectrum.
+        /// Instead of using the first half of the spectrum, where oscillations can be challenging to erase,
+        /// the CTF estimate is used to get the values at the expected midpoints of the oscillations.
+        /// These values, with the second half of the spectrum, are used for the fitting.
+        /// Returns the adjusted fitting range used for the fitting.
+        auto fit(
             SpanContiguous<const f32> spectrum,
             const Vec<f64, 2>& fftfreq_range,
             const CTFIsotropic64& ctf
         ) -> Vec<f64, 2>;
-
-    public:
-        /// Creates an empty baseline. Use fit().
-        Baseline() = default;
-
-        /// Fits a smooth baseline through the spectrum.
-        /// Only the region within the given fitting range is used for the fitting.
-        void fit(SpanContiguous<const f32> spectrum, const Vec<f64, 2>& fftfreq_range, const Vec<f64, 2>& fitting_range);
-
-        /// Fits a smooth baseline through the spectrum.
-        /// Uses the CTF to find the best fitting range.
-        void fit(SpanContiguous<const f32> spectrum, const Vec<f64, 2>& fftfreq_range, const CTFIsotropic64& ctf) {
-            auto fitting_range = best_baseline_fitting_range(spectrum, fftfreq_range, ctf);
-            fit(spectrum, fftfreq_range, fitting_range);
-        }
 
         /// Tunes the fitting range for subsequent cross-correlation between a CTF and the baseline-subtracted spectrum.
         /// \details Finds the first frequency where the baseline-subtracted spectrum is getting below the height
@@ -113,55 +114,7 @@ namespace qn::ctf {
         /// Values outside the spectrum frequency-range are extrapolated.
         /// The extrapolation is set to preserve the spline slope at the edges.
         [[nodiscard]] auto sample_at(f64 fftfreq) const -> f64 {
-            const isize n = m_a.ssize();
-            const isize last_index = n - 1;
-            if (n == 0)
-                return 0;
-
-            // Denormalize fftfreq back to frequencies.
-            const f64 frequency = (fftfreq - m_fftfreq_start) / m_fftfreq_step;
-            const auto index = static_cast<isize>(std::floor(frequency));
-            const f64 fraction = frequency - noa::clamp(std::floor(frequency), 0, static_cast<f64>(last_index));
-
-            // Polynomial evaluation (Horner's scheme) - interpolation.
-            // This is assuming x is uniform [0,n).
-            if (index < 0)
-                return m_a[0] + fraction * m_b[0]; // extrapolation to the left
-            if (index >= last_index)
-                return  m_a[last_index] + fraction * m_b[last_index]; // extrapolation to the right
-            return ((m_d[index] * fraction + m_c[index]) * fraction + m_b[index]) * fraction + m_a[index];
+            return spline.interpolate_at(fftfreq);
         }
-
-    private:
-        void allocate_(usize n) {
-            const usize n_to_allocate = n * 4;
-            if (m_buffer == nullptr or n_allocated < n_to_allocate) {
-                // Allocate a bit more to increase the chance of reusing the buffer
-                // when the fitting is done with slightly different fitting ranges.
-                n_allocated = n_to_allocate + 20 * 4;
-                m_buffer = std::make_unique<f64[]>(n_allocated);
-            }
-            const auto size = static_cast<isize>(n);
-            m_a = SpanContiguous(m_buffer.get() + size * 0, size);
-            m_b = SpanContiguous(m_buffer.get() + size * 1, size);
-            m_c = SpanContiguous(m_buffer.get() + size * 2, size);
-            m_d = SpanContiguous(m_buffer.get() + size * 3, size);
-        }
-
-    private:
-        std::unique_ptr<f64[]> m_buffer; // (n*4)
-        usize n_allocated{};
-
-        // Cubic spline expressed as a set of cubic polynomials.
-        // f(x) = a_x + b_x + c_x^2 + d_x^3, where a_x = y_x, and x is uniform [0 to n-1].
-        // These are all views of the main buffer.
-        SpanContiguous<f64> m_a;
-        SpanContiguous<f64> m_b;
-        SpanContiguous<f64> m_c;
-        SpanContiguous<f64> m_d;
-
-        f64 m_fftfreq_start{};
-        f64 m_fftfreq_step{};
-        f64 m_fftfreq_stop{0.5};
     };
 }

@@ -109,6 +109,26 @@ namespace qn {
         Logger::trace("{} {}", path, append ? "appended" : "saved");
     }
 
+    struct SavePlotCTFFitOptions {
+        std::string title{};
+
+        bool plot_ctf = true;
+
+        /// Whether the plot should be appended.
+        /// Appending only works within the same run (see uuid).
+        /// Rerunning the program will overwrite existing files (a backup will be saved).
+        bool append{true};
+    };
+
+    void save_plot_ctf_fit(
+        const noa::Linspace<f64>& fftfreq_range,
+        const SpanContiguous<const f32, 2>& spectra,
+        const SpanContiguous<const f32, 2>& backgrounds,
+        const SpanContiguous<CTFIsotropic64, 1>& ctfs,
+        const Path& path,
+        const SavePlotCTFFitOptions& options = {}
+    );
+
     struct SavePlotShiftsOptions {
         std::string title{};
         std::string label{};

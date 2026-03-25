@@ -45,6 +45,10 @@ namespace qn {
             bool coarse_fit_pitch{};
 
             bool ctf_run{};
+            f64 ctf_patch_size_ang{};
+            i32 ctf_patch_size{};
+            Vec<f64, 2> ctf_resolution_range{};
+            i32 ctf_n_images_in_initial_average{};
             bool ctf_check_defocus_gradient{};
             bool ctf_fit_rotation{};
             bool ctf_fit_tilt{};

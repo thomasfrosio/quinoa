@@ -16,15 +16,27 @@
 #output_directory = '~/Tmp/quinoa/12463/002'
 #star_file = '~/Tmp/quinoa/12463/001/TS_001.star'
 
+#stack_file = '~/Datasets/10164/TS_03.mrc'
+#mdoc_file = '~/Datasets/10164/TS_03.mdoc'
+#output_directory = '~/Tmp/quinoa/10164/patch_taper'
+
 #stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/kyprianos/Position_1_2_stack_445_flipy_xrayremoved.mrc'
 #mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/kyprianos/Position_1_2_stack_445_flipy_xrayremoved.mdoc'
 #star_file = '/dls/ebic/data/staff-scratch/thomas2/tmp/quinoa/kyprianos/100/Position_1_2_stack_445_flipy_xrayremoved.star'
-#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/quinoa/kyprianos/102'
+#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/quinoa/kyprianos/debug_ctf_baseline'
 
-stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/10304/tilt1.mrc'
-mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/10304/tilt1.mdoc'
-output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/quinoa/10304/pm20'
-star_file = '/dls/ebic/data/staff-scratch/thomas2/tmp/quinoa/10304/pm00/tilt1.star'
+#stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/TS_03_cropped.mrc'
+#mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/TS_03.mdoc'
+#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/quinoa/10164/test_loading_patches500'
+
+stack_file = '/dls/ebic/data/staff-scratch/thomas2/projects/simulate_ctfs/003/tilt_series.mrc'
+mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/projects/simulate_ctfs/003/tilt_series.mdoc'
+output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/quinoa/simulated_003'
+
+#stack_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/10304/tilt1.mrc'
+#mdoc_file = '/dls/ebic/data/staff-scratch/thomas2/datasets/10304/tilt1.mdoc'
+#output_directory = '/dls/ebic/data/staff-scratch/thomas2/tmp/quinoa/10304/ctf_bin3.75'
+#star_file = '/dls/ebic/data/staff-scratch/thomas2/tmp/quinoa/10304/pm00/tilt1.star'
 
 #stack_file = '~/Datasets/kyprianos/Position_1_2_stack_445_flipy_xrayremoved.mrc'
 #mdoc_file = '~/Datasets/kyprianos/Position_1_2_stack_445_flipy_xrayremoved.mdoc'
@@ -33,19 +45,19 @@ star_file = '/dls/ebic/data/staff-scratch/thomas2/tmp/quinoa/10304/pm00/tilt1.st
 
 
 [experiment]
-#tilt_axis = 175.2361
-#add_specimen_tilt = 0
-#add_specimen_pitch = 0
-#voltage = 300
-#amplitude = 0.07
-#cs = 2.7
+tilt_axis = -9.5
+add_specimen_tilt = 5.2
+add_specimen_pitch = 0
+voltage = 300
+amplitude = 0.09
+cs = 2.7
 #phase_shift = 0
-thickness = 80
+#thickness = 80
 
 [preprocessing]
 run = false
 exclude_blank_views = true
-exclude_stack_images = []
+#exclude_stack_indices = [0,1,2]
 
 [alignment.coarse]
 run = false
@@ -55,17 +67,23 @@ fit_tilt = true
 fit_pitch = true
 
 [alignment.ctf]
-run = false
+run = true
+patch_size_ang = 500
+patch_size = 512
+resolution_range = [30, 4]
+n_images_in_initial_average = 3
 check_defocus_gradient = true
-fit_rotation = false
-fit_tilt = false
-fit_pitch = false
-fit_phase_shift = false
+
+fit_rotation = true
+fit_tilt = true
+fit_pitch = true
 fit_astigmatism = true
+
+fit_phase_shift = false
 fit_thickness = false
 
 [alignment.refine]
-run = true
+run = false
 correct_ctf = true
 phase_flip_strength = 8
 fit_rotation = false

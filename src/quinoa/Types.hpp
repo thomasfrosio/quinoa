@@ -22,7 +22,7 @@ namespace qn {
     namespace nx = noa::xform;
     namespace ns = noa::signal;
     namespace nt = noa::traits;
-    // namespace ni = noa::io;
+    namespace ni = noa::io;
 
     using noa::panic;
     using noa::panic_at_location;

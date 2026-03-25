@@ -153,13 +153,14 @@ namespace qn {
 
         /// Value of the Gaussian at peak_coordinate.
         f64 base_value{1e-6};
+
+    public:
+        static auto from_constant(f64 v) { return GaussianSlider{0, v, 1, v}; }
     };
 
     struct ALSSOptions {
         GaussianSlider smoothing{};
-
-        /// Asymmetric penalty. 0.5 means no bias towards values higher or lower the baseline.
-        f64 asymmetric_penalty = 0.5;
+        GaussianSlider asymmetry{};
 
         /// Maximum number of maximum iterations.
         i32 max_iter = 100;
@@ -173,18 +174,11 @@ namespace qn {
     };
 
     /// Compute the baseline of the spectrum.
-    template<nt::any_of<f32, f64> T>
     void asymmetric_least_squares_smoothing(
-        SpanContiguous<const T> spectrum,
-        SpanContiguous<f64> baseline,
+        SpanContiguous<const f64> x,
+        SpanContiguous<const f64> y,
+        SpanContiguous<f64> z,
         const ALSSOptions& options
-    );
-
-    void interpolating_uniform_cubic_spline(
-        SpanContiguous<const f64> a,
-        SpanContiguous<f64> b,
-        SpanContiguous<f64> c,
-        SpanContiguous<f64> d
     );
 
     struct FindBestPeakOptions {

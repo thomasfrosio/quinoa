@@ -1,181 +1,317 @@
+#include <algorithm>
 #include <noa/Signal.hpp>
 
 #include "quinoa/ctf/CTF.hpp"
 #include "quinoa/ctf/Baseline.hpp"
+#include "quinoa/Logger.hpp"
+#include "quinoa/Plot.hpp"
+#include "quinoa/Utilities.hpp"
+#include "quinoa/SplineCurve.hpp"
 
-namespace qn::ctf {
-    auto Baseline::best_baseline_fitting_range(
-        SpanContiguous<const f32> spectrum,
-        const Vec<f64, 2>& fftfreq_range,
-        const CTFIsotropic64& ctf
-    ) -> Vec<f64, 2> {
-        // The signal at very low frequencies can be quite far from the rest of the spectrum, to the point that
-        // despite the strong smoothing of the baseline, the overall fit at low-mid frequency might be degraded.
-        // As such, remove this region from the fit by cutting at the midpoint value between the first CTF zero
-        // and the following peak.
-        f64 target_value{};
-        bool got_zero{};
-        isize half_oscillation_size{};
-        for (isize i{}; auto e: Simulate(ctf, fftfreq_range)) {
-            if (not got_zero and e.is_ctf_zero()) {
-                target_value += Simulate::sample_at(spectrum, fftfreq_range, e.fftfreq());
-                half_oscillation_size = i;
-                got_zero = true;
-            }
-            if (got_zero and e.is_ctf_peak()) {
-                target_value += Simulate::sample_at(spectrum, fftfreq_range, e.fftfreq());
-                half_oscillation_size = i - half_oscillation_size;
-                half_oscillation_size = half_oscillation_size * spectrum.ssize();
-                half_oscillation_size /= static_cast<isize>(Simulate::SIMULATED_LOGICAL_SIZE);
-                break;
-            }
-            ++i;
-        }
-        target_value /= 2;
-        // target_value *= 1.2;
+namespace {
+    auto best_start_index_(SpanContiguous<const f64> spectrum, isize start, isize end) {
+        auto spectrum_windowed = spectrum.subregion(Slice{start, end + 1});
+        auto sn = spectrum_windowed.ssize();
 
-        auto fitting_range = fftfreq_range;
-        isize index_cutoff{};
-        for (isize i{}; i < spectrum.ssize(); ++i) {
-            if (spectrum[i] <= static_cast<f32>(target_value)) {
-                auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum.ssize() - 1);
-                fitting_range[0] = fftfreq_range[0] + static_cast<f64>(i) * fftfreq_step;
-                index_cutoff = i;
+        // Detect the first full oscillation (zero, then peak) and compute the midpoint.
+        bool has_minima{false};
+        isize maxima{};
+        isize minima{};
+        for (isize i = 1; i < sn - 1; ++i) {
+            const auto prev = spectrum_windowed[i - 1];
+            const auto curr = spectrum_windowed[i];
+            const auto next = spectrum_windowed[i + 1];
+
+            if (curr < prev and curr < next) {
+                has_minima = true;
+                minima = i;
+            } else if (has_minima and curr > prev and curr > next) {
+                maxima = i;
                 break;
             }
         }
+        auto midpoint = (maxima + minima) / 2;
 
-        // Similarly, at the end of the spectrum, the background can vary significantly,
-        // so try to detect such variation in the signal and cut if out of the fitting range.
-        isize window_size{half_oscillation_size * 2 + 1};
-        auto sample_local_average = [&](isize index) {
-            f32 value{};
-            f32 count{};
-            for (isize j{-window_size / 2}; j < window_size / 2; ++j) {
-                if (noa::is_inbound(spectrum.shape(), index + j)) {
-                    value += spectrum[index + j];
-                    ++count;
-                }
+        // Revert if midpoint is past 25% of the start.
+        const auto limit = sn / 4;
+        if (midpoint > limit)
+            midpoint = 0;
+
+        start += minima;
+        return start;
+    }
+
+    auto best_end_index_(SpanContiguous<f64> spectrum, isize start, isize end) {
+        auto spectrum_windowed = spectrum.subregion(Slice{start, end + 1});
+        auto sn = spectrum_windowed.ssize();
+
+        // Detect lowpass.
+        isize c{};
+        for (isize i = sn - 1; i >= 0; --i) {
+            if (noa::allclose(spectrum_windowed[i], 0.)) {
+                c++;
+            } else {
+                break;
             }
-            value /= count;
-            return value;
-        };
+        }
+        if (c >= sn / 2) {
+            check(c < sn / 2, "Data significantly lowpass filtered. Please use unfiltered data");
+        }
 
-        // Compute a smooth version of the spectrum.
-        auto local_average = std::vector<f32>{};
-        local_average.reserve(static_cast<size_t>(spectrum.ssize() - index_cutoff));
-        for (isize i{index_cutoff}; i < spectrum.ssize(); ++i)
-            local_average.push_back(sample_local_average(i));
+        // Update spectrum window.
+        // end -= c;
+        spectrum_windowed = spectrum.subregion(Slice{start, end + 1});
+        sn = spectrum_windowed.ssize();
 
         // Compute the gradient of the smoothed spectrum.
-        auto gradient = std::vector<f32>{};
-        local_average.reserve(local_average.size() - 1);
-        for (size_t i{}; i < local_average.size() - 1; ++i)
-            gradient.push_back(std::abs(local_average[i + 1] - local_average[i]));
+        auto gradient = std::vector<f64>{};
+        auto gradient_abs = std::vector<f64>{};
+        gradient.reserve(static_cast<usize>(sn));
+        gradient_abs.reserve(static_cast<usize>(sn));
+        for (isize i{}; i < sn - 1; ++i) {
+            auto g = spectrum_windowed[i + 1] - spectrum_windowed[i];
+            gradient.push_back(g);
+            gradient_abs.push_back(std::abs(g));
+        }
 
         // Set the signal threshold.
-        auto [gradient_threshold, signal_threshold] = [&gradient] {
-            const auto quartile_75 = static_cast<size_t>(static_cast<f32>(gradient.size()) * 0.75f);
-            auto gradient_copy = gradient;
+        auto [gradient_threshold, signal_threshold] = [&gradient_abs] {
+            const auto quartile_75 = (gradient_abs.size() * 3) / 4;
+            auto gradient_copy = gradient_abs;
             stdr::nth_element(gradient_copy, gradient_copy.begin() + static_cast<ptrdiff_t>(quartile_75));
-            const f32 gradient_threshold_ = gradient_copy[quartile_75];
+            const f64 gradient_threshold_ = gradient_copy.at(quartile_75);
 
-            f32 sum{}, sum_squares{};
+            f64 sum{}, sum_squares{};
             i32 count{};
-            for (const auto& e: gradient) {
+            for (const auto& e: gradient_abs) {
                 if (e < gradient_threshold_) {
                     sum += e;
                     sum_squares += e * e;
                     ++count;
                 }
             }
-            const f32 background_mean = sum / static_cast<f32>(count);
-            const f32 background_variance = sum_squares / static_cast<f32>(count) - (background_mean * background_mean);
-            const f32 background_stddev = std::sqrt(background_variance);
-            const f32 signal_threshold_ = std::min(0.5f, background_mean + 6 * background_stddev);
+            // TODO MAD
+            const f64 background_mean = sum / static_cast<f64>(count);
+            const f64 background_variance = sum_squares / static_cast<f64>(count) - (background_mean * background_mean);
+            const f64 background_stddev = std::sqrt(background_variance);
+            const f64 signal_threshold_ = std::min(0.5, background_mean + 6 * background_stddev);
             return Pair{gradient_threshold_, signal_threshold_};
         }();
 
         // First, collect the regions above the thresholds.
         bool is_within_window{};
-        f32 max_value_within_window{};
+        f64 max_value_within_window{};
         auto possible_windows = std::vector<Vec<isize, 2>>{};
-        const isize offset = std::ssize(gradient) - static_cast<isize>(static_cast<f64>(spectrum.ssize()) * 0.25);
-        for (isize i{offset}, start{}; const auto& e: gradient | stdv::drop(std::max(isize{}, offset))) {
+        const isize offset = std::ssize(gradient_abs) - sn / 4;
+        for (isize i{offset}, j{}; const auto& e: gradient_abs | stdv::drop(std::max(isize{0}, offset))) {
             max_value_within_window = std::max(max_value_within_window, e);
             if (not is_within_window and e >= signal_threshold) {
                 is_within_window = true;
-                start = i;
+                j = i;
                 max_value_within_window = -1;
-            } else if (is_within_window and (e < signal_threshold or i == std::ssize(gradient) - 1)) {
+            } else if (is_within_window and (e < signal_threshold or i == std::ssize(gradient_abs) - 1)) {
                 is_within_window = false;
-                const auto window_size_ = i - start;
+                const auto window_size_ = i - j;
                 if (window_size_ >= 3 and max_value_within_window >= gradient_threshold)
-                    possible_windows.push_back({start, i});
+                    possible_windows.push_back({j, i});
             }
             ++i;
         }
         if (possible_windows.empty())
-            return fitting_range;
+            return end;
 
         // Then, fuse windows that are close to each other.
-        const isize maximum_distance_between_windows = static_cast<isize>(static_cast<f64>(spectrum.ssize()) * 0.05);
-        for (size_t i{}; i < possible_windows.size() - 1; ++i) {
+        // To prevent fusing and removing CTF^2 oscillations, only fuse if the sign of the gradient is the same.
+        auto are_gradient_signs_equal = [&](const Vec<isize, 2>& lhs, const Vec<isize, 2>& rhs) {
+            const auto lhs_ = gradient[static_cast<usize>(lhs[0])];
+            const auto rhs_ = gradient[static_cast<usize>(rhs[0])];
+            return std::signbit(lhs_) == std::signbit(rhs_);
+        };
+        const auto maximum_distance_between_windows = std::max(isize{1}, sn / 20);
+        for (usize i{}; i < possible_windows.size() - 1; ++i) {
             const isize distance = possible_windows[i + 1][0] - possible_windows[i][1];
-            if (distance <= maximum_distance_between_windows) {
+            if (distance <= maximum_distance_between_windows and
+                are_gradient_signs_equal(possible_windows[i], possible_windows[i + 1])) {
                 possible_windows[i + 1][0] = possible_windows[i][0];
                 possible_windows[i][0] = -1;
             }
         }
         std::erase_if(possible_windows, [](const auto& window) { return window[0] == -1; });
 
-        // Remove the window if it's at the end of the spectrum (within 10 pixel tolerance).
-        const auto maximum_distance_from_end = static_cast<isize>(static_cast<f64>(spectrum.ssize()) * 0.05);
-        auto possible_window = possible_windows.back() + index_cutoff;
-        if (possible_window[1] >= spectrum.ssize() - maximum_distance_from_end) {
-            auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(spectrum.ssize() - 1);
-            fitting_range[1] = fftfreq_range[0] + static_cast<f64>(possible_window[0]) * fftfreq_step;
-        }
+        // Finally, remove the last window if it's near the end of the spectrum.
+        // Remove at most one third of the valid spectrum window.
+        const auto maximum_distance_from_end = std::max(isize{1}, sn / 20);
+        auto last_possible_window = possible_windows.back();
+        if (last_possible_window[1] >= sn - maximum_distance_from_end and
+            (last_possible_window[1] - last_possible_window[0]) < sn / 3)
+            end = last_possible_window[0];
 
-        return fitting_range;
+        return end;
     }
 
-    void Baseline::fit(SpanContiguous<const f32> spectrum, const Vec<f64, 2>& fftfreq_range, const Vec<f64, 2>& fitting_range) {
+    void gaussian_smoothing_(
+        SpanContiguous<const f32> spectrum,
+        SpanContiguous<f64> spectrum_smooth,
+        isize kernel_size,
+        f64 stddev
+    ) {
+        const auto filter = ns::window_gaussian<f32>(kernel_size, stddev, {.normalize = true});
+        ns::convolve(View(spectrum), View(spectrum_smooth), filter.view(), {.border = noa::Border::REFLECT});
+    }
+
+    void fit_spline_(
+        Spline& spline,
+        SpanContiguous<const f64> x,
+        SpanContiguous<const f64> y,
+        SpanContiguous<f64> z
+    ) {
+        // Least-square fitting of a cubic spline onto the midpoints.
+        asymmetric_least_squares_smoothing(x, y, z, {
+            .smoothing = GaussianSlider{
+                .peak_coordinate = 0.,
+                .peak_value = 1e-4,
+                .base_width = 0.6,
+                .base_value = 1e-6,
+            },
+            .asymmetry = GaussianSlider::from_constant(0.5),
+            .max_iter = 50,
+            .relaxation = 0.9,
+        });
+
+        // Transform the fitted spline into a piecewise polynomial for interpolation.
+        spline.fit(x, z, {
+            .type = Spline::CSPLINE,
+            .monotonic = true,
+            .left = Spline::SECOND_DERIVATIVE,
+            .right = Spline::SECOND_DERIVATIVE,
+            .left_value = 0,
+            .right_value = 0,
+        });
+    }
+}
+
+namespace qn::ctf {
+    auto Baseline::fit(
+        SpanContiguous<const f32> spectrum,
+        const Vec<f64, 2>& fftfreq_range,
+        const Vec<f64, 2>& fitting_range
+    ) -> Vec<f64, 2> {
+        // Allocate temporary buffers.
+        const auto buffer = Array<f64>({3, 1, 1, spectrum.ssize()});
+
         // Adjust the spectrum window to only include the fitting range.
-        auto [start, fftfreq_start] = nearest_integer_fftfreq(spectrum.ssize(), fftfreq_range, fitting_range[0], true);
-        auto [end, fftfreq_end] = nearest_integer_fftfreq(spectrum.ssize(), fftfreq_range, fitting_range[1], true);
-        auto actual_fitting_range = Vec{fftfreq_start, fftfreq_end};
+        auto start = nearest_integer_fftfreq(spectrum.ssize(), fftfreq_range, fitting_range[0], true).first;
+        auto end = nearest_integer_fftfreq(spectrum.ssize(), fftfreq_range, fitting_range[1], true).first;
+
+        // Adjust the spectrum window based on the spectrum signal.
+        const auto spectrum_smooth = buffer.view().subregion(0).span_1d();
+        gaussian_smoothing_(spectrum, spectrum_smooth, 11, 1.5);
+        start = best_start_index_(spectrum_smooth, start, end);
+        end = best_end_index_(spectrum_smooth, start, end);
+
+        // Get the final window.
+        const auto original_size = spectrum.size();
         spectrum = spectrum.subregion(Slice{start, end + 1});
+        const auto fftfreq_step = noa::Linspace<f64>::from_vec(fftfreq_range).for_size(original_size).step;
+        const auto fftfreq_start = fftfreq_range[0] + static_cast<f64>(start) * fftfreq_step;
+        const auto fftfreq_end = fftfreq_range[0] + static_cast<f64>(end) * fftfreq_step;
+        const auto new_size = spectrum.ssize();
 
-        allocate_(spectrum.size());
+        // Compute the spline.
+        const auto x = buffer.span().subregion(0).as_1d().subregion(Slice{0, new_size});
+        const auto y = buffer.span().subregion(1).as_1d().subregion(Slice{0, new_size});
+        const auto z = buffer.span().subregion(2).as_1d().subregion(Slice{0, new_size});
+        for (isize i{}; i < new_size; ++i)
+            x[i] = fftfreq_start + static_cast<f64>(i) * fftfreq_step;
+        gaussian_smoothing_(spectrum, y, 21, 2);
+        fit_spline_(spline, x, y, z);
 
-        // Save fftfreq range for sample_at().
-        m_fftfreq_start = actual_fitting_range[0];
-        m_fftfreq_step = noa::Linspace<f64>::from_vec(actual_fitting_range).for_size(spectrum.ssize()).step;
-        m_fftfreq_stop = fftfreq_end;
+        return {fftfreq_start, fftfreq_end};
+    }
 
-        // Baseline fit using an Asymmetric Least Squares Smoothing (ALS) algorithm.
-        // - The asymmetric part isn't used (p=0.5) since we want to go through the Thon rings.
-        // - We use varying penalization (smoothing), since Thon rings decay with the frequency.
-        //   This helps to guarantee that the baseline follows the spectrum at high frequency and
-        //   doesn't drift off to accommodate the fitting at low frequencies.
-        // TODO We could iterate and decrease the smoothness until some criterion is crossed
-        //      (e.g. change of gradient becomes too frequent, GCV sigmoid center).
-        constexpr auto SMOOTHING = GaussianSlider{
-            .peak_coordinate = 0.,
-            .peak_value = 60'000,
-            .base_width = 0.6,
-            .base_value = 6'000,
-        };
-        asymmetric_least_squares_smoothing(spectrum, m_a, {.smoothing = SMOOTHING, .asymmetric_penalty = 0.5});
+    auto Baseline::fit(
+        SpanContiguous<const f32> spectrum,
+        const Vec<f64, 2>& fftfreq_range,
+        const CTFIsotropic64& ctf
+    ) -> Vec<f64, 2> {
+        // Allocate temporary buffers.
+        const auto sn = spectrum.ssize();
+        const auto buffer = Array<f64>({3, 1, 1, sn});
 
-        // While we could have used a smoothing spline, the ALS seems to be giving better results at the edges.
-        // Plus, for fast evaluation we need to express the spline as a piecewise polynomial, which isn't practical
-        // when fitting a penalized spline, so we would need to do a conversion anyway.
+        // Get the fftfreq of the first zero.
+        f64 fftfreq_start{};
+        for (const auto& e: Simulate(ctf, fftfreq_range)) {
+            if (e.is_ctf_zero()) {
+                // Step back by one, just to make sure the next step doesn't miss the zero.
+                fftfreq_start = e.fftfreq() - e.fftfreq_step();
+                break;
+            }
+        }
 
-        // Fit an interpolating spline directly onto the baseline.
-        // This spline is stored and will be queried (many times) for evaluation (interpolation and extrapolation).
-        interpolating_uniform_cubic_spline(m_a, m_b, m_c, m_d);
+        // Collect fftfreq at zeros and peaks of the first half of the spectrum.
+        const auto fftfreq_stop = fftfreq_start + (fftfreq_range[1] - fftfreq_start) * 0.5;
+        std::vector<f64> extrema{};
+        extrema.reserve(50);
+        for (const auto& e: Simulate(ctf, Vec{fftfreq_start, fftfreq_stop})) {
+            if (e.is_ctf_vertex())
+                extrema.push_back(e.fftfreq());
+        }
+        if (extrema.size() <= 4) {
+            // Too few extrema probably due to very low defocus/spacing ratio (which may be due to an incorrect
+            // initial/coarse fit because of strong astigmatism). Regardless, of the reason, fall back to spline only.
+            return fit(spectrum, fftfreq_range, fftfreq_range);
+        }
+
+        // Strong Gaussian-smoothing of the spectrum.
+        const auto spectrum_smooth = buffer.view().subregion(0).span_1d();
+        gaussian_smoothing_(spectrum, spectrum_smooth, 21, 2);
+
+        // Collect the oscillation midpoints within the first half of the spectrum.
+        auto midpoints_x = buffer.span().subregion(1).as_1d();
+        auto midpoints_y = buffer.span().subregion(2).as_1d();
+        isize c{};
+        for (usize i{}; i < extrema.size() - 2; ++i) {
+            const auto fftfreq_0 = extrema[i];
+            const auto fftfreq_1 = extrema[i + 1];
+            const auto fftfreq_2 = extrema[i + 2];
+
+            const auto fftfreq_midpoint_0 = (fftfreq_1 + fftfreq_0) / 2;
+            const auto fftfreq_midpoint_1 = (fftfreq_2 + fftfreq_1) / 2;
+            midpoints_x[i] = (fftfreq_midpoint_1 + fftfreq_midpoint_0) / 2;
+
+            const auto value_midpoint_0 = Simulate::sample_at(spectrum_smooth, fftfreq_range, fftfreq_midpoint_0);
+            const auto value_midpoint_1 = Simulate::sample_at(spectrum_smooth, fftfreq_range, fftfreq_midpoint_1);
+            midpoints_y[i] = (value_midpoint_1 + value_midpoint_0) / 2;
+
+            ++c;
+        }
+
+        // Add the other half of the smooth spectrum to the midpoints.
+        const auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(sn - 1);
+        const auto last_midpoint = midpoints_x[c - 1];
+        for (isize i = 0; i < sn; ++i) {
+            const auto fftfreq = fftfreq_range[0] + static_cast<f64>(i) * fftfreq_step;
+            if (fftfreq > last_midpoint) {
+                midpoints_x[c] = fftfreq;
+                midpoints_y[c] = spectrum_smooth[i];
+                ++c;
+            }
+        }
+
+        // Adjust the spectrum end based on the spectrum signal.
+        gaussian_smoothing_(spectrum, spectrum_smooth, 11, 1.5);
+        const auto start = static_cast<isize>((midpoints_x[0] - fftfreq_range[0]) / fftfreq_step);
+        const auto end = best_end_index_(spectrum_smooth, start, sn - 1);
+        const auto n_removed = sn - 1 - end;
+        c -= n_removed;
+
+        // Compute the spline.
+        const auto x = midpoints_x.subregion(Slice{0, c});
+        const auto y = midpoints_y.subregion(Slice{0, c});
+        const auto z = spectrum_smooth.subregion(Slice{0, c});
+        fit_spline_(spline, x, y, z);
+
+        return {midpoints_x[0], midpoints_x[c - 1]};
     }
 
     auto Baseline::tune_fitting_range(
@@ -193,8 +329,8 @@ namespace qn::ctf {
         // Collect fftfreq of zeros and peaks.
         std::vector<f64> zeros{};
         std::vector<f64> peaks{};
-        zeros.reserve(10);
-        peaks.reserve(10);
+        zeros.reserve(20);
+        peaks.reserve(20);
         for (auto& e: Simulate(ctf, fftfreq_range)) {
             if (not e.is_ctf_vertex())
                 continue;
@@ -275,6 +411,7 @@ namespace qn::ctf {
         // This cutoff guards against big variations of the spectrum where the baseline correction
         // will be subpar at best. When adding extra peaks "blindly", this guard can be useful.
         last_zero += static_cast<size_t>(options.n_extra_peaks_to_append);
+        const auto m_fftfreq_stop = spline.x()[spline.x().size() - 1];
         fitting_range[1] = std::min(m_fftfreq_stop, zeros[std::min(last_zero, zeros.size() - 1)]);
         return fitting_range;
     }

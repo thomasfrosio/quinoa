@@ -545,14 +545,39 @@ namespace qn {
         };
     }
 
-    auto Metadata::Stack::defocus_range() const -> Vec<f64, 2> {
+    auto Metadata::Stack::defocus_range(bool with_astigmatism) const -> Vec<f64, 2> {
         const auto [iter_min, iter_max] = stdr::minmax_element(
-            images, [](const Image& lhs, const Image& rhs) {
-                return lhs.defocus.value < rhs.defocus.value;
+            images, [&](const Image& lhs, const Image& rhs) {
+                auto lhs_defocus = lhs.defocus.value;
+                auto rhs_defocus = rhs.defocus.value;
+                if (with_astigmatism) {
+                    lhs_defocus += abs(lhs.defocus.astigmatism);
+                    rhs_defocus += abs(rhs.defocus.astigmatism);
+                }
+                return lhs_defocus < rhs_defocus;
             });
         return Vec{
             iter_min->defocus.value,
             iter_max->defocus.value
         };
+    }
+
+    auto Metadata::Stack::has_astigmatism_changed(
+        const Stack& other,
+        f64 maximum_magnitude_difference,
+        f64 maximum_angle_difference,
+        f64 ignore_angle_below_magnitude
+    ) const -> bool {
+        for (const auto& [lhs, rhs]: noa::zip(images, other.images)) {
+            check(lhs.index_file == rhs.index_file);
+            const auto magnitude_difference = std::abs(lhs.defocus.astigmatism - rhs.defocus.astigmatism);
+            const auto angle_difference = std::abs(lhs.defocus.angle - rhs.defocus.angle);
+            const auto abs_max_magnitude = std::max(std::abs(rhs.defocus.astigmatism), std::abs(rhs.defocus.astigmatism));
+            const auto has_significant_magnitude = ignore_angle_below_magnitude < abs_max_magnitude;
+            if (magnitude_difference > maximum_magnitude_difference or
+                (has_significant_magnitude and angle_difference > maximum_angle_difference))
+                return true;
+        }
+        return false;
     }
 }

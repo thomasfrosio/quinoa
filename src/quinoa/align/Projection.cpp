@@ -247,7 +247,7 @@ namespace {
 
         using reduced_type = Vec<T, 6>;
 
-        NOA_HD void init(i32 y, i32 x, reduced_type& reduced) {
+        NOA_HD void operator()(i32 y, i32 x, reduced_type& reduced) {
             const auto m = mask(y, x);
             reduced[0] += static_cast<T>(lhs(y, x) * m);
             reduced[1] += static_cast<T>(rhs(y, x) * m);
@@ -261,8 +261,8 @@ namespace {
             joined += reduced;
         }
 
-        using remove_default_final = bool;
-        static NOA_HD void final(const reduced_type& stats, f64& zncc) {
+        using remove_default_post = bool;
+        static NOA_HD void post(const reduced_type& stats, f64& zncc) {
             const auto denom_x = stats[3] - (stats[0] * stats[0]) / stats[2];
             const auto denom_y = stats[4] - (stats[1] * stats[1]) / stats[2];
             auto denom = denom_x * denom_y;

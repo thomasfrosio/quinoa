@@ -212,7 +212,23 @@ namespace qn {
 
             [[nodiscard]] auto tilt_range() const -> Vec<f64, 2>;
             [[nodiscard]] auto time_range() const -> Vec<i64, 2>;
-            [[nodiscard]] auto defocus_range() const -> Vec<f64, 2>;
+            [[nodiscard]] auto defocus_range(bool with_astigmatism = false) const -> Vec<f64, 2>;
+
+            [[nodiscard]] auto has_astigmatism(f64 threshold) const -> bool {
+                // TODO better detection, mean(abs(value))?
+                for (const auto& image: images)
+                    if (std::abs(image.defocus.astigmatism) > threshold)
+                        return true;
+                return false;
+            }
+
+            /// Whether an image has a significantly different astigmatism.
+            [[nodiscard]] auto has_astigmatism_changed(
+                const Stack& other,
+                f64 maximum_magnitude_difference = 0.05,
+                f64 maximum_angle_difference = noa::deg2rad(10.),
+                f64 ignore_angle_below_magnitude = 0.05
+            ) const -> bool;
 
         public: // Range support
             using container = std::vector<Image>;
@@ -302,14 +318,6 @@ namespace qn {
                 .bfactor = 0,
                 .scale = 1.,
             }.to_ctf();
-        }
-
-        [[nodiscard]] auto has_astigmatism(f64 threshold) const -> bool {
-            // TODO better detection, mean(abs(value))?
-            for (const auto& image: stack)
-                if (std::abs(image.defocus.astigmatism) > threshold)
-                    return true;
-            return false;
         }
     };
 }
