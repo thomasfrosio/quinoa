@@ -491,27 +491,26 @@ namespace qn {
         [[nodiscard]] constexpr auto b() const -> SpanContiguous<value_type> { return m_b; }
         [[nodiscard]] constexpr auto c() const -> SpanContiguous<value_type> { return m_c; }
         [[nodiscard]] constexpr auto d() const -> SpanContiguous<value_type> { return m_d; }
-        [[nodiscard]] auto is_empty() const -> bool { return m_buffer == nullptr; }
+        [[nodiscard]] auto is_empty() const -> bool { return m_buffer.empty(); }
 
     private:
         void allocate_(isize n, bool reserve_only = false) {
             // Reuse the buffer if you can.
-            const isize n_to_allocate = n * 5;
-            if (m_buffer == nullptr or n_allocated < n_to_allocate) {
+            const auto n_to_allocate = static_cast<usize>(n) * 5;
+            if (m_buffer.size() < n_to_allocate) {
                 // Allocate a bit more to increase the chance of reusing the buffer
                 // when the fitting is done with slightly different fitting ranges.
-                n_allocated = (n_to_allocate + 200) * 5;
-                m_buffer = std::make_unique<value_type[]>(static_cast<size_t>(n_allocated));
+                m_buffer.resize((n_to_allocate + 200) * 5);
             }
             if (reserve_only)
                 return;
 
-            std::fill_n(m_buffer.get(), n_to_allocate, 0.);
-            m_x = SpanContiguous(m_buffer.get() + n * 0, n);
-            m_y = SpanContiguous(m_buffer.get() + n * 1, n);
-            m_b = SpanContiguous(m_buffer.get() + n * 2, n);
-            m_c = SpanContiguous(m_buffer.get() + n * 3, n);
-            m_d = SpanContiguous(m_buffer.get() + n * 4, n);
+            stdr::fill(m_buffer, 0.);
+            m_x = SpanContiguous(m_buffer.data() + n * 0, n);
+            m_y = SpanContiguous(m_buffer.data() + n * 1, n);
+            m_b = SpanContiguous(m_buffer.data() + n * 2, n);
+            m_c = SpanContiguous(m_buffer.data() + n * 3, n);
+            m_d = SpanContiguous(m_buffer.data() + n * 4, n);
         }
 
         // Calculate c_i and d_i from b_i.
@@ -537,8 +536,7 @@ namespace qn {
         }
 
     private:
-        std::unique_ptr<value_type[]> m_buffer;
-        isize n_allocated{};
+        std::vector<value_type> m_buffer;
 
         // Cubic spline expressed as a set of cubic polynomials.
         // f(x) = a_i + b_i*(x-x_i) + c_i*(x-x_i)^2 + d_i*(x-x_i)^3
