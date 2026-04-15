@@ -6,52 +6,60 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/basic_file_sink.h>
 
+namespace {
+    using console_sink_t = std::shared_ptr<spdlog::sinks::stdout_color_sink_mt>;
+    console_sink_t s_console_sink;
+}
+
 namespace qn {
-    spdlog::logger Logger::s_logger(std::string{}); // empty logger
-    uint64_t Logger::s_uuid = noa::random_value(noa::Uniform<uint64_t>{0, std::numeric_limits<uint64_t>::max()});
-    bool Logger::s_is_debug = false;
+    thread_local spdlog::logger Logger::s_logger("quinoa");
+    thread_local usize Logger::s_uuid = noa::random_value(noa::Uniform<usize>{0, std::numeric_limits<usize>::max()});
 
     void Logger::initialize() {
-        // Configure the console sink.
-        auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-        console_sink->set_color(spdlog::level::critical, console_sink->red_bold); // our error
-        console_sink->set_color(spdlog::level::err, console_sink->yellow_bold); // our warn
-        console_sink->set_color(spdlog::level::warn, console_sink->blue); // our status
-        console_sink->set_color(spdlog::level::info, console_sink->green); // our info
-        console_sink->set_color(spdlog::level::debug, console_sink->reset); // our trace
-        console_sink->set_color(spdlog::level::trace, console_sink->cyan); // our debug
-        console_sink->set_pattern("%^%v%$"); // colored log
-        console_sink->set_level(spdlog::level::info); // default to our into
+        // Configure the console sink. All processing threads share the same console.
+        if (not s_console_sink) {
+            s_console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+            s_console_sink->set_color(spdlog::level::critical, s_console_sink->red_bold); // our error
+            s_console_sink->set_color(spdlog::level::err, s_console_sink->yellow_bold); // our warn
+            s_console_sink->set_color(spdlog::level::warn, s_console_sink->blue); // our status
+            s_console_sink->set_color(spdlog::level::info, s_console_sink->green); // our info
+            s_console_sink->set_color(spdlog::level::debug, s_console_sink->reset); // our trace
+            s_console_sink->set_color(spdlog::level::trace, s_console_sink->cyan); // our debug
+            s_console_sink->set_pattern("%^%v%$"); // colored log
+            s_console_sink->set_level(spdlog::level::trace); // default to our into
+        }
 
-        // Configure the logger.
-        s_logger = spdlog::logger("quinoa", std::move(console_sink));
+        // Configure the logger if not configured yet.
         s_logger.set_level(spdlog::level::trace); // no limits for the logger; the sinks set the levels.
-        s_logger.flush_on(spdlog::level::err);
+        s_logger.flush_on(spdlog::level::err); // our warn
     }
 
-    void Logger::add_logfile(const std::filesystem::path& logfile) {
-        // Configure the file sink.
-        auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logfile.string());
-        file_sink->set_pattern("[%T][%l]: %v"); // [time][level]: log
-        file_sink->set_level(spdlog::level::debug); // default to our trace
-        s_logger.sinks().push_back(std::move(file_sink));
+    void Logger::activate_console() {
+        for (const auto& sink : s_logger.sinks())
+            if (sink == s_console_sink)
+                return;
+        s_logger.sinks().push_back(s_console_sink);
     }
 
-    void Logger::set_level(const std::string& level_name) {
-        if (s_logger.sinks().empty()) // if not initialized
-            return;
+    void Logger::deactivate_console() {
+        std::erase_if(s_logger.sinks(), [] (const auto& sink) { return sink == s_console_sink; });
+    }
 
+    void Logger::set_console_level(const std::string& level_name) {
         // Level should be ["off", "error", "warn", "status", "info", "trace", "debug"].
         const spdlog::level::level_enum level = spdlog::level::from_str(level_name);
+        s_console_sink->set_level(level);
+    }
 
-        // The log level from the user does not affect the logfile.
-        // The logfile is always at the trace level (which is effectively our maximum verbosity in production).
-        const auto console_sink = dynamic_cast<spdlog::sinks::stdout_color_sink_mt*>(s_logger.sinks()[0].get());
-        if (console_sink)
-            console_sink->set_level(level);
+    void Logger::set_logfile(const std::filesystem::path& logfile) {
+        // Configure the single-threaded file sink.
+        auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_st>(logfile.string());
+        file_sink->set_pattern("[%T][%l]: %v"); // [time][level]: log
+        file_sink->set_level(spdlog::level::debug); // our trace (debug would be console only)
 
-        // Save for easy access whether we are in debug mode.
-        s_is_debug = level == spdlog::level::trace; // our debug is spdlog's trace
+        // Erase any previous file sinks and add the new one.
+        std::erase_if(s_logger.sinks(), [](const auto& sink) { return sink != s_console_sink; });
+        s_logger.sinks().push_back(std::move(file_sink));
     }
 
     Logger::ScopeTimer::~ScopeTimer() {

@@ -6,7 +6,7 @@ if (TARGET spdlog::spdlog)
 else ()
     # spdlog made it difficult to change the log level names from CMake, so use own fork.
     set(spdlog_REPOSITORY https://github.com/thomasfrosio/spdlog)
-    set(spdlog_TAG v1.15.2-name)
+    set(spdlog_TAG quinoa-loglevels)
 
     message(STATUS "Repository: ${spdlog_REPOSITORY}")
     message(STATUS "Git tag: ${spdlog_TAG}")

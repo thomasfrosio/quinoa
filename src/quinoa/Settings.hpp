@@ -6,19 +6,45 @@
 #include "quinoa/Types.hpp"
 
 namespace qn {
+    struct Series {
+        Path mdoc_file{};
+        Path stack_file{};
+        Path rawtlt_file{};
+        Path star_file{};
+        Path frames_directory{};
+        Path output_directory{};
+
+        /// Get the stem: stem(.*).mdoc.
+        static auto stem(const Path& path) -> Path {
+            auto stem = path.stem();
+            while (not stem.extension().empty())
+                stem = stem.stem();
+            return stem;
+        }
+
+        auto stem() const -> Path {
+            return stem(mdoc_file);
+        }
+
+        auto info() const -> std::string {
+            return fmt::format(
+                "{}:\n"
+                "  mdoc={}\n"
+                "  stack={}\n"
+                "  rawtlt={}\n"
+                "  output={}",
+                stem(mdoc_file), mdoc_file, stack_file,
+                rawtlt_file.empty() ? "<none>" : rawtlt_file.native(),
+                output_directory
+            );
+        }
+    };
+
     // Settings
     class Settings {
     public:
         Settings() = default;
-        auto parse(int argc, const char* const* argv) -> bool;
-
-        struct Files {
-            Path stack_file{};
-            Path mdoc_file{};
-            Path star_file{};
-            Path frames_directory{};
-            Path output_directory{};
-        } files;
+        auto parse(int argc, const char* const* argv) -> std::vector<Series>;
 
         struct Experiment {
             f64 tilt_axis{};
@@ -46,7 +72,7 @@ namespace qn {
 
             bool ctf_run{};
             f64 ctf_patch_size_ang{};
-            i32 ctf_patch_size{};
+            i32 ctf_patch_size_min_pix{};
             Vec<f64, 2> ctf_resolution_range{};
             i32 ctf_n_images_in_initial_average{};
             bool ctf_check_defocus_gradient{};
@@ -88,10 +114,12 @@ namespace qn {
         } postprocessing;
 
         struct Compute {
-            Device device{};
+            std::vector<Device> devices{};
             i32 n_threads{};
             bool register_stack{};
             std::string log_level{};
+            bool dry{};
+            bool stop_at_first_error{};
         } compute;
     };
 }

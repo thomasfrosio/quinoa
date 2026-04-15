@@ -78,8 +78,8 @@ namespace qn {
         auto bandpass_slice_() const -> Pair<View<f32>, View<c32>>;
 
     private:
-        static Array<std::byte> s_input_stack; // register the input stack
-        static noa::io::DataType s_input_stack_dtype;
+        static thread_local Array<std::byte> s_input_stack; // register the input stack
+        static thread_local noa::io::DataType s_input_stack_dtype;
 
         ni::ImageFile m_file{};
         isize m_file_slice_count{};

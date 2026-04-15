@@ -1,13 +1,7 @@
 #include <noa/Core.hpp>
+#include <noa/io/ImageFile.hpp>
 #include <noa/io/TextFile.hpp>
 #include <forward_list>
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wshadow"
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#pragma GCC diagnostic ignored "-Wpedantic"
-#include <flux.hpp>
-#pragma GCC diagnostic pop
 
 #include "quinoa/Metadata.hpp"
 #include "quinoa/Settings.hpp"
@@ -31,7 +25,7 @@ namespace {
         return &front_path;
     }
 
-    void apply_settings(const Settings& settings, Metadata& metadata) {
+    void apply_settings(const Settings& settings, const Series& series, Metadata& metadata) {
         const auto has_setting = [&](f64 value) {
             constexpr auto MAX = std::numeric_limits<f64>::max();
             return not noa::allclose(MAX, value);
@@ -69,9 +63,9 @@ namespace {
         }
 
         // Overwrite the frame directory and reset the metadata.
-        if (not settings.files.frames_directory.empty()) {
+        if (not series.frames_directory.empty()) {
             for (auto& [time, path]: frame_paths)
-                path = settings.files.frames_directory / path.filename();
+                path = series.frames_directory / path.filename();
 
             for (auto& image: metadata.stack)
                 for (auto& [time, path]: frame_paths)
@@ -91,32 +85,34 @@ namespace {
 }
 
 namespace qn {
-    auto Metadata::load_from_mdoc(const Path& mdoc) -> Metadata {
+    auto Metadata::load_from_mdoc(const Path& mdoc, const Path& stack, const Path& rawtlt) -> Metadata {
         // TODO Use PriorRecordDose.
         auto metadata = Metadata{};
         auto& images = metadata.stack.images;
 
         // Parse "key = value" to "value".
         std::string_view trimmed;
-        auto get_substring = [&trimmed] {
-            return noa::details::trim_left(trimmed.substr(trimmed.find_first_of('=') + 1));
+        auto get_substring = [] (std::string_view substring) {
+            return noa::details::trim_left(substring.substr(substring.find_first_of('=') + 1));
         };
 
         // Add the image.
+        auto z_values = std::vector<i32>{};
         auto frame_path = Path{};
-        bool is_header{true}, has_voltage{}, has_rotation{}, has_tilt{}, has_exposure{}, has_datetime{};
+        auto rotation = f64{};
+        bool is_header{true}, has_voltage{}, has_rotation{};
+        bool has_tilt{}, has_exposure{}, has_datetime{};
         auto validate_last_image = [&] {
             // Before switching to the next image, check that we collected the necessary fields.
-            check(has_rotation and has_tilt and has_exposure and has_datetime,
-                  "An image in the mdoc is missing a key value:\n"
-                  "has_rotation={}, has_tilt={}, has_exposure={} and has_datetime={}",
-                  has_rotation, has_tilt, has_exposure, has_datetime);
-            has_rotation = false;
+            check(has_tilt, "Image entry {} in the mdoc is missing the TiltAngle", z_values.back());
+            check(has_exposure, "Image entry {} in the mdoc is missing the ExposureDose", z_values.back());
+            check(has_datetime, "Image entry {} in the mdoc is missing the DateTime", z_values.back());
             has_tilt = false;
             has_exposure = false;
             has_datetime = false;
 
             // Register the frame path.
+            images.back().angles[0] = rotation;
             images.back().frames = set_frame_path(images.back().time, std::move(frame_path));
         };
 
@@ -126,18 +122,37 @@ namespace qn {
             // Header.
             if (is_header) {
                 if (trimmed.starts_with("Voltage")) {
-                    auto substring = get_substring();
+                    auto substring = get_substring(trimmed);
                     auto result = noa::details::parse<f64>(substring);
                     check(result, "Could not parse Voltage = {}", substring);
                     metadata.sample.voltage = *result;
                     has_voltage = true;
                 }
+
+                auto offset = trimmed.find("TiltAxisAngle =");
+                if (offset == std::string::npos)
+                    offset = trimmed.find("Tilt axis angle =");
+                if (offset != std::string::npos) {
+                    auto substring = get_substring(trimmed.substr(offset));
+                    auto result = noa::details::parse<f64>(substring);
+                    check(result, "Could not parse the tilt axis angle from \"{}\"", trimmed);
+                    rotation = result.value();
+                    has_rotation = true;
+                }
             }
 
             // Create a new image.
             if (trimmed.starts_with("[ZValue =")) {
+                auto result = noa::details::parse<i32>(trimmed.substr(9));
+                check(result, "Could not parse ZValue: {}", trimmed);
+                for (auto e: z_values)
+                    if (e == result.value())
+                        panic("ZValue entry is duplicated");
+                z_values.push_back(*result);
+
                 if (is_header) {
                     check(has_voltage, "Missing Voltage in the mdoc header");
+                    check(has_rotation, "Missing TiltAxisAngle in the mdoc header");
                     metadata.sample.cs = 2.7;
                     metadata.sample.amplitude = 0.07;
                     metadata.sample.thickness = 0.;
@@ -145,27 +160,20 @@ namespace qn {
                 }
                 if (not images.empty())
                     validate_last_image();
-                images.push_back({});
+                images.push_back({.index = -1}); // mark as unset for the stack image assignment
                 continue;
             }
 
             // Parse image fields.
-            if (trimmed.starts_with("RotationAngle")) {
-                auto substring = get_substring();
-                auto result = noa::details::parse<f64>(substring);
-                check(result, "Could not parse RotationAngle = {}", substring);
-                images.back().angles[0] = *result;
-                has_rotation = true;
-
-            } else if (trimmed.starts_with("TiltAngle")) {
-                auto substring = get_substring();
+            if (trimmed.starts_with("TiltAngle")) {
+                auto substring = get_substring(trimmed);
                 auto result = noa::details::parse<f64>(substring);
                 check(result, "Could not parse TiltAngle = {}", substring);
                 images.back().angles[1] = *result;
                 has_tilt = true;
 
             } else if (trimmed.starts_with("ExposureDose")) {
-                auto substring = get_substring();
+                auto substring = get_substring(trimmed);
                 auto result = noa::details::parse<f64>(substring);
                 check(result, "Could not parse ExposureDose = {}", substring);
                 images.back().exposure[1] = *result;
@@ -173,14 +181,14 @@ namespace qn {
 
             } else if (trimmed.starts_with("SubFramePath")) {
                 // Assume '\' are Windows separators. On POSIX, they are valid filename characters.
-                auto substring = std::string(get_substring());
+                auto substring = std::string(get_substring(trimmed));
                 stdr::replace(substring, '\\', '/');
 
                 // Note that we only get the filename. The base path is from the user settings.
                 frame_path = Path(std::move(substring)).filename();
 
             } else if (trimmed.starts_with("DateTime")) {
-                auto substring = get_substring();
+                auto substring = get_substring(trimmed);
                 std::tm tm{};
                 check(::strptime(substring.data(), "%d-%b-%y  %H:%M:%S", &tm) != nullptr or
                       ::strptime(substring.data(), "%d-%b-%Y  %H:%M:%S", &tm) != nullptr,
@@ -196,6 +204,17 @@ namespace qn {
         }
         validate_last_image();
 
+        // Check that the mdoc doesn't have duplicated tilts.
+        constexpr auto TILT_TOLERANCE = 0.2;
+        for (usize i{}; i < images.size(); ++i) {
+            for (usize j{}; j < images.size(); ++j) {
+                if (i != j and noa::allclose(images[i].angles[1], images[j].angles[1], TILT_TOLERANCE)) {
+                    panic("mdoc contains entries with the same tilt: entry:{}:tilt={:.1}, entry:{}:tilt={:.1}, tolerance={}",
+                          i, images[i].angles[1], j, images[j].angles[1], TILT_TOLERANCE);
+                }
+            }
+        }
+
         // Compute pre- and post-exposure.
         // TODO If we can use PriorRecordDose, remove this.
         stdr::stable_sort(images, [](const Image& lhs, const Image& rhs) { return lhs.time < rhs.time; });
@@ -206,12 +225,50 @@ namespace qn {
             accumulated_exposure = image.exposure[1];
         }
 
-        // Compute the stack file index.
-        // TODO Deal with cases where the same tilt is collected twice.
-        stdr::stable_sort(images, [](const Image& lhs, const Image& rhs) { return lhs.angles[1] < rhs.angles[1]; });
-        for (i32 i{}; auto& image : images) {
-            image.index = i;
-            image.index_file = i++;
+        // TODO If stack isn't specified, use the frames.
+
+        // Assign each image in the stack to an MDOC entry.
+        const auto stack_shape = ni::ImageFile(stack, {.read = true}).shape();
+        const auto n_images = stack_shape[0] == 1 and stack_shape[1] > 1 ? stack_shape[1] : stack_shape[0];
+
+        if (rawtlt.empty()) {
+            if (n_images > std::ssize(images))
+                panic("The stack has more images ({}) than the number of mdoc entries ({}). "
+                      "The mdoc parsing probably failed", n_images, std::ssize(images));
+            check(n_images <= std::ssize(images),
+                  "The stack has fewer images ({}) than the number of mdoc entries ({}). "
+                  "Use a rawtlt file to assign each image to a tilt", n_images, std::ssize(images));
+
+            // No rawtlt, but the number of images matches the mdoc, so we should be able to safely
+            // assume that the images where saved in ascending tilt order.
+            stdr::stable_sort(images, [](const Image& lhs, const Image& rhs) { return lhs.angles[1] < rhs.angles[1]; });
+            for (i32 i{}; auto& image : images) {
+                image.index = i;
+                image.index_file = i++;
+            }
+        } else {
+            for (i32 i{}; const auto& line: ni::read_lines(rawtlt)) {
+                auto result = noa::details::parse<f64>(line);
+                check(result.has_value(), "Could not parse {} as a tilt angle", line);
+
+                // Find the matching entry in the mdoc based on the tilt.
+                // TODO Should the frame filename be used instead?
+                bool found{};
+                for (auto& image: images) {
+                    if (noa::allclose(image.angles[1], result.value(), TILT_TOLERANCE)) {
+                        check(image.index == -1,
+                              "Tilt {:.1f} from rawtlt file matches a mdoc entry already assigned to a previous tilt",
+                              result.value());
+                        image.index = i;
+                        image.index_file = i++;
+                        found = true;
+                    }
+                }
+                check(found, "Tilt {:.1f} from rawtlt did not match any entry in the mdoc", result.value());
+            }
+
+            // Remove MDOC entries not present in the rawtlt
+            std::erase_if(images, [](const auto& image) { return image.index == -1; });
         }
 
         return metadata;
@@ -318,7 +375,7 @@ namespace qn {
                 // Parse the column names and set their column index.
                 constexpr auto FIELDS = std::array{
                     "_qnIndex", "_qnRotation", "_qnTilt", "_qnPitch", "_qnShiftX", "_qnShiftY",
-                    "_qnDefocus", "_qnAstigmatismValue", "_qnAstigmatismAngle", "_qnPhaseShift",
+                    "_qnDefocus", "_qnDefocusDelta", "_qnDefocusAngle", "_qnPhaseShift",
                     "_qnPreExposure", "_qnPostExposure", "_qnTimepoint", "_qnFrames",
                 };
                 auto column_indices = std::array<size_t, FIELDS.size()>{};
@@ -364,29 +421,35 @@ namespace qn {
                         break;
                     }
 
+                    constexpr auto DELIMITERS = std::string_view{" \t"};
                     Image image{};
-                    size_t index{};
-                    flux::ref(line)
-                        .split([](char c) { return c == ' ' or c == '\t'; })
-                        .filter([](flux::sequence auto&& r) { return not r.is_empty(); })
-                        .map([](flux::sequence auto&& r) { return flux::to<std::string_view>(r); })
-                        .for_each([&](std::string_view str) {
-                            if      (index == column_indices[0])  parse_value(str, image.index_file);
-                            else if (index == column_indices[1])  parse_value(str, image.angles[0]);
-                            else if (index == column_indices[2])  parse_value(str, image.angles[1]);
-                            else if (index == column_indices[3])  parse_value(str, image.angles[2]);
-                            else if (index == column_indices[4])  parse_value(str, image.shifts[1]);
-                            else if (index == column_indices[5])  parse_value(str, image.shifts[0]);
-                            else if (index == column_indices[6])  parse_value(str, image.defocus.value);
-                            else if (index == column_indices[7])  parse_value(str, image.defocus.astigmatism);
-                            else if (index == column_indices[8])  parse_value(str, image.defocus.angle);
-                            else if (index == column_indices[9])  parse_value(str, image.phase_shift);
-                            else if (index == column_indices[10]) parse_value(str, image.exposure[0]);
-                            else if (index == column_indices[11]) parse_value(str, image.exposure[1]);
-                            else if (index == column_indices[12]) parse_value(str, image.time);
-                            else if (index == column_indices[13]) parse_value(str, frame_path);
-                            index++;
-                        });
+                    usize index{};
+                    usize start = line.find_first_not_of(DELIMITERS);
+                    while (start != std::string_view::npos) {
+                        // Find the end of the current token
+                        usize end = line.find_first_of(DELIMITERS, start);
+                        std::string_view token = line.substr(start, end - start);
+
+                        // Map token to the correct struct member based on column index
+                        if      (index == column_indices[0])  parse_value(token, image.index_file);
+                        else if (index == column_indices[1])  parse_value(token, image.angles[0]);
+                        else if (index == column_indices[2])  parse_value(token, image.angles[1]);
+                        else if (index == column_indices[3])  parse_value(token, image.angles[2]);
+                        else if (index == column_indices[4])  parse_value(token, image.shifts[1]);
+                        else if (index == column_indices[5])  parse_value(token, image.shifts[0]);
+                        else if (index == column_indices[6])  parse_value(token, image.defocus.value);
+                        else if (index == column_indices[7])  parse_value(token, image.defocus.astigmatism);
+                        else if (index == column_indices[8])  parse_value(token, image.defocus.angle);
+                        else if (index == column_indices[9])  parse_value(token, image.phase_shift);
+                        else if (index == column_indices[10]) parse_value(token, image.exposure[0]);
+                        else if (index == column_indices[11]) parse_value(token, image.exposure[1]);
+                        else if (index == column_indices[12]) parse_value(token, image.time);
+                        else if (index == column_indices[13]) parse_value(token, frame_path);
+
+                        // Move to the next token, skipping any consecutive delimiters (filter equivalent)
+                        start = line.find_first_not_of(DELIMITERS, end);
+                        index++;
+                    }
                     check(index == FIELDS.size(),
                           "Missing value in data_stack at line {}. {} values are expected per line, but got {}",
                           line_number, FIELDS.size(), index);
@@ -408,18 +471,27 @@ namespace qn {
         return metadata;
     }
 
-    auto Metadata::load_from_settings(const Settings& settings) -> Metadata {
+    auto Metadata::load_from_settings(const Settings& settings, const Series& series) -> Metadata {
         Metadata metadata;
 
-        if (not settings.files.star_file.empty()) {
-            Logger::info("Loading metadata from star file {}.", settings.files.star_file);
-            metadata = load_from_star(settings.files.star_file);
-            apply_settings(settings, metadata);
+        if (not series.star_file.empty()) {
+            if (not settings.compute.dry) {
+                Logger::info("Loading metadata from star file {}.", series.star_file);
+                Logger::warn("Loading metadata from star file is currently experimental and intended for debugging/testing only");
+            }
+            metadata = load_from_star(series.star_file);
+            apply_settings(settings, series, metadata);
 
-        } else if (not settings.files.mdoc_file.empty()) {
-            Logger::info("Loading metadata from mdoc file {}.", settings.files.mdoc_file);
-            metadata = load_from_mdoc(settings.files.mdoc_file);
-            apply_settings(settings, metadata);
+        } else if (not series.mdoc_file.empty()) {
+            if (not settings.compute.dry) {
+                Logger::info("Initializing the metadata from the mdoc file {}.", series.mdoc_file);
+                if (not series.rawtlt_file.empty())
+                    Logger::info("Initializing the metadata from the rawtlt file {}.", series.rawtlt_file);
+                else
+                    Logger::info("Initializing the metadata without rawtlt file; assuming images where saved in ascending tilt order");
+            }
+            metadata = load_from_mdoc(series.mdoc_file, series.stack_file, series.rawtlt_file);
+            apply_settings(settings, series, metadata);
 
         } else {
             panic("Cannot initialize the metadata. No mdoc or star file have been provided");
@@ -447,9 +519,9 @@ namespace qn {
             "_qnPitch             # deg\n"
             "_qnShiftX            # pix/A (normalized to 1 A/pix)\n"
             "_qnShiftY            # pix/A (normalized to 1 A/pix)\n"
-            "_qnDefocus           # um\n"
-            "_qnAstigmatismValue  # um\n"
-            "_qnAstigmatismAngle  # deg\n"
+            "_qnDefocus           # um, (u+v)/2\n"
+            "_qnDefocusDelta      # um, (u-v)/2\n"
+            "_qnDefocusAngle      # deg\n"
             "_qnPhaseShift        # deg\n"
             "_qnPreExposure       # e/A2\n"
             "_qnPostExposure      # e/A2\n"
@@ -459,7 +531,7 @@ namespace qn {
 
         constexpr std::string_view FORMAT =
             "{:>3} {:>8.3f} {:>7.3f} {:>7.3f} {:>9.3f} {:>9.3f} "
-            "{:>7.3f} {:>7.3f} {:>7.2f} {:>7.2f} {:>7.2f} {:>8.2f} {:>10} {}\n";
+            "{:>9.5f} {:>9.5f} {:>7.2f} {:>7.2f} {:>7.2f} {:>8.2f} {:>10} {}\n";
         buffer.reserve(8'000);
 
         // Save in the same order as in the input file and normalize the shifts.

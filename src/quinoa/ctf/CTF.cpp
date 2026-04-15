@@ -1,6 +1,7 @@
-#include "quinoa/ctf/CTF.hpp"
 #include "quinoa/Logger.hpp"
 #include "quinoa/Thickness.hpp"
+#include "quinoa/ctf/CTF.hpp"
+#include "quinoa/ctf/Refine.hpp"
 
 namespace {
     auto is_hybrid_scheme_(const Metadata::Stack& metadata) -> bool {
@@ -52,7 +53,7 @@ namespace {
         const Metadata& metadata,
         const Metadata::Stack& previous_metadata,
         const Vec<f64, 2>& fftfreq_range,
-        const SpanContiguous<Vec<f64, 2>>& fitting_ranges,
+        const SpanContiguous<const Vec<f64, 2>>& fitting_ranges,
         isize patch_padded_size
     ) {
         // For severe cases of astigmatism, the equiphase-binning will increase the signal for the bins
@@ -61,7 +62,7 @@ namespace {
         // during the initial binning. This is just to do things right, use all the available signal and
         // improve the reconstructed spectra.
         const bool need_new_equiphase_binning =
-            metadata.stack.has_astigmatism(0.2) and
+            metadata.stack.has_astigmatism(0.015) and
             metadata.stack.has_astigmatism_changed(previous_metadata);
 
         // The resolution limit may be cutting valuable signal.
@@ -115,11 +116,7 @@ namespace qn::ctf {
         Metadata& metadata,
         const FitSettings& settings
     ) {
-        auto timer = Logger::status_scope_time("CTF alignment");
-
-        // Load and process images in the same order they were collected.
-        // TODO This may cause issues for cases where highest tilts are collected first.
-        metadata.stack.sort("time").reset_indices();
+        auto t0 = Logger::status_scope_time("CTF alignment");
 
         // If the exposure of the first image is significantly higher than the second and third, it may also
         // be collected at a much lower defocus (see TYGRESS-like schemes), so keep track of this.
@@ -136,23 +133,26 @@ namespace qn::ctf {
 
         // Patch size.
         // This is the size of the patches used to compute the grid; decreasing patch_size_ang increases the
-        // number of patches, making the alignment more costly, but can increase the quality of the
+        // number of patches, making the alignment more costly, but may increase the quality of the
         // oscillations at higher frequencies.
         const f64 patch_size_ang = noa::clamp(settings.patch_size_ang, 500., 1000.);
-        i64 patch_size = static_cast<i64>(std::round(patch_size_ang / spacing));
+        auto patch_size = static_cast<isize>(std::round(patch_size_ang / spacing));
+        patch_size = std::max(patch_size, settings.patch_size_min_pix);
         patch_size = nf::next_fast_size(noa::clamp(patch_size, 250, 2000));
 
         // The patches are Fourier cropped to the resolution limit and zero-padded to this size to increase the sampling.
         // At this point, we don't know what defocus to expect, but this should be enough to get us started and
         // remove aliasing in most cases.
-        i64 patch_padded_size = 512;
+        isize patch_padded_size = 512;
 
         // Compute the centers of the 50% overlapped patches.
         const auto grid = Grid(stack_loader.slice_shape(), patch_size, patch_size / 2);
 
-        // Get an initial defocus, phase-shift and fitting-range based on the first few images.
+        // Get an initial defocus, phase-shift and fitting-range based on the first few lowest-tilt images.
         auto metadata_initial = metadata;
+        metadata_initial.stack.sort("absolute_tilt").reset_indices();
         metadata_initial.stack.exclude_if([&](auto& s) {
+            // If first_image_has_higher_exposure=true, the first image is the lowest tilt.
             return (first_image_has_higher_exposure and s.index == 0) or
                    s.index >= settings.n_images_in_initial_average;
         });
@@ -183,69 +183,124 @@ namespace qn::ctf {
             stack_loader, metadata, grid, settings.resolution_range,
             patch_size, patch_padded_size, bin_angle
         );
-        if (not settings.fit_astigmatism)
-            stack_loader = StackLoader{}; // erase buffers
 
         // Coarse CTF alignment.
-        coarse_fit(
-            metadata, grid, patches, { // ctf.defocus|phase_shift and metadata.defocus|phase_shift are updated
-                .initial_fitting_range = initial_fit.fitting_range,
-                .first_image_has_higher_exposure = first_image_has_higher_exposure,
-                .fit_phase_shift = settings.fit_phase_shift,
-                .check_defocus_gradient = settings.check_defocus_gradient,
-                .output_directory = settings.output_directory,
-            });
-
-        // Prepare for the full tilt-series alignment.
-        auto previous_metadata = metadata.stack;
-        auto refine_fit_state = FitRefineState{
-            .phase_shift = Array<f64>(2),
-            .astigmatism_value = Array<f64>(5),
-            .astigmatism_angle = Array<f64>(5),
-            .fitting_ranges = Array<Vec<f64, 2>>(patches.n_images()),
-            .angle_offsets = Vec<f64, 3>{},
-        };
-        auto refine_fit_settings = FitRefineOptions{
-            .full_fit = true,
-            .fit_rotation = settings.fit_rotation,
-            .fit_tilt = settings.fit_tilt,
-            .fit_pitch = settings.fit_pitch,
+        coarse_fit(metadata, grid, patches, {
+            .initial_fitting_range = initial_fit.fitting_range,
+            .first_image_has_higher_exposure = first_image_has_higher_exposure,
             .fit_phase_shift = settings.fit_phase_shift,
-            .fit_astigmatism = settings.fit_astigmatism,
+            .check_defocus_gradient = settings.check_defocus_gradient,
             .output_directory = settings.output_directory,
-        };
+        });
 
         // Full tilt-series alignment.
-        refine_fit(metadata, refine_fit_state, grid, patches, refine_fit_settings);
+        auto t1 = Logger::info_scope_time("Refine fitting");
+        auto previous_metadata = metadata.stack;
+        auto fitter = RefineFitting(metadata, grid, patches);
 
-        // High-resolution recovery.
-        auto [recompute_patches, new_patch_padded_size, new_resolution_limit] = is_high_resolution_recovery_needed_(
-            metadata, previous_metadata, patches.rho_vec(),
-            refine_fit_state.fitting_ranges.span_1d(), patch_padded_size
-        );
-        if (not recompute_patches)
-            return;
+        // First, refine the coarse search.
+        fitter.run(NLOPT_LD_LBFGS, 30, {
+            .phase_shift = settings.fit_phase_shift ? noa::deg2rad(Vec{-50., 50.}) : Vec{0., 0.},
+            .defocus = Vec{-1.5, 1.5},
+        });
+        fitter.plot_diagnostics(settings.output_directory);
 
-        // Recompute patches.
-        bin_angle = 2.8125;
-        patches = Patches::from_stack(
-            stack_loader, metadata, grid, Vec{settings.resolution_range[0], new_resolution_limit},
-            patch_size, new_patch_padded_size, bin_angle
-        );
+        constexpr isize MAX_N_ITERATIONS = 3;
+        isize iter{};
+        for (; iter < MAX_N_ITERATIONS; iter++) {
+            // The astigmatism is one of the most important parameters, because if it is poorly estimated,
+            // the other parameters (including the defoci) cannot be fitted accurately. The global optimization
+            // is the most expensive part, but it is necessary since we can easily get stuck in a local minimum.
+            if (settings.fit_astigmatism or settings.fit_phase_shift) {
+                fitter.run(NLOPT_GD_STOGO, iter == 0 ? 75 : 35, {
+                    .phase_shift = settings.fit_phase_shift ? noa::deg2rad(Vec{-20., 20.}) : Vec{0., 0.},
+                    .defocus = Vec{-1., 1.},
+                    .astigmatism_value = settings.fit_astigmatism ? Vec{-0.50, 0.50} : Vec{0., 0.},
+                    .astigmatism_angle = settings.fit_astigmatism ? noa::deg2rad(Vec{-50., 50.}) : Vec{0., 0.},
+                });
+                fitter.run(NLOPT_LD_LBFGS, 50, {
+                    .phase_shift = settings.fit_phase_shift ? noa::deg2rad(Vec{-20., 20.}) : Vec{0., 0.},
+                    .defocus = Vec{-2., 2.},
+                    .astigmatism_value = settings.fit_astigmatism ? Vec{-0.50, 0.50} : Vec{0., 0.},
+                    .astigmatism_angle = settings.fit_astigmatism ? noa::deg2rad(Vec{-50., 50.}) : Vec{0., 0.},
+                });
 
-        // Full tilt-series refinement.
-        refine_fit_settings.full_fit = false;
-        refine_fit(metadata, refine_fit_state, grid, patches, refine_fit_settings);
+                // Increase the spline resolutions.
+                // TODO increase phase-shift?
+                // if (settings.fit_phase_shift) {
+                //     fitter.increase_phase_shift_resolution(3);
+                // }
+                if (metadata.stack.has_astigmatism(0.05))
+                    fitter.increase_astigmatism_resolution();
 
-        //
-        bin_angle = 2.8125;
-        patches = Patches::from_stack(
-            stack_loader, metadata, grid, Vec{settings.resolution_range[0], new_resolution_limit},
-            patch_size, new_patch_padded_size, bin_angle
-        );
+                fitter.run(NLOPT_LD_LBFGS, 50, {
+                    .phase_shift = settings.fit_phase_shift ? noa::deg2rad(Vec{-20., 20.}) : Vec{0., 0.},
+                    .defocus = Vec{-2., 2.},
+                    .astigmatism_value = settings.fit_astigmatism ? Vec{-0.2, 0.2} : Vec{0., 0.},
+                    .astigmatism_angle = settings.fit_astigmatism ? noa::deg2rad(Vec{-45., 45.}) : Vec{0., 0.},
+                });
+            }
 
-        // Full tilt-series refinement.
-        refine_fit_settings.full_fit = false;
-        refine_fit(metadata, refine_fit_state, grid, patches, refine_fit_settings);
+            // Add stage angles.
+            fitter.run(NLOPT_LD_LBFGS, 30, {
+                .rotation = settings.fit_rotation ? deg2rad(Vec{-10., 10.}) : Vec{0., 0.},
+                .tilt = settings.fit_tilt ? deg2rad(Vec{-30., 30.}) : Vec{0., 0.},
+                .pitch = settings.fit_pitch ? deg2rad(Vec{-20., 20.}) : Vec{0., 0.},
+                .phase_shift = settings.fit_phase_shift ? noa::deg2rad(Vec{-20., 20.}) : Vec{0., 0.},
+                .defocus = Vec{-1., 1.},
+            });
+
+            // Full search.
+            if (settings.fit_astigmatism or settings.fit_phase_shift) {
+                fitter.run(NLOPT_LD_LBFGS, 50, {
+                    .rotation = settings.fit_rotation ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
+                    .tilt = settings.fit_tilt ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
+                    .pitch = settings.fit_pitch ? deg2rad(Vec{-5., 5.}) : Vec{0., 0.},
+                    .phase_shift = settings.fit_phase_shift ? noa::deg2rad(Vec{-20., 20.}) : Vec{0., 0.},
+                    .defocus = Vec{-0.5, 0.5},
+                    .astigmatism_value = settings.fit_astigmatism ? Vec{-0.2, 0.2} : Vec{0., 0.},
+                    .astigmatism_angle = settings.fit_astigmatism ? noa::deg2rad(Vec{-45., 45.}) : Vec{0., 0.},
+                });
+            }
+
+            if (settings.fit_thickness) {
+                Logger::warn_once(
+                    "Thickness estimation from the CTF spectra is experimental. A simple search across the thickness "
+                    "range will be performed without any refinement of the stage angles, astigmatism and phase-shift. "
+                    "Please validate the results (using the diagnostic files). Note that the simulated CTFs always "
+                    "model the specimen thickness, so if it is known, one may want to turn off this refinement parameter "
+                    "(settings.alignment.ctf.fit_thickness=false) and instead provide the thickness value via "
+                    "settings.experiment.thickness=<value-in-angstrom>."
+                );
+                if (metadata.sample.thickness < 40)
+                    metadata.sample.thickness = 150;
+                fitter.run(NLOPT_GD_STOGO, 50, {
+                    .thickness = Vec{-0.4, 0.4},
+                });
+                fitter.run(NLOPT_LD_LBFGS, 50, {
+                    .thickness = Vec{-0.4, 0.4},
+                    .defocus = Vec{-0.1, 0.1},
+                });
+            }
+
+            // High-resolution recovery.
+            // If a significant change was found in the astigmatism, or if the aliasing-free size has increased, or
+            // if the maximum resolution is truncating valuable oscillations, recompute the patches and restart the
+            // optimization.
+            auto [recompute_patches, new_patch_padded_size, new_resolution_limit] = is_high_resolution_recovery_needed_(
+                metadata, previous_metadata, patches.rho_vec(), fitter.fitting_ranges(), patch_padded_size
+            );
+            if (not recompute_patches or iter == MAX_N_ITERATIONS - 1)
+                break;
+
+            // Recompute patches.
+            previous_metadata = metadata.stack;
+            bin_angle = 2.8125;
+            patches = Patches::from_stack(
+                stack_loader, metadata, grid, Vec{settings.resolution_range[0], new_resolution_limit},
+                patch_size, new_patch_padded_size, bin_angle
+            );
+        }
+        fitter.plot_diagnostics(settings.output_directory);
     }
 }

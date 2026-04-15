@@ -29,6 +29,7 @@ namespace qn {
         const SpanContiguous<const f32, 2>& spectra,
         const SpanContiguous<const f32, 2>& backgrounds,
         const SpanContiguous<CTFIsotropic64, 1>& ctfs,
+        const SpanContiguous<const f32, 2>& thickness_modulations,
         const Path& path,
         const SavePlotCTFFitOptions& options
     ) {
@@ -52,7 +53,7 @@ namespace qn {
             fftfreq_range.start, fftfreq_range.stop, spectra.shape()[1], fftfreq_range.endpoint));
 
         auto tmp = Array<f32>({2, 1, 1, spectra.shape()[1]});
-        auto simulate_ctf = [&](CTFIsotropic64 ctf) {
+        auto simulate_ctf = [&](CTFIsotropic64 ctf, auto thickness_modulation) {
             ctf.set_bfactor(-50);
             auto span = tmp.subregion(1).span_1d();
             auto fftfreq_step = fftfreq_range.for_size(spectra.shape()[1]).step;
@@ -63,6 +64,7 @@ namespace qn {
                 auto envelope = ctf.envelope_at(fftfreq);
                 envelope *= envelope;
                 lhs -= envelope / 2; // [0,1] -> [-0.5, 0.5]
+                lhs = thickness_modulation[i]; // FIXME
                 span[i] = lhs;
             }
             return span;
@@ -77,7 +79,7 @@ namespace qn {
         for (isize i{}; i < spectra.shape()[0]; ++i) {
             text_file.write(fmt::format("spectrum={}\n", bs_spectrum(spectra[i], backgrounds[i])));
             if (options.plot_ctf)
-                text_file.write(fmt::format("ctf={}\n", simulate_ctf(ctfs[i])));
+                text_file.write(fmt::format("ctf={}\n", simulate_ctf(ctfs[i], thickness_modulations[i])));
         }
         text_file.write("\n");
 

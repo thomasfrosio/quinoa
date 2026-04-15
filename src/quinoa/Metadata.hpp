@@ -266,9 +266,9 @@ namespace qn {
         Vec<f64, 2> spacing{};
 
     public: // Load
-        static auto load_from_mdoc(const Path& mdoc) -> Metadata;
+        static auto load_from_mdoc(const Path& mdoc, const Path& stack, const Path& rawtlt) -> Metadata;
         static auto load_from_star(const Path& star) -> Metadata;
-        static auto load_from_settings(const Settings& settings) -> Metadata;
+        static auto load_from_settings(const Settings& settings, const Series& series) -> Metadata;
 
     public: // Save
         void save_star(const Path& filename) const;

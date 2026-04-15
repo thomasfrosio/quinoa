@@ -54,12 +54,10 @@ namespace {
                 break;
             }
         }
-        if (c >= sn / 2) {
-            check(c < sn / 2, "Data significantly lowpass filtered. Please use unfiltered data");
-        }
+        check(c < sn / 2, "Data significantly lowpass filtered (more than half of the spectrum is zero). Please use unfiltered data");
 
         // Update spectrum window.
-        // end -= c;
+        end -= c;
         spectrum_windowed = spectrum.subregion(Slice{start, end + 1});
         sn = spectrum_windowed.ssize();
 
@@ -163,15 +161,16 @@ namespace {
         Spline& spline,
         SpanContiguous<const f64> x,
         SpanContiguous<const f64> y,
-        SpanContiguous<f64> z
+        SpanContiguous<f64> z,
+        f64 low_resolution_smoothing
     ) {
         // Least-square fitting of a cubic spline onto the midpoints.
         asymmetric_least_squares_smoothing(x, y, z, {
             .smoothing = GaussianSlider{
                 .peak_coordinate = 0.,
-                .peak_value = 1e-4,
+                .peak_value = low_resolution_smoothing,
                 .base_width = 0.6,
-                .base_value = 1e-6,
+                .base_value = 1e-5,
             },
             .asymmetry = GaussianSlider::from_constant(0.5),
             .max_iter = 50,
@@ -224,7 +223,7 @@ namespace qn::ctf {
         for (isize i{}; i < new_size; ++i)
             x[i] = fftfreq_start + static_cast<f64>(i) * fftfreq_step;
         gaussian_smoothing_(spectrum, y, 21, 2);
-        fit_spline_(spline, x, y, z);
+        fit_spline_(spline, x, y, z, 1e-4);
 
         return {fftfreq_start, fftfreq_end};
     }
@@ -258,7 +257,7 @@ namespace qn::ctf {
         }
         if (extrema.size() <= 4) {
             // Too few extrema probably due to very low defocus/spacing ratio (which may be due to an incorrect
-            // initial/coarse fit because of strong astigmatism). Regardless, of the reason, fall back to spline only.
+            // initial/coarse fit because of strong astigmatism). Regardless of the reason, fall back to spline only.
             return fit(spectrum, fftfreq_range, fftfreq_range);
         }
 
@@ -309,7 +308,7 @@ namespace qn::ctf {
         const auto x = midpoints_x.subregion(Slice{0, c});
         const auto y = midpoints_y.subregion(Slice{0, c});
         const auto z = spectrum_smooth.subregion(Slice{0, c});
-        fit_spline_(spline, x, y, z);
+        fit_spline_(spline, x, y, z, 1e-5);
 
         return {midpoints_x[0], midpoints_x[c - 1]};
     }
@@ -382,7 +381,7 @@ namespace qn::ctf {
             if (thickness_modulation.is_frequency_range_within_node_transition(peak_range, 0.9))
                 continue;
 
-            const f64 ncc = zero_normalized_cross_correlation(spectrum, ctf, fftfreq_range, peak_range, *this);
+            const f64 ncc = zero_normalized_cross_correlation(spectrum, ctf, fftfreq_range, peak_range, *this, thickness_modulation);
 
             f64 minimum_ncc = n_consecutive_bad_peaks > 0 ? minimum_ncc_for_recovery : options.minimum_ncc;
             if (ncc < minimum_ncc) {

@@ -180,8 +180,8 @@ namespace {
 }
 
 namespace qn {
-    Array<std::byte> StackLoader::s_input_stack{};
-    noa::io::DataType StackLoader::s_input_stack_dtype{};
+    thread_local Array<std::byte> StackLoader::s_input_stack{};
+    thread_local noa::io::DataType StackLoader::s_input_stack_dtype{};
 
     void StackLoader::register_input_stack(const Path& filename) {
         auto timer = Logger::info_scope_time("Loading and decoding the input stack");

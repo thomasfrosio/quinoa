@@ -163,36 +163,13 @@ namespace qn::ctf {
         const FitCoarseOptions& options
     );
 
-    struct FitRefineOptions {
-        bool full_fit{};
-        bool fit_rotation{};
-        bool fit_tilt{};
-        bool fit_pitch{};
-        bool fit_phase_shift{};
-        bool fit_astigmatism{};
-        Path output_directory{};
-    };
-    struct FitRefineState {
-        Array<f64> phase_shift{};
-        Array<f64> astigmatism_value{};
-        Array<f64> astigmatism_angle{};
-        Array<Vec<f64, 2>> fitting_ranges{};
-        Vec<f64, 3> angle_offsets{};
-    };
-    void refine_fit(
-        Metadata& metadata,
-        FitRefineState& state,
-        const Grid& grid,
-        const Patches& patches,
-        const FitRefineOptions& options
-    );
-
     struct FitSettings {
         Device compute_device;
         Path output_directory;
 
         f64 patch_size_ang;
-        i64 n_images_in_initial_average;
+        isize patch_size_min_pix;
+        isize n_images_in_initial_average;
         Vec<f64, 2> resolution_range;
         bool fit_phase_shift;
         bool fit_astigmatism;

@@ -7,15 +7,6 @@
 #include "quinoa/ctf/Grid.hpp"
 
 namespace qn::ctf {
-    void check_defocus_gradient(
-        Metadata::Stack& metadata,
-        const CTFIsotropic64& average_ctf,
-        const Grid& grid,
-        const View<const f32>& spectra, // (n,p,1,w)
-        const Vec<f64, 2>& fftfreq_range,
-        const Path& output_directory
-    );
-
     /// Range-like type designed to iterate through a |CTF| curve and efficiently analyze its gradient.
     /// This is used when we need to know where the |CTF| vertexes (peaks and zeros) are and sample a spectrum
     /// at these locations.

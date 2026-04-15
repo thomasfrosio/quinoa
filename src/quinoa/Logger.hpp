@@ -7,12 +7,17 @@
 #include <quinoa/Types.hpp>
 
 namespace qn {
-    // Static logger.
+    static auto s_debug_path = Path{""};
+}
+
+namespace qn {
     class Logger {
     public:
         static void initialize();
-        static void add_logfile(const std::filesystem::path& logfile);
-        static void set_level(const std::string& level_name);
+        static void activate_console();
+        static void deactivate_console();
+        static void set_console_level(const std::string& level_name);
+        static void set_logfile(const std::filesystem::path& logfile);
 
         template<typename... Args>
         static void error(fmt::format_string<Args...>&& fmt, Args&&... args) {
@@ -44,9 +49,6 @@ namespace qn {
             s_logger.trace(fmt::runtime(fmt), std::forward<Args>(args)...);
         }
 
-        static bool is_debug() { return s_is_debug; };
-
-
         template<typename... Args>
         static auto warn_once(noa::details::FormatWithLocation<std::type_identity_t<Args>...> fmt, Args&&... args) -> bool {
             static std::vector<std::string> hashes;
@@ -66,6 +68,7 @@ namespace qn {
             spdlog::level::level_enum level{};
             bool newline{true};
 
+            explicit ScopeTimer() = default;
             explicit ScopeTimer(
                 std::string_view name_,
                 spdlog::level::level_enum level_,
@@ -98,8 +101,7 @@ namespace qn {
         }
 
     public:
-        static spdlog::logger s_logger;
-        static uint64_t s_uuid;
-        static bool s_is_debug;
+        static thread_local spdlog::logger s_logger;
+        static thread_local usize s_uuid;
     };
 }

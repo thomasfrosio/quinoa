@@ -47,13 +47,7 @@ include(${PROJECT_SOURCE_DIR}/cmake/ext/nlopt.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/cxxopts.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/tomlplusplus.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/ext/eigen.cmake)
-
-FetchContent_Declare(
-    flux
-    GIT_REPOSITORY https://github.com/tcbrindle/flux.git
-    GIT_TAG main # Replace with a git commit id to fix a particular revision
-)
-FetchContent_MakeAvailable(flux)
+include(${PROJECT_SOURCE_DIR}/cmake/ext/glob-cpp.cmake)
 
 target_link_libraries(quinoa
     PRIVATE
@@ -64,7 +58,7 @@ target_link_libraries(quinoa
     cxxopts::cxxopts
     tomlplusplus::tomlplusplus
     Eigen3::Eigen
-    flux::flux
+    glob::glob
 )
 
 # In CUDA, allow extended lambdas. We use this feature in a few places.

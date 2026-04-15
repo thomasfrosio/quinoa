@@ -1,3 +1,4 @@
+message(STATUS "toml++: fetching static dependency...")
 set(tomlplusplus_REPOSITORY https://github.com/marzer/tomlplusplus)
 set(tomlplusplus_TAG 2f35c28)
 
@@ -11,3 +12,4 @@ FetchContent_Declare(
     GIT_TAG ${tomlpp_TAG}
 )
 FetchContent_MakeAvailable(tomlplusplus)
+message(STATUS "toml++: fetching static dependency... done")

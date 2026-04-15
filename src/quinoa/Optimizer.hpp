@@ -181,7 +181,7 @@ namespace qn {
         Memoizer() = default;
 
         Memoizer(isize n_parameters, isize resolution) {
-            if (resolution > 0) {
+            if (n_parameters > 0 and resolution > 0) {
                 // Allocate everything upfront.
                 m_cache_input = noa::zeros<f64>({resolution, 1, 2, n_parameters});
                 m_cache_lines = std::vector<Key>(static_cast<size_t>(resolution), {0, false, false});
