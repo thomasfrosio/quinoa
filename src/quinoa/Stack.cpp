@@ -191,7 +191,13 @@ namespace qn {
         const auto file_dtype = file.dtype();
         s_input_stack_dtype = file_dtype.closest_static_type();
 
-        const auto file_shape = file.shape();
+        // Some files are not encoded correctly; reinterpret a volume as a stack of images.
+        auto file_shape = file.shape();
+        if (file_shape[0] == 1 and file_shape[1] > 1) {
+            Logger::warn("Input stack encoded as a 3d volume... reinterpreting it to a stack of 2d images");
+            file_shape = file_shape.filter(1, 0, 2, 3);
+        }
+
         const auto n_elements = file_shape.n_elements();
         const auto encoded_size = static_cast<f32>(file_dtype.n_bytes(n_elements));
         const auto decoded_size = static_cast<f32>(s_input_stack_dtype.n_bytes(n_elements));
@@ -215,14 +221,12 @@ namespace qn {
         );
 
         const auto type_erased_shape = file_shape.set<3>(file_shape[3] * s_input_stack_dtype.n_bytes(1));
-        s_input_stack = Array<std::byte>(type_erased_shape);
-        file.read_all(s_input_stack.span_1d(), s_input_stack_dtype, {.n_threads = n_threads});
+        const auto n_bytes = type_erased_shape.n_elements();
+        if (s_input_stack.shape().n_elements() < n_bytes)
+            s_input_stack = Array<std::byte>(n_bytes);
 
-        // Some files are not encoded correctly; reinterpret a volume as a stack of images.
-        if (s_input_stack.shape()[0] == 1 and s_input_stack.shape()[1] > 1) {
-            Logger::trace("Input stack encoded as a 3d volume... reinterpreting it to a stack of 2d images");
-            s_input_stack = std::move(s_input_stack).permute({1, 0, 2, 3});
-        }
+        auto input_stack = s_input_stack.view().subregion(Ellipsis{}, Slice{0, n_bytes}).reshape(type_erased_shape);
+        file.read_all(input_stack.span_1d(), s_input_stack_dtype, {.n_threads = n_threads});
     }
 
     StackLoader::StackLoader(ni::ImageFile&& file, const LoadStackParameters& parameters)
@@ -291,7 +295,6 @@ namespace qn {
                 1,
         };
 
-        //
         auto [input_slice, input_slice_rfft] = input_slice_();
         auto [padded_slice, padded_slice_rfft] = padded_slice_();
         auto [cropped_slice, cropped_slice_rfft] = cropped_slice_();
@@ -302,10 +305,17 @@ namespace qn {
         // Read the slice.
         // We use an intermediary buffer, creating an extra copy, but this is to keep things contiguous
         // when reading from the file or register, and to not have to rely on unified memory.
-        if (not s_input_stack.is_empty())
-            ni::cast(s_input_stack.view().subregion(file_slice_index), s_input_stack_dtype, m_io_slice.view());
-        else
-            m_file.read_slice(m_io_slice.span(), {.bd_offset = {file_slice_index, 0}, .clamp = false});
+        if (m_parameters.use_stack_register and not s_input_stack.is_empty()) {
+            const auto& [h, w] = m_input_slice_shape;
+            const auto stack_shape = Shape4{m_file_slice_count, 1, h, w * s_input_stack_dtype.n_bytes(1)};
+            auto input_stack = s_input_stack.view().subregion(Ellipsis{}, Slice{0, stack_shape.n_elements()}).reshape(stack_shape);
+            ni::cast(input_stack.subregion(file_slice_index), s_input_stack_dtype, m_io_slice.view());
+        } else {
+            auto bd_offset = Vec{file_slice_index, isize{0}};
+            if (m_swap_bd)
+                bd_offset = bd_offset.filter(1, 0);
+            m_file.read_slice(m_io_slice.span(), {.bd_offset = bd_offset, .clamp = false});
+        }
 
         // If no preprocessing, we can copy directly to the output slice and return;
         m_io_slice.view().to(has_preprocessing ? input_slice : output_slice);
@@ -409,13 +419,20 @@ namespace qn {
                 m_file.path()
             );
             std::swap(file_shape[0], file_shape[1]);
+            m_swap_bd = true;
+        } else {
+            m_swap_bd = false;
         }
         check(file_shape[1] == 1, "{}. A tilt-series was expected, but got image file with shape {}", m_file.path(), file_shape);
         m_file_slice_count = file_shape[0];
         m_input_slice_shape = file_shape.filter(2, 3);
+        m_input_spacing = m_file.spacing().pop_front().as<f64>();
+
+        // Assume the stack is in the register.
+        if (m_parameters.use_stack_register and not s_input_stack.is_empty())
+            m_file.close();
 
         // Fourier cropping parameters.
-        m_input_spacing = m_file.spacing().pop_front().as<f64>();
         const auto target_spacing = Vec<f64, 2>::from_value(m_parameters.rescale_target_resolution / 2);
         const auto relative_freq_error = m_parameters.precise_cutoff ? 2.5e-4 : 1.;
         const auto fourier_crop = fourier_crop_dimensions(
@@ -450,7 +467,7 @@ namespace qn {
             const auto padding = m_bandpass_slice_shape.vec.as<f64>() * m_parameters.bandpass_mirror_padding_factor;
             m_bandpass_slice_shape += Shape{noa::round(padding).as<isize>()};
             m_bandpass_slice_shape = nf::next_fast_shape(m_bandpass_slice_shape);
-            // m_bandpass_slice_shape = noa::max(2 * m_cropped_slice_shape, nf::next_fast_shape(m_bandpass_slice_shape)); // FIXME
+            // m_bandpass_slice_shape = noa::max(2 * m_cropped_slice_shape, nf::next_fast_shape(m_bandpass_slice_shape)); // FIXME should this be removed?
             m_bandpass_slice_rfft = Array<c32>(m_bandpass_slice_shape.push_front<2>(1).rfft(), options);
         }
 

@@ -51,8 +51,8 @@ namespace qn::ctf {
             const Vec<f64, 2>& resolution_range,
             isize patch_size,
             isize patch_padded_size,
-            f64 target_bin_angle = 180,
-            isize target_phi_size = 1024,
+            f64 target_bin_angle,
+            isize target_phi_size,
             nx::Interp polar_interp = nx::Interp::CUBIC_BSPLINE
         ) -> Patches;
 

@@ -57,7 +57,7 @@ namespace qn {
                 hashes.push_back(std::move(hash));
                 return false;
             }
-            s_logger.warn(fmt::runtime(fmt.fmt), std::forward<Args>(args)...);
+            s_logger.error(fmt::runtime(fmt.fmt), std::forward<Args>(args)...);
             return true;
         }
 
@@ -81,6 +81,24 @@ namespace qn {
 
             auto set_newline(bool add_newline) -> ScopeTimer& {
                 newline = add_newline;
+                return *this;
+            }
+
+            // Define move-semantics to explicitly "destruct" the object
+            // by resetting the timer, which turns off the logging.
+            ScopeTimer(ScopeTimer&& t) noexcept {
+                timer = std::exchange(t.timer, noa::Timer{});
+                name = std::move(t.name);
+                level = t.level;
+                newline = t.newline;
+            }
+            ScopeTimer& operator=(ScopeTimer&& t) noexcept {
+                if (this != &t) {
+                    timer = std::exchange(t.timer, noa::Timer{});
+                    name = std::move(t.name);
+                    level = t.level;
+                    newline = t.newline;
+                }
                 return *this;
             }
 

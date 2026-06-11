@@ -1,8 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
 # Project options.
-option(QN_ENABLE_WARNINGS "Enable compiler warnings" ON) # FIXME this is currently not used
-option(QN_ENABLE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(QN_ENABLE_CUDA "Enable CUDA support" ON)
 
 # Global settings.
@@ -25,14 +23,13 @@ project(quinoa
     VERSION 0.1.0
     HOMEPAGE_URL https://github.com/thomasfrosio/quinoa
 )
-if (QN_ENABLE_CUDA)
-    enable_language(CUDA)
-endif ()
 
 # Get the sources.
 include(${PROJECT_SOURCE_DIR}/src/quinoa/Append.cmake)
 if (QN_ENABLE_CUDA)
+    enable_language(CUDA)
     set_source_files_properties(${QUINOA_SOURCES_UNIFIED} PROPERTIES LANGUAGE CUDA)
+    set_source_files_properties(${QUINOA_SOURCES_UNIFIED} PROPERTIES COMPILE_FLAGS -Wno-useless-cast)
 endif ()
 
 # Create the executable.

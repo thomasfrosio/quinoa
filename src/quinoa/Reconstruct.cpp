@@ -986,8 +986,8 @@ namespace {
         using interpolator_t = nx::InterpolatorSpectrum<2, nf::Layout::H2H, INTERP, input_span_t>;
         using output_span_t = SpanContiguous<c32, 3, i32>;
 
-        using rotation_span_t = SpanContiguous<const nx::Quaternion<f32>>;
-        using shift_span_t = SpanContiguous<const Vec<f32, 2>>;
+        using rotation_span_t = SpanContiguous<const nx::Quaternion<f32>, 1, i32>;
+        using shift_span_t = SpanContiguous<const Vec<f32, 2>, 1, i32>;
 
     public:
         interpolator_t tiles_large_padded_rfft;
@@ -1215,10 +1215,10 @@ namespace {
             const auto central_slices = tiles_large_padded_rfft.span_contiguous<const c32, 3, i32>();
             if (interp == nx::Interp::LINEAR) {
                 using operator_t = FourierInsertInterpolate<nx::Interp::LINEAR>;
-                noa::iwise(subvolume_large_padded_rfft.shape().pop_front(), device, operator_t{
+                noa::iwise(subvolume_large_padded_rfft.shape().pop_front().as<i32>(), device, operator_t{
                     .tiles_large_padded_rfft = operator_t::interpolator_t(central_slices, central_slices.shape().pop_front()),
-                    .tile_rotations = tile_rotations.span_1d(),
-                    .tile_shifts = tile_large_shifts.span().subregion(z, y, x).as_1d(),
+                    .tile_rotations = tile_rotations.span_1d().as_index<i32>(),
+                    .tile_shifts = tile_large_shifts.span().subregion(z, y, x).as_1d().as_index<i32>(),
                     .subvolume_large_padded = subvolume_large_padded_rfft.span_contiguous<c32, 3, i32>(),
                     .fftfreq_step = 1 / static_cast<f32>(tile_large_padded_size),
                     .fftfreq_sinc = 1 / static_cast<f32>(tile_large_padded_size),
@@ -1226,10 +1226,10 @@ namespace {
                 });
             } else if (interp == nx::Interp::LANCZOS6) {
                 using operator_t = FourierInsertInterpolate<nx::Interp::LANCZOS6>;
-                noa::iwise(subvolume_large_padded_rfft.shape().pop_front(), device, operator_t{
+                noa::iwise(subvolume_large_padded_rfft.shape().pop_front().as<i32>(), device, operator_t{
                     .tiles_large_padded_rfft = operator_t::interpolator_t(central_slices, central_slices.shape().pop_front()),
-                    .tile_rotations = tile_rotations.span_1d(),
-                    .tile_shifts = tile_large_shifts.span().subregion(z, y, x).as_1d(),
+                    .tile_rotations = tile_rotations.span_1d().as_index<i32>(),
+                    .tile_shifts = tile_large_shifts.span().subregion(z, y, x).as_1d().as_index<i32>(),
                     .subvolume_large_padded = subvolume_large_padded_rfft.span_contiguous<c32, 3, i32>(),
                     .fftfreq_step = 1 / static_cast<f32>(tile_large_padded_size),
                     .fftfreq_sinc = 1 / static_cast<f32>(tile_large_padded_size),

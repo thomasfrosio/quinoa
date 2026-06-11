@@ -130,18 +130,18 @@ namespace {
             // Get the phase at the central line of the bin.
             // This is assuming the bin height starts at zero; otherwise it should be phi_bin_start + phi_bin_offset
             isotropic_ctf.set_defocus(anisotropic_ctf.defocus_at(phi_bin_offset));
-            // isotropic_ctf.set_defocus(anisotropic_ctf.defocus_at(phi_bin_offset-noa::Constant<f32>::PI/2)); // FIXME
+            // isotropic_ctf.set_defocus(anisotropic_ctf.defocus_at(phi_bin_offset-noa::Constant<f32>::PI/2)); // FIXME figure
             const auto phase = isotropic_ctf.phase_at(rho);
 
             // Get the corresponding fftfreq within the astigmatic field.
             isotropic_ctf.set_defocus(anisotropic_ctf.defocus_at(phi));
             const auto fftfreq = isotropic_ctf.fftfreq_at(phase);
-            if (not noa::is_finite(fftfreq))
+            if (not fftfreq)
                 return;
 
             // Scale back to unnormalized frequency.
             const auto width = polar.shape().width();
-            const auto frequency = static_cast<f32>(width - 1) * (fftfreq - rho_start) / rho_range;
+            const auto frequency = static_cast<f32>(width - 1) * (*fftfreq - rho_start) / rho_range;
 
             // Lerp the polar array at this frequency.
             const auto floored = noa::floor(frequency);
@@ -314,200 +314,15 @@ namespace {
                     EquiphaseBin::reduce_type{}, output_bin, equiphase_bin
                 );
             }
+
+            // Normalize to give each line equal weight.
+            noa::normalize(output_bin, output_bin, ReduceAxes{.width = true}, {.mode = noa::Norm::MEAN_L2});
         }
     };
 
-    // struct PolarTransform2 {
-    //     isize n_wedges{};
-    //     f64 wedge_step{};
-    //     f64 wedge_half_step{};
-    //
-    //     noa::Linspace<f64> wedges_phi_range{};
-    //     Array<f32> patches_polar{};
-    //     View<f32> patches_polar_bin{};
-    //
-    //     CTFAnisotropic64 ctf{};
-    //     Array<f32> defoci{};
-    //     Array<f32> defoci_device{};
-    //     f32 phi_row_step{};
-    //
-    //     PolarTransform2(
-    //         const CTFIsotropic64& empty_ctf,
-    //         isize n_patches,
-    //         isize polar_width,
-    //         f64 target_bin_angle,
-    //         isize target_phi_size,
-    //         ArrayOption options
-    //     ) {
-    //         // We can average phi-lines together, effectively computing rotational averages of the spectra over wedges
-    //         // of a given angle. If there is some astigmatism in the spectra, this results in a loss of information.
-    //         // However, astigmatism doesn't change that quickly with phi, so we can reduce the polar height by taking
-    //         // wedges of 2-to-5 degrees without losing too much information. Additionally, this can be corrected if the
-    //         // astigmatism is estimated, in which case an EPA is used to bin.
-    //         n_wedges = static_cast<isize>(std::round(180. / target_bin_angle));
-    //         wedge_step = noa::deg2rad(180. / static_cast<f64>(n_wedges));
-    //         wedge_half_step = wedge_step / 2;
-    //
-    //         if (n_wedges == 1) {
-    //             // No astigmatism is to be fitted, so compute and save the rotational averages.
-    //             wedges_phi_range = noa::Linspace{-noa::Constant<f64>::PI/2, noa::Constant<f64>::PI/2, false};
-    //             patches_polar = Array<f32>({n_patches, 1, target_phi_size, polar_width}, options);
-    //             patches_polar_bin = patches_polar.view();
-    //         } else {
-    //             // We want to divide the [0,180) range into n wedges of equal size. Before converting to polar space,
-    //             // we want to know the phi-range to compute so that we can easily bin the wedges. In polar space, we
-    //             // make the height of the bins odd, and the first bin needs to be centered on 0 deg. The bin centered on
-    //             // 180 deg is the same as the one centered on 0 deg, so we don't include it. Thus, the resulting linspace
-    //             // of the patch phi we need to render is:
-    //             //      linspace(start=-wedge_half_angle, stop=180-wedge_half_angle, size=patch_phi+1, endpoint=true)
-    //             wedges_phi_range = noa::Linspace{-noa::Constant<f64>::PI/2 - wedge_half_step,
-    //                                               noa::Constant<f64>::PI/2 - wedge_half_step, true};
-    //
-    //             // Make the polar height divisible by the number of bins.
-    //             auto patch_phi = noa::next_multiple_of(target_phi_size, n_wedges);
-    //             const auto wedge_phi = patch_phi / n_wedges + 1;
-    //             patch_phi += 1;
-    //
-    //             // Allocate the per-image polar patches.
-    //             const auto polar_shape = Shape{n_patches, isize{1}, patch_phi, polar_width};
-    //             patches_polar = Array<f32>(polar_shape, options);
-    //
-    //             // For instance, wedge_step=3 and patch_size=120:
-    //             // 1. The linspace is [-1.5,0.,1.5,3.,4.5,6.,7.5,9.,10.5, 12.,13.5,15.,16.5,...,178.5] degrees.
-    //             //     This is the patch phi range, described above, that we need to compute during the polar transform.
-    //             // 2. The corresponding wedge centers are at [0., 3., 6., 9., 12., 15., ..., 177] degrees.
-    //             //    This is the phi linspace of the binned output.
-    //             // As such, the wedges in the input would be covering 0=[-1.5, 0., 1.5], 1=[1.5, 3., 4.5], 2=[4.5, 6., 7.5]...
-    //             // Notice the necessary overlap between each wedge. To compute the reduction from 1. to 2., we reshape the
-    //             // polar spectrum to expose the wedge phi into a distinct dimension. The stride of this new dimension is
-    //             // then subtracted by one, effectively duplicating the phi line between each wedge, creating the overlap.
-    //             const auto polar_reduce_shape = Shape{n_patches, n_wedges, wedge_phi, polar_width};
-    //             auto polar_reduce_strides = patches_polar.strides();
-    //             polar_reduce_strides[1] = (wedge_phi - 1) * polar_reduce_strides[2]; // -1 to overlap
-    //             check(noa::offset_at(patches_polar.strides(), polar_shape.vec - 1) ==
-    //                   noa::offset_at(polar_reduce_strides, polar_reduce_shape.vec - 1));
-    //             patches_polar_bin = View(patches_polar.get(), polar_reduce_shape, polar_reduce_strides, options);
-    //         }
-    //
-    //         // Prepare a few things for the (eventual) equiphase-binning.
-    //         ctf = CTFAnisotropic64(empty_ctf);
-    //         defoci = Array<f32>(n_patches);
-    //         defoci_device = Array<f32>(n_patches, options);
-    //         phi_row_step = static_cast<f32>(wedges_phi_range.for_size(patches_polar.shape()[2]).step);
-    //     }
-    //
-    //     auto run(
-    //         const Metadata::Image& metadata,
-    //         const ctf::Patches& patches,
-    //         const View<f32>& patches_padded_rfft_ps,
-    //         const Shape4& patches_padded_shape,
-    //         const Vec<f64, 2>& fftfreq_range,
-    //         isize polar_width,
-    //         nx::Interp polar_interp
-    //     ) {
-    //         // Transform the power-spectra to polar space. This will allow us to efficiently compute
-    //         // (astigmatism-corrected) rotational averages by a simple reduction along the height.
-    //         if (polar_interp == nx::Interp::CUBIC_BSPLINE)
-    //             nx::cubic_bspline_prefilter(patches_padded_rfft_ps, patches_padded_rfft_ps);
-    //         nx::spectrum2polar<"hc2fc">(
-    //                 patches_padded_rfft_ps, patches_padded_shape, patches_polar.view(), {
-    //                     .spectrum_fftfreq = noa::Linspace{0., fftfreq_range[1], true},
-    //                     .rho_range = patches.rho(),
-    //                     .phi_range = wedges_phi_range,
-    //                     .interp = polar_interp,
-    //             });
-    //         noa::write_image(patches_polar, "~/Tmp/quinoa/figures/02/astig02/patches_polar.mrc");
-    //         noa::write_image(patches_polar_bin, "~/Tmp/quinoa/figures/02/astig02/patches_polar_bin.mrc");
-    //
-    //         // Bin the wedges.
-    //         auto output_bin =
-    //             patches.patches(metadata.index)
-    //             .reshape({-1, n_wedges, 1, polar_width}); // (p,b,1,w)
-    //
-    //         // if (metadata.defocus.astigmatism < 0.005) {
-    //             noa::reduce_axes_ewise( // (p,b,h,w)->(p,b,1,w)
-    //                 patches_polar_bin, f32{0}, output_bin,
-    //                 noa::ReduceMean{.size = static_cast<f32>(patches_polar_bin.shape()[2])}
-    //             );
-    //         noa::write_image(output_bin.permute({0,2,1,3}), "~/Tmp/quinoa/figures/02/astig02/output_bin1.mrc");
-    //         // } else {
-    //             // Set the CTF of each patch.
-    //             const auto image_angles = noa::deg2rad(metadata.angles);
-    //             const auto image_spacing = ctf.pixel_size();
-    //             ctf.set_phase_shift(metadata.phase_shift);
-    //             ctf.set_defocus(metadata.defocus);
-    //             const auto patch_center = (patches_padded_shape.filter(2, 3).vec / 2).as<f64>();
-    //             for (auto& patch_defocus: defoci.span_1d()) {
-    //                 const auto patch_z_offset_um = ctf::Grid::patch_z_offset(
-    //                     patch_center, image_angles, image_spacing, patch_center);
-    //                 patch_defocus = static_cast<f32>(metadata.defocus.value - patch_z_offset_um); // underfocus negative
-    //             }
-    //             defoci.to(defoci_device);
-    //
-    //             // Equiphase-binning.
-    //             auto equiphase_bin = EquiphaseBin{
-    //                 .polar = patches_polar_bin.span_contiguous<const f32, 4, i32>(), // (p,b,h,w)
-    //                 .defoci = defoci_device.span_contiguous<const f32, 1, i32>(), // (p)
-    //                 .isotropic_ctf = ns::CTFIsotropic(ctf).as<f32>(),
-    //                 .anisotropic_ctf = ctf.as<f32>(),
-    //                 .phi_start = static_cast<f32>(wedges_phi_range.start),
-    //                 .phi_bin_step = static_cast<f32>(wedge_step),
-    //                 .phi_row_step = phi_row_step,
-    //                 .rho_start = static_cast<f32>(patches.rho().start),
-    //                 .rho_step = static_cast<f32>(patches.rho_step()),
-    //                 .rho_range = static_cast<f32>(patches.rho().stop - patches.rho().start), // assumes endpoint=true
-    //             };
-    //             noa::reduce_axes_iwise( // (p,b,h,w)->(p,b,1,w)
-    //                 patches_polar_bin.shape().as<i32>(), patches_polar_bin.device(),
-    //                 EquiphaseBin::reduce_type{}, output_bin, equiphase_bin
-    //             );
-    //         noa::write_image(output_bin.permute({0,2,1,3}), "~/Tmp/quinoa/figures/02/astig02/output_bin2.mrc");
-    //         // }
-    //     }
-    // };
 }
 
 namespace qn::ctf {
-    // void test05(
-    //     const CTFAnisotropic64& ctf,
-    //     isize polar_width,
-    //     f64 target_bin_angle,
-    //     isize target_phi_size,
-    //     nx::Interp polar_interp,
-    //     noa::Linspace<f64> rho_range,
-    //     noa::Linspace<f64> phi_range,
-    //     View<f32> patches_padded_rfft_ps,
-    //     Shape4 patches_padded_shape,
-    //     const Vec<f64, 2>& fftfreq_range
-    // ) {
-    //     constexpr isize n_patches = 1;
-    //     auto polar_transform = PolarTransform2(
-    //         CTFIsotropic64(ctf), n_patches, polar_width, target_bin_angle, target_phi_size, {});
-    //
-    //     auto output = Patches{};
-    //     output.m_rho_range = rho_range;
-    //     output.m_phi_range = noa::Linspace<f64>{noa::deg2rad(-90.), noa::deg2rad(90.), false};
-    //     output.m_polar = Array<f16>({1, n_patches, polar_transform.n_wedges, polar_width});
-    //
-    //     auto image_metadata = Metadata::Image{
-    //         .index = 0,
-    //         .index_file = 1,
-    //         .angles = {},
-    //         .shifts = {},
-    //         .exposure = {},
-    //         .phase_shift = 0,
-    //         .defocus = ctf.defocus(),
-    //         .time = 0,
-    //         .frames = nullptr,
-    //     };
-    //     polar_transform.run(
-    //         image_metadata, output,
-    //         patches_padded_rfft_ps.view(), patches_padded_shape,
-    //         fftfreq_range, polar_width, polar_interp
-    //     );
-    //     noa::write_image(output.m_polar, "~/Tmp/quinoa/figures/02/astig02/polar_binned.mrc");
-    // }
-
     auto Patches::from_stack(
         StackLoader& stack_loader,
         const Metadata& metadata,

@@ -71,11 +71,14 @@ namespace qn {
             bool coarse_fit_pitch{};
 
             bool ctf_run{};
+            bool ctf_check_defocus_gradient{};
             f64 ctf_patch_size_ang{};
             i32 ctf_patch_size_min_pix{};
             Vec<f64, 2> ctf_resolution_range{};
-            i32 ctf_n_images_in_initial_average{};
-            bool ctf_check_defocus_gradient{};
+            i32 ctf_nb_images_in_initial_average{};
+            i32 ctf_max_nb_high_resolution_recovery{};
+            Vec<i32, 2> ctf_astigmatism_tilt_resolution{};
+            Vec<i32, 2> ctf_phase_shift_time_resolution{};
             bool ctf_fit_rotation{};
             bool ctf_fit_tilt{};
             bool ctf_fit_pitch{};

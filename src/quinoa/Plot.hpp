@@ -123,8 +123,7 @@ namespace qn {
     void save_plot_ctf_fit(
         const noa::Linspace<f64>& fftfreq_range,
         const SpanContiguous<const f32, 2>& spectra,
-        const SpanContiguous<const f32, 2>& backgrounds,
-        const SpanContiguous<CTFIsotropic64, 1>& ctfs,
+        const SpanContiguous<const CTFIsotropic64, 1>& ctfs,
         const SpanContiguous<const f32, 2>& thickness_modulations,
         const Path& path,
         const SavePlotCTFFitOptions& options = {}

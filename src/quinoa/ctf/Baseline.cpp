@@ -61,6 +61,9 @@ namespace {
         spectrum_windowed = spectrum.subregion(Slice{start, end + 1});
         sn = spectrum_windowed.ssize();
 
+        // Then try to detect if the end of the spectrum is abnormal.
+        // This works for the tested datasets, but is unlikely to work for everything.
+
         // Compute the gradient of the smoothed spectrum.
         auto gradient = std::vector<f64>{};
         auto gradient_abs = std::vector<f64>{};
@@ -96,7 +99,8 @@ namespace {
             return Pair{gradient_threshold_, signal_threshold_};
         }();
 
-        // First, collect the regions above the thresholds.
+        // First, collect the frequency windows above the thresholds.
+        // These should be the regions where the gradient varies substantially up or down.
         bool is_within_window{};
         f64 max_value_within_window{};
         auto possible_windows = std::vector<Vec<isize, 2>>{};
@@ -162,16 +166,11 @@ namespace {
         SpanContiguous<const f64> x,
         SpanContiguous<const f64> y,
         SpanContiguous<f64> z,
-        f64 low_resolution_smoothing
+        GaussianSlider low_resolution_smoothing
     ) {
         // Least-square fitting of a cubic spline onto the midpoints.
         asymmetric_least_squares_smoothing(x, y, z, {
-            .smoothing = GaussianSlider{
-                .peak_coordinate = 0.,
-                .peak_value = low_resolution_smoothing,
-                .base_width = 0.6,
-                .base_value = 1e-5,
-            },
+            .smoothing = low_resolution_smoothing,
             .asymmetry = GaussianSlider::from_constant(0.5),
             .max_iter = 50,
             .relaxation = 0.9,
@@ -223,7 +222,12 @@ namespace qn::ctf {
         for (isize i{}; i < new_size; ++i)
             x[i] = fftfreq_start + static_cast<f64>(i) * fftfreq_step;
         gaussian_smoothing_(spectrum, y, 21, 2);
-        fit_spline_(spline, x, y, z, 1e-4);
+        fit_spline_(spline, x, y, z, {
+            .peak_coordinate = 0.,
+            .peak_value = 1e-4,
+            .base_width = 0.6,
+            .base_value = 1e-5,
+        });
 
         return {fftfreq_start, fftfreq_end};
     }
@@ -233,6 +237,13 @@ namespace qn::ctf {
         const Vec<f64, 2>& fftfreq_range,
         const CTFIsotropic64& ctf
     ) -> Vec<f64, 2> {
+        // Normalize distance until which we use midpoints for the baseline.
+        // Originally 0.5, to only use midpoints for the first half of the spectrum, but in practice in doesn't make
+        // much difference. Use 1 just in case large oscillations are present even towards the end of the spectrum.
+        // For very low defoci, where the CTF has only a few midpoints, the program will fall back to spline only.
+        constexpr f64 PIVOT = 1.0;
+        constexpr isize MINIMUM_N_MIDPOINTS = 6;
+
         // Allocate temporary buffers.
         const auto sn = spectrum.ssize();
         const auto buffer = Array<f64>({3, 1, 1, sn});
@@ -247,28 +258,28 @@ namespace qn::ctf {
             }
         }
 
-        // Collect fftfreq at zeros and peaks of the first half of the spectrum.
-        const auto fftfreq_stop = fftfreq_start + (fftfreq_range[1] - fftfreq_start) * 0.5;
+        // Collect fftfreq at zeros and peaks of the spectrum until reaching the pivot point.
+        const auto fftfreq_stop = fftfreq_start + (fftfreq_range[1] - fftfreq_start) * PIVOT;
         std::vector<f64> extrema{};
         extrema.reserve(50);
         for (const auto& e: Simulate(ctf, Vec{fftfreq_start, fftfreq_stop})) {
             if (e.is_ctf_vertex())
                 extrema.push_back(e.fftfreq());
         }
-        if (extrema.size() <= 4) {
+        if (auto s = std::ssize(extrema); s < MINIMUM_N_MIDPOINTS or s >= sn) {
             // Too few extrema probably due to very low defocus/spacing ratio (which may be due to an incorrect
-            // initial/coarse fit because of strong astigmatism). Regardless of the reason, fall back to spline only.
+            // initial or coarse fit because of strong astigmatism). Regardless of the reason, fall back to spline only.
             return fit(spectrum, fftfreq_range, fftfreq_range);
         }
 
-        // Strong Gaussian-smoothing of the spectrum.
+        // Substantial Gaussian-smoothing of the spectrum.
         const auto spectrum_smooth = buffer.view().subregion(0).span_1d();
         gaussian_smoothing_(spectrum, spectrum_smooth, 21, 2);
 
-        // Collect the oscillation midpoints within the first half of the spectrum.
+        // Collect the oscillation midpoints.
         auto midpoints_x = buffer.span().subregion(1).as_1d();
         auto midpoints_y = buffer.span().subregion(2).as_1d();
-        isize c{};
+        isize n_points{};
         for (usize i{}; i < extrema.size() - 2; ++i) {
             const auto fftfreq_0 = extrema[i];
             const auto fftfreq_1 = extrema[i + 1];
@@ -282,18 +293,18 @@ namespace qn::ctf {
             const auto value_midpoint_1 = Simulate::sample_at(spectrum_smooth, fftfreq_range, fftfreq_midpoint_1);
             midpoints_y[i] = (value_midpoint_1 + value_midpoint_0) / 2;
 
-            ++c;
+            ++n_points;
         }
 
-        // Add the other half of the smooth spectrum to the midpoints.
+        // Add to the midpoints the smooth spectrum from the pivot to the end.
         const auto fftfreq_step = (fftfreq_range[1] - fftfreq_range[0]) / static_cast<f64>(sn - 1);
-        const auto last_midpoint = midpoints_x[c - 1];
+        const auto last_midpoint = midpoints_x[n_points - 1];
         for (isize i = 0; i < sn; ++i) {
             const auto fftfreq = fftfreq_range[0] + static_cast<f64>(i) * fftfreq_step;
             if (fftfreq > last_midpoint) {
-                midpoints_x[c] = fftfreq;
-                midpoints_y[c] = spectrum_smooth[i];
-                ++c;
+                midpoints_x[n_points] = fftfreq;
+                midpoints_y[n_points] = spectrum_smooth[i];
+                ++n_points;
             }
         }
 
@@ -301,16 +312,32 @@ namespace qn::ctf {
         gaussian_smoothing_(spectrum, spectrum_smooth, 11, 1.5);
         const auto start = static_cast<isize>((midpoints_x[0] - fftfreq_range[0]) / fftfreq_step);
         const auto end = best_end_index_(spectrum_smooth, start, sn - 1);
-        const auto n_removed = sn - 1 - end;
-        c -= n_removed;
+        const auto end_fftfreq = fftfreq_range[0] + static_cast<f64>(end) * fftfreq_step;
+        for (isize i{}; i < n_points; ++i) {
+            if (midpoints_x[i] > end_fftfreq) {
+                n_points = i; // stop at previous point: (i-1)+1
+                break;
+            }
+        }
 
-        // Compute the spline.
-        const auto x = midpoints_x.subregion(Slice{0, c});
-        const auto y = midpoints_y.subregion(Slice{0, c});
-        const auto z = spectrum_smooth.subregion(Slice{0, c});
-        fit_spline_(spline, x, y, z, 1e-5);
+        // Compute the spline. Follow the data more closely since midpoints
+        // should already be tracing a relatively smooth path through the background.
+        // TODO As opposed to decrease the smoothing if certain resolution are reached (e.g. 3.7A bump of amorphous ice)
+        //      or increase the smoothing if the resolution range is small, which I expect may be necessary for some
+        //      data, it would probably be better to fit, subtract, and fit-again. This is already done when computing
+        //      the EPA of the stack for diagnostics, but should be safe to do. In practice, the CC is very resilient
+        //      to errors in the background, so I'm should worry about this now.
+        const auto x = midpoints_x.subregion(Slice{0, n_points});
+        const auto y = midpoints_y.subregion(Slice{0, n_points});
+        const auto z = spectrum_smooth.subregion(Slice{0, n_points});
+        fit_spline_(spline, x, y, z, {
+            .peak_coordinate = 0.,
+            .peak_value = 1e-5,
+            .base_width = 0.5,
+            .base_value = 1e-6,
+        });
 
-        return {midpoints_x[0], midpoints_x[c - 1]};
+        return {midpoints_x[0], midpoints_x[n_points - 1]};
     }
 
     auto Baseline::tune_fitting_range(
@@ -319,7 +346,7 @@ namespace qn::ctf {
         const CTFIsotropic64& ctf,
         const BaselineTuningOptions& options
     ) const -> Vec<f64, 2> {
-        const auto thickness_modulation = ThicknessModulation{
+        const auto thickness_modulation = ThicknessModulation<true>{
             .wavelength = ctf.wavelength(),
             .spacing = ctf.pixel_size(),
             .thickness = options.thickness_um * 1e4
@@ -336,7 +363,7 @@ namespace qn::ctf {
 
             const auto fftfreq = e.fftfreq();
             const auto modulation = thickness_modulation.sample_at(fftfreq);
-            if (std::abs(modulation) >= 0.9) { // if too close to a node, skip it
+            if (std::abs(modulation) >= 0.95) { // if too close to a node, skip it
                 bool is_zero = e.is_ctf_zero();
                 if (modulation < 0)
                     is_zero = not is_zero; // flipped, zero<->peak
@@ -378,7 +405,7 @@ namespace qn::ctf {
         size_t last_zero{};
         for (auto i = static_cast<size_t>(options.keep_first_nth_peaks); i < zeros.size() - 1; ++i) {
             auto peak_range = Vec{zeros[i], zeros[i + 1]};
-            if (thickness_modulation.is_frequency_range_within_node_transition(peak_range, 0.9))
+            if (thickness_modulation.is_fftfreq_range_containing_node(peak_range))
                 continue;
 
             const f64 ncc = zero_normalized_cross_correlation(spectrum, ctf, fftfreq_range, peak_range, *this, thickness_modulation);

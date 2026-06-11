@@ -236,6 +236,35 @@ namespace {
         for (auto& result: results)
             result.get();
     }
+
+    void fix_baseline() {
+        auto spectra = noa::read_image<f32>("~/Tmp/quinoa/test_baseline/test_image_spectra_3A.mrc").data;
+        auto spectrum = spectra.subregion(19).span_1d();
+        auto background = noa::like(spectra.subregion(19));
+        auto fftfreq = Vec{0.02269, 0.23333};
+        auto linspace = noa::Linspace<f64>::from_vec(fftfreq);
+
+        save_plot_xy(linspace, spectrum, "~/Tmp/quinoa/test_baseline/fit.txt", {.label = "spectrum"});
+
+        ctf::Baseline baseline{};
+        baseline.fit(spectrum, fftfreq, fftfreq);
+        baseline.sample(background.span_1d(), fftfreq);
+        save_plot_xy(linspace, background, "~/Tmp/quinoa/test_baseline/fit.txt", {.label = "baseline1"});
+
+        auto ctf = ns::CTFIsotropic<f64>::Parameters{
+            .pixel_size = 0.675,
+            .defocus = 1.4477,
+            .voltage = 300,
+            .amplitude = 0.07,
+            .cs = 2.7,
+            .phase_shift = 0,
+            .bfactor = 0,
+            .scale = 1,
+        }.to_ctf();
+        baseline.fit(spectrum, fftfreq, ctf);
+        baseline.sample(background.span_1d(), fftfreq);
+        save_plot_xy(linspace, background, "~/Tmp/quinoa/test_baseline/fit.txt", {.label = "baseline2"});
+    }
 }
 
 auto main(int argc, char* argv[]) -> int {
@@ -245,6 +274,9 @@ auto main(int argc, char* argv[]) -> int {
         Logger::initialize();
         Logger::activate_console();
         auto timer = Logger::status_scope_time<false>("Main");
+
+        // fix_baseline();
+        // return EXIT_FAILURE;
 
         // Parse the settings and do the work.
         auto settings = Settings{};

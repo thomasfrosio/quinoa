@@ -63,6 +63,9 @@ namespace qn {
     }
 
     Logger::ScopeTimer::~ScopeTimer() {
+        if (not timer.is_running())
+            return;
+
         std::chrono::duration elapsed = timer.elapsed();
         const char* end = newline ? "\n" : "";
         if (elapsed > std::chrono::minutes(1)) {

@@ -12,7 +12,7 @@ namespace {
 
     // Store the frame path to prevent unnecessary copies when copying Metadata::Image around.
     // Use the datetime to keep track of the frame.
-    std::forward_list<Pair<i64, Path>> frame_paths{};
+    auto frame_paths = std::forward_list<Pair<i64, Path>>{};
 
     auto set_frame_path(i64 time, Path&& path) -> const Path* {
         for (auto& [k, v]: frame_paths) {
@@ -248,6 +248,8 @@ namespace qn {
             }
         } else {
             for (i32 i{}; const auto& line: ni::read_lines(rawtlt)) {
+                if (noa::details::trim(line).empty())
+                    continue;
                 auto result = noa::details::parse<f64>(line);
                 check(result.has_value(), "Could not parse {} as a tilt angle", line);
 
@@ -297,11 +299,11 @@ namespace qn {
             value = result.value();
         };
 
-        auto file = noa::io::InputTextFile(filename, {.read = true});
-        std::string buffer;
-        std::string_view line;
-        bool exit_block{};
-        i64 line_number{};
+        auto file = ni::InputTextFile(filename, {.read = true});
+        auto buffer = std::string{};
+        auto line = std::string_view{};
+        auto exit_block = bool{};
+        auto line_number = i64{};
         auto next_line = [&] {
             for (;;) {
                 if (exit_block) {
@@ -376,6 +378,7 @@ namespace qn {
                 constexpr auto FIELDS = std::array{
                     "_qnIndex", "_qnRotation", "_qnTilt", "_qnPitch", "_qnShiftX", "_qnShiftY",
                     "_qnDefocus", "_qnDefocusDelta", "_qnDefocusAngle", "_qnPhaseShift",
+                    "_qnCTFResolution", "_qnCTFScore",
                     "_qnPreExposure", "_qnPostExposure", "_qnTimepoint", "_qnFrames",
                 };
                 auto column_indices = std::array<size_t, FIELDS.size()>{};
@@ -441,10 +444,12 @@ namespace qn {
                         else if (index == column_indices[7])  parse_value(token, image.defocus.astigmatism);
                         else if (index == column_indices[8])  parse_value(token, image.defocus.angle);
                         else if (index == column_indices[9])  parse_value(token, image.phase_shift);
-                        else if (index == column_indices[10]) parse_value(token, image.exposure[0]);
-                        else if (index == column_indices[11]) parse_value(token, image.exposure[1]);
-                        else if (index == column_indices[12]) parse_value(token, image.time);
-                        else if (index == column_indices[13]) parse_value(token, frame_path);
+                        else if (index == column_indices[10]) parse_value(token, image.ctf_resolution);
+                        else if (index == column_indices[11]) parse_value(token, image.ctf_score);
+                        else if (index == column_indices[12]) parse_value(token, image.exposure[0]);
+                        else if (index == column_indices[13]) parse_value(token, image.exposure[1]);
+                        else if (index == column_indices[14]) parse_value(token, image.time);
+                        else if (index == column_indices[15]) parse_value(token, frame_path);
 
                         // Move to the next token, skipping any consecutive delimiters (filter equivalent)
                         start = line.find_first_not_of(DELIMITERS, end);
@@ -454,7 +459,8 @@ namespace qn {
                           "Missing value in data_stack at line {}. {} values are expected per line, but got {}",
                           line_number, FIELDS.size(), index);
 
-                    // CTF-related angles are stored in radians.
+                    // CTF-related changes.
+                    image.defocus.astigmatism /= 2; // saved as (u-v), need (u-v)/2
                     image.defocus.angle = noa::deg2rad(image.defocus.angle);
                     image.phase_shift = noa::deg2rad(image.phase_shift);
 
@@ -520,9 +526,11 @@ namespace qn {
             "_qnShiftX            # pix/A (normalized to 1 A/pix)\n"
             "_qnShiftY            # pix/A (normalized to 1 A/pix)\n"
             "_qnDefocus           # um, (u+v)/2\n"
-            "_qnDefocusDelta      # um, (u-v)/2\n"
+            "_qnDefocusDelta      # um, (u-v)\n"
             "_qnDefocusAngle      # deg\n"
             "_qnPhaseShift        # deg\n"
+            "_qnCTFResolution     # A\n"
+            "_qnCTFScore          # ZNCC score\n"
             "_qnPreExposure       # e/A2\n"
             "_qnPostExposure      # e/A2\n"
             "_qnTimepoint         # collection time UID\n"
@@ -531,7 +539,8 @@ namespace qn {
 
         constexpr std::string_view FORMAT =
             "{:>3} {:>8.3f} {:>7.3f} {:>7.3f} {:>9.3f} {:>9.3f} "
-            "{:>9.5f} {:>9.5f} {:>7.2f} {:>7.2f} {:>7.2f} {:>8.2f} {:>10} {}\n";
+            "{:>9.5f} {:>9.5f} {:>7.2f} {:>7.2f} {:>6.2f} {:>5.2f} "
+            "{:>7.2f} {:>8.2f} {:>10} {}\n";
         buffer.reserve(8'000);
 
         // Save in the same order as in the input file and normalize the shifts.
@@ -542,16 +551,16 @@ namespace qn {
         for (const auto& image: sorted_stack) {
             buffer += fmt::format(FORMAT,
                 image.index_file, image.angles[0], image.angles[1], image.angles[2], image.shifts[1], image.shifts[0],
-                image.defocus.value, image.defocus.astigmatism, noa::rad2deg(image.defocus.angle),
-                noa::rad2deg(image.phase_shift), image.exposure[0], image.exposure[1], image.time,
-                image.frames ? *image.frames : Path{}
+                image.defocus.value, image.defocus.astigmatism * 2, noa::rad2deg(image.defocus.angle), noa::rad2deg(image.phase_shift),
+                image.ctf_resolution, image.ctf_score,
+                image.exposure[0], image.exposure[1], image.time, image.frames ? *image.frames : Path{}
             );
         }
 
         noa::write_text(buffer, filename);
     }
 
-    auto Metadata::Stack::sort(std::string_view key, bool ascending) & -> Metadata::Stack& {
+    auto Metadata::Stack::sort(std::string_view key, bool ascending) & -> Stack& {
         std::string lower_key = noa::details::to_lower(key);
         if (lower_key == "index") {
             stdr::stable_sort(

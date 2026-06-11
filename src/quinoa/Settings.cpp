@@ -46,7 +46,10 @@ namespace {
             "alignment.ctf.patch_size_ang"sv,
             "alignment.ctf.patch_size_min_pix"sv,
             "alignment.ctf.resolution_range"sv,
-            "alignment.ctf.n_images_in_initial_average"sv,
+            "alignment.ctf.nb_images_in_initial_average"sv,
+            "alignment.ctf.max_nb_high_resolution_recovery"sv,
+            "alignment.ctf.astigmatism_tilt_resolution"sv,
+            "alignment.ctf.phase_shift_time_resolution"sv,
             "alignment.ctf.check_defocus_gradient"sv,
             "alignment.ctf.fit_rotation"sv,
             "alignment.ctf.fit_tilt"sv,
@@ -108,7 +111,10 @@ namespace {
             if constexpr (nt::boolean<T>) {
                 check(arg.is_boolean(), "{}={} is not a bool", name, arg);
                 return arg.value<bool>().value();
-            } else if constexpr (nt::scalar<T>) {
+            } else if constexpr (nt::integer<T>) {
+                check(arg.is_integer(), "{}={} is not a {}", name, arg, noa::details::stringify<T>());
+                return arg.value<T>().value();
+            } else if constexpr (nt::real<T>) {
                 check(arg.is_number(), "{}={} is not a {}", name, arg, noa::details::stringify<T>());
                 return arg.value<T>().value();
             } else if constexpr (nt::string<T>) {
@@ -241,9 +247,10 @@ namespace {
 
     auto expand_glob(std::vector<Path>& paths, const std::string_view& append_to_dir) {
         auto resolved_paths = std::vector<Path>{};
-        auto add_path = [&](Path& path) {
-            if (stdr::find(resolved_paths, path) == resolved_paths.end())
-                resolved_paths.emplace_back(std::move(path));
+        auto add_path = [&](const Path& path) {
+            auto absolute_path = fs::absolute(path);
+            if (stdr::find(resolved_paths, absolute_path) == resolved_paths.end())
+                resolved_paths.emplace_back(std::move(absolute_path));
         };
 
         for (auto& path: paths) {
@@ -293,6 +300,8 @@ namespace {
         auto output_directory = parse_path(table, cl, "data.output", "output");
         if (output_directory.empty())
             output_directory = fs::current_path();
+        else if (not output_directory.is_absolute())
+            output_directory = fs::absolute(output_directory);
 
         // If there's a single file, don't match on the basename.
         const bool is_single_mode =
@@ -305,8 +314,8 @@ namespace {
             data.push_back({
                 .mdoc_file = std::move(mdocs[0]),
                 .stack_file = std::move(stacks[0]),
-                .rawtlt_file = std::move(rawtlts[0]),
-                .star_file = std::move(stars[0]),
+                .rawtlt_file = rawtlts.empty() ? Path{} : std::move(rawtlts[0]),
+                .star_file = stars.empty() ? Path{} : std::move(stars[0]),
                 .output_directory = std::move(output_directory),
             });
         } else {
@@ -419,8 +428,13 @@ namespace {
         alignment.ctf_fit_thickness = parse_value_("alignment.ctf.fit_thickness", table, false);
         alignment.ctf_patch_size_ang = parse_value_("alignment.ctf.patch_size_ang", table, 750.);
         alignment.ctf_patch_size_min_pix = parse_value_("alignment.ctf.patch_size_min_pix", table, 512);
-        alignment.ctf_n_images_in_initial_average = parse_value_("alignment.ctf.n_images_in_initial_average", table, 3);
         alignment.ctf_resolution_range = parse_values_("alignment.ctf.resolution_range", table, Vec{30., 4.});
+        alignment.ctf_nb_images_in_initial_average = parse_value_("alignment.ctf.nb_images_in_initial_average", table, 3);
+        alignment.ctf_max_nb_high_resolution_recovery = parse_value_("alignment.ctf.max_nb_high_resolution_recovery", table, 3);
+        alignment.ctf_astigmatism_tilt_resolution = parse_values_("alignment.ctf.astigmatism_tilt_resolution", table, Vec{5, -4});
+        alignment.ctf_phase_shift_time_resolution = parse_values_("alignment.ctf.phase_shift_time_resolution", table, Vec{2, 3});
+        check(alignment.ctf_astigmatism_tilt_resolution != 0, "alignment.ctf.astigmatism_tilt_resolution should be a non-zero Vec<int, 2>");
+        check(alignment.ctf_phase_shift_time_resolution != 0, "alignment.ctf.phase_shift_time_resolution should be a non-zero Vec<int, 2>");
 
         alignment.refine_run = parse_value_("alignment.refine.run", table, true);
         alignment.refine_correct_ctf = parse_value_("alignment.refine.correct_ctf", table, true);

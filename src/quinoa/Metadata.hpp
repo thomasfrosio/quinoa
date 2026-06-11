@@ -38,6 +38,12 @@ namespace qn {
             /// Astigmatic defocus.
             defocus_type defocus{};
 
+            /// Estimated resolution from the CTF fitting, in A.
+            f64 ctf_resolution{};
+
+            /// ZNCC score from the CTF fitting, in A.
+            f64 ctf_score{};
+
             /// Collection time-point.
             i64 time{};
 
@@ -213,6 +219,14 @@ namespace qn {
             [[nodiscard]] auto tilt_range() const -> Vec<f64, 2>;
             [[nodiscard]] auto time_range() const -> Vec<i64, 2>;
             [[nodiscard]] auto defocus_range(bool with_astigmatism = false) const -> Vec<f64, 2>;
+
+            [[nodiscard]] auto has_phase_shift(f64 threshold) const -> bool {
+                // TODO better detection, mean(abs(value))?
+                for (const auto& image: images)
+                    if (std::abs(image.phase_shift) > threshold)
+                        return true;
+                return false;
+            }
 
             [[nodiscard]] auto has_astigmatism(f64 threshold) const -> bool {
                 // TODO better detection, mean(abs(value))?

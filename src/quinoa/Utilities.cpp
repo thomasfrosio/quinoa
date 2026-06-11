@@ -237,11 +237,11 @@ namespace qn {
             Vec<f64, 2> peak_offset{};
             Vec<f64, 2> peak_value{};
             for (auto i: {0, 1}) {
-                Vec<f32, 3> buffer{};
+                Vec<f64, 3> buffer{};
                 for (isize j{}; j < 3; ++j) {
                     auto indices = peak_position;
                     indices[i] = noa::index_at<noa::Border::REFLECT>(peak_position[i] + j - 1, data.shape()[i]);
-                    buffer[j] = data(indices);
+                    buffer[j] = static_cast<f64>(data(indices));
                 }
                 noa::tie(peak_offset[i], peak_value[i]) = ns::details::lstsq_fit_quadratic_vertex_3points(
                     buffer[0], buffer[1], buffer[2]

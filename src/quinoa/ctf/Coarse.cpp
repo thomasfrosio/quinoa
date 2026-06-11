@@ -91,7 +91,7 @@ namespace {
         // For every slice, average the 1d spectra that are near the tilt-axis.
         auto spectra_average = Array<f32>({n, 1, 1, w}, {.device = device, .allocator = Allocator::MANAGED});
         noa::reduce_axes_iwise(
-            Shape{n, p, w}, device,
+            Shape{n, p, w}.as<i32>(), device,
             f32{0}, spectra_average.permute({2, 0, 1, 3}), AverageSpectrum{
                 .input = spectra.span().filter(0, 1, 3).as_contiguous(),
                 .indices = indices.span_1d(),
@@ -227,7 +227,7 @@ namespace {
 
         // Do the full range search.
         const auto defocus_range = Vec{0.6, 10., 0.02}; // start, stop, step
-        const auto phase_shift_range = Vec{0., fit_phase_shift ? 120. : 0., 2.}; // start, stop, step
+        const auto phase_shift_range = Vec{0., fit_phase_shift ? 130. : 0., 2.}; // start, stop, step
         coarse_grid_search_(
             spectrum_bs.span_1d(), fftfreq_range, fitting_range, ctf,
             noa::deg2rad(phase_shift_range), defocus_range
@@ -363,7 +363,7 @@ namespace {
         fitter.fit_pivot(true);
 
         constexpr auto OPTIONS = noa::IwiseOptions{.generate_gpu = false, .cpu_launch_n_threads = 2};
-        noa::iwise<OPTIONS>(Shape{2}, {}, [&, fitter](usize i) mutable {
+        noa::iwise<OPTIONS>(Shape{2}, {}, [&, fitter](i32 i) mutable {
             i ? fitter.fit_positive_side(true) : fitter.fit_negative_side(true);
         });
     }
@@ -379,20 +379,21 @@ namespace {
         auto timer = Logger::info_scope_time<false>("Rotation check");
         const auto [n, p, w] = spectra.shape().filter(0, 1, 3);
         const auto fftfreq_linspace = noa::Linspace<f64>::from_vec(fftfreq_range);
-
-        const auto options_managed = ArrayOption{.device = spectra.device(), .allocator = Allocator::MANAGED};
-        const auto buffer = Array<f32>({n + 2, 1, 1, w}, options_managed);
-        const auto ctfs_per_patch = Array<CTFIsotropic64>(p, options_managed);
-        const auto ctfs_per_image = Array<CTFIsotropic64>(n);
         const auto spacing = Vec<f64, 2>::from_value(average_ctf.pixel_size());
+        const auto options_managed = ArrayOption{.device = spectra.device(), .allocator = Allocator::MANAGED};
 
-        auto baseline = Baseline{};
-        auto run = [&](f64 rotation) { // TODO 2 threads?
-            auto spectrum = buffer.view().subregion(0);
+        auto run = [&](f64 rotation) {
+            const auto buffer = Array<f32>({n + 2, 1, 1, w}, options_managed);
+            const auto ctfs_per_patch = Array<CTFIsotropic64>(p, options_managed);
+            const auto ctfs_per_image = Array<CTFIsotropic64>(n);
+
+            auto spectrum = buffer.view().subregion(0); // unused
             auto spectrum_weights = buffer.view().subregion(1);
             auto spectra_n = buffer.view().subregion(Offset(2));
 
-            f64 ncc{};
+            auto baseline = Baseline{};
+            auto image_ncc = f64{};
+            auto patch_ncc = f64{};
             for (auto&& [image, ictf]: noa::zip(metadata, ctfs_per_image.span_1d())) {
                 // Save the CTF of the image and compute the CTF for every patch.
                 ictf = average_ctf;
@@ -410,6 +411,7 @@ namespace {
                 // the average. For a fair comparison, we simply want to scale the spectrum to the same (expected)
                 // phase and average them together.
                 const auto image_spectra = spectra.subregion(image.index).permute({1, 0, 2, 3}); // (n,p,1,w) -> (p,1,1,w)
+                const auto image_spectra_pw = image_spectra.span_contiguous<const f32, 2>();
                 const auto image_spectrum = spectra_n.subregion(image.index);
                 const auto image_spectrum_w = image_spectrum.span_1d();
                 nx::fuse_spectra( // (p,1,1,w) -> (1,1,1,w)
@@ -425,12 +427,22 @@ namespace {
                 // The final NCC is a weighted average of the per-image NCC. We want to measure the effect of the
                 // tilt-axis, so downweight the very low tilts (the zero should essentially be excluded since it is
                 // not affected by the tilt-axis). Sigmoid curve: https://www.desmos.com/calculator/elmw9ptuwc
-                // Note: Per-patch ZNCC seems to give a higher ratio, probably because it's a direct comparison
-                // and skips the EPA which can average spectra incorrectly due to the defocus error. Similarly
-                // than for the full tilt-series alignment, indirect comparison using EPAs might be less sensitive,
-                // but I trust it more than directly correlating per-patch spectra.
                 const auto weight = 1. / (1. + std::exp(-(std::abs(image.angles[1]) - 15) / 3.5));
-                ncc += weight * zero_normalized_cross_correlation(image_spectrum_w, ictf, fftfreq_range, fitting_range, baseline);
+                image_ncc += weight * zero_normalized_cross_correlation(image_spectrum_w, ictf, fftfreq_range, fitting_range, baseline);
+
+                // NCC between spectrum and simulated CTF of every patch.
+                #pragma omp parallel num_threads(3)
+                {
+                    auto pctf = ctfs_per_patch.span_1d();
+                    f64 incc{};
+                    #pragma omp for
+                    for (isize i = 0; i < pctf.ssize(); ++i)
+                        incc += zero_normalized_cross_correlation(
+                            image_spectra_pw[i], pctf[i], fftfreq_range, fitting_range, baseline);
+
+                    #pragma omp critical
+                    patch_ncc += (incc / static_cast<f64>(pctf.ssize()) * weight);
+                }
 
                 // For diagnostics, we plot the average spectrum of the stack.
                 // So subtract the baseline so we can fuse this spectrum with the others.
@@ -439,7 +451,8 @@ namespace {
                 // Set the weight of this image for fuse_spectra.
                 ictf.set_scale(weight);
             }
-            ncc /= static_cast<f64>(n);
+            image_ncc /= static_cast<f64>(n);
+            patch_ncc /= static_cast<f64>(n);
 
             // Move everything to the CPU.
             auto buffer_cpu = buffer.view().reinterpret_as_cpu();
@@ -471,29 +484,33 @@ namespace {
                     .label = fmt::format("tilt-axis={:+.2f}deg", rotation),
                 });
 
-            return ncc;
+            return Pair{image_ncc, patch_ncc};
         };
 
-        const auto rotation = metadata[0].angles[0];
-        const auto rotation_flipped = Metadata::Image::to_angle_range(rotation + 180);
-        const auto ncc = run(rotation);
-        const auto ncc_flipped = run(rotation_flipped);
+        const auto rotations = Vec{
+            metadata[0].angles[0],
+            Metadata::Image::to_angle_range(metadata[0].angles[0] + 180),
+        };
+        auto image_nccs = Vec{0., 0.};
+        auto patch_nccs = Vec{0., 0.};
+        constexpr auto OPTIONS = noa::IwiseOptions{.generate_gpu = false, .cpu_launch_n_threads = 1};
+        noa::iwise<OPTIONS>(Shape{2}, {}, [&](i32 i) mutable {
+            noa::tie(image_nccs[i], patch_nccs[i]) = run(rotations[i]);
+        });
+
         Logger::trace(
-            "rotation={:+.2f}: ncc={:.4f}\n"
-            "rotation={:+.2f}: ncc={:.4f}\n"
-            "ratio={:.4f}",
-            rotation, ncc, rotation_flipped, ncc_flipped,
-            std::max(ncc, ncc_flipped) / std::min(ncc, ncc_flipped)
+            "tilt-axis={::.2f}\n"
+            "per_image_nccs={::.4f} (ratio={:.4f})\n"
+            "per_patch_nccs={::.4f} (ratio={:.4f})",
+            rotations,
+            image_nccs, std::max(image_nccs[0], image_nccs[1]) / std::min(image_nccs[0], image_nccs[1]),
+            patch_nccs, std::max(patch_nccs[0], patch_nccs[1]) / std::min(patch_nccs[0], patch_nccs[1])
         );
 
-        if (ncc > ncc_flipped) {
+        if (patch_nccs[0] > patch_nccs[1]) {
             Logger::info("The defocus ramp matches the tilt-axis and tilt angles.");
         } else {
-            panic(
-                "The defocus ramp is reversed. This is a bad sign!\n"
-                "Check that the rotation angle and tilt angles are correct, "
-                "and make sure the images were not flipped along one axis."
-            );
+            panic("The defocus ramp is reversed. Because this algorithm is unlikely to fail (it might fail if the initial defocus estimate is completely off, which is unlikely) the programs will stop now. Check that the rotation angle and tilt angles are correct, and make sure the images were not flipped along one axis. This check can be disabled using alignment.ctf.check_defocus_gradient=false, but make sure you known what you are doing.");
         }
     }
 }

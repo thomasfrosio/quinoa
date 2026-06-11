@@ -24,7 +24,6 @@ set(QUINOA_HEADERS
     src/quinoa/ctf/Grid.hpp
     src/quinoa/ctf/Patches.hpp
     src/quinoa/ctf/Refine.hpp
-    src/quinoa/ctf/Utilities.hpp
 )
 
 set(QUINOA_SOURCES_CXX
@@ -52,6 +51,4 @@ set(QUINOA_SOURCES_UNIFIED
     src/quinoa/ctf/Coarse.cpp
     src/quinoa/ctf/Patches.cpp
     src/quinoa/ctf/Refine.cpp
-    src/quinoa/ctf/Utilities.cpp
-
 )

@@ -8,6 +8,7 @@
 
 namespace qn {
     struct LoadStackParameters {
+        bool use_stack_register{true};
         Device compute_device;
         Allocator allocator;
 
@@ -71,7 +72,6 @@ namespace qn {
 
     private:
         void init_();
-        // void read_slice_and_precision_pad_(isize file_slice_index, const View<f32>& padded_slice);
         auto input_slice_() const -> Pair<View<f32>, View<c32>>;
         auto padded_slice_() const -> Pair<View<f32>, View<c32>>;
         auto cropped_slice_() const -> Pair<View<f32>, View<c32>>;
@@ -84,6 +84,7 @@ namespace qn {
         ni::ImageFile m_file{};
         isize m_file_slice_count{};
         LoadStackParameters m_parameters{};
+        bool m_swap_bd{};
 
         bool m_has_padding{};
         bool m_has_cropping{};
