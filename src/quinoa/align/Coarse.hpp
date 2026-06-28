@@ -15,8 +15,6 @@ namespace qn {
         bool fov_mask{};
         f64 smooth_edge_percent{};
         f64 max_shift_percent{1};
-
-        const Path* output_directory{};
     };
 
     struct LevelStageOptions {
@@ -26,8 +24,6 @@ namespace qn {
         bool fov_mask{};
         f64 smooth_edge_percent{};
         f64 max_shift_percent{1};
-
-        const Path* output_directory{};
     };
 
     class AlignmentCoarse {
@@ -58,7 +54,6 @@ namespace qn {
             bool fov_mask,
             f64 smooth_edge_percent,
             f64 max_shift_percent,
-            const Path* output_dir,
             bool cosine_stretch,
             bool need_score
         ) -> Pair<Vec<f64, 2>, f64>;

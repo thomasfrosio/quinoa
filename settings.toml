@@ -4,15 +4,16 @@
 #rawtlts = '/dls/ebic/data/staff-scratch/thomas2/projects/simulate_ctfs/SSS1/*.rawtlt'
 #output = '/dls/ebic/data/staff-scratch/thomas2/projects/simulate_ctfs/benchmarks/defaults'
 
-mdocs = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/TS_03.mdoc'
-stacks = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/TS_03_cropped.mrc'
-rawtlts = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/TS_03.rawtlt'
-output = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/quinoa_test'
+#mdocs = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/TS_03.mdoc'
+#stacks = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/TS_03_cropped.mrc'
+#rawtlts = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/TS_03.rawtlt'
+#output = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/quinoa_test'
+#stars = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/quinoa_test/TS_03.star'
 
-#mdocs = '~/Datasets/10164/TS_03_clean.mdoc'
-#stacks = '~/Datasets/10164/TS_03_clean.mrc'
-##rawtlts = '~/Datasets/10164/TS_03_clean.rawtlt'
-#output = '~/Datasets/10164/test_baseline'
+mdocs = '~/Datasets/10164/TS_03_clean.mdoc'
+stacks = '~/Datasets/10164/TS_03_clean.mrc'
+#rawtlts = '~/Datasets/10164/TS_03_clean.rawtlt'
+output = '~/Datasets/10164/test_baseline'
 
 #mdocs = '/dls/ebic/data/staff-scratch/thomas2/datasets/10700/tom1.mdoc'
 #stacks = '/dls/ebic/data/staff-scratch/thomas2/datasets/10700/tom1.st'
@@ -40,7 +41,7 @@ output = '/dls/ebic/data/staff-scratch/thomas2/datasets/10164/quinoa_test'
 
 [preprocessing]
 run = false
-#exclude_blank_views = true
+exclude_blank_views = true
 #exclude_stack_indices = [0,1,2]
 
 [alignment.coarse]
@@ -51,7 +52,7 @@ fit_tilt = true
 fit_pitch = true
 
 [alignment.ctf]
-run = true
+run = false
 patch_size_min_pix = 500
 patch_size_ang = 500
 resolution_range = [30, 4]
@@ -68,7 +69,7 @@ fit_phase_shift = false
 fit_thickness = false
 
 [alignment.refine]
-run = false
+run = true
 correct_ctf = true
 phase_flip_strength = 8
 fit_rotation = false
@@ -85,7 +86,7 @@ stack.correct_rotation = false
 stack.interpolation = 'linear'
 stack.dtype = 'f16'
 
-tomogram.run = true
+tomogram.run = false
 tomogram.correct_rotation = true
 tomogram.dtype = 'f16'
 tomogram.algorithm = 'fourier-wbp' # or real-wp

@@ -43,7 +43,7 @@ namespace qn {
                 .lowpass_width = 0.15,
             },
             .bandpass_mirror_padding_factor = 0.5,
-            .exposure_filter_voltage = metadata.sample.voltage,
+            .exposure_filter_voltage = metadata.sample.voltage,// TODO 0?
 
             // Image processing after cropping:
             .normalize_and_standardize = true,
@@ -71,7 +71,6 @@ namespace qn {
                     .fov_mask = false,
                     .smooth_edge_percent = 0.08,
                     .max_shift_percent = 0.5,
-                    .output_directory = &settings.output_directory,
                 });
 
                 find_rotation_offset(tilt_series.view(), metadata_check, {
@@ -103,7 +102,6 @@ namespace qn {
                 .fov_mask = i > 2,
                 .smooth_edge_percent = i == 0 ? 0.08 : 0.3,
                 .max_shift_percent = i == 0 ? 0.5 : 0.1,
-                .output_directory = &settings.output_directory,
             });
 
             if (settings.fit_rotation_offset) {
@@ -120,7 +118,6 @@ namespace qn {
                     .fov_mask = i > 2,
                     .smooth_edge_percent = i == 0 ? 0.08 : 0.3,
                     .max_shift_percent = i == 0 ? 0.5 : 0.1,
-                    .output_directory = &settings.output_directory,
                 });
             }
         }
@@ -131,7 +128,6 @@ namespace qn {
             .fov_mask = true,
             .smooth_edge_percent = 0.1,
             .max_shift_percent = 0.1,
-            .output_directory = &settings.output_directory,
         });
     }
 
@@ -141,6 +137,15 @@ namespace qn {
         const RefineAlignmentSettings& settings
     ) {
         auto timer = Logger::status_scope_time("Refine alignment");
+
+        metadata.sample.thickness = estimate_sample_thickness(stack_filename, metadata, {
+            .apply_fov = false,
+            .device = settings.compute_device,
+            .allocator = Allocator::MANAGED,
+            .resolution = 20.,
+            .output_directory = settings.output_directory / "thickness",
+        });
+        panic();
 
         auto loader = StackLoader(stack_filename, {
             .compute_device = settings.compute_device,
@@ -168,6 +173,8 @@ namespace qn {
             .zero_pad_to_fast_fft_shape = true,
             .zero_pad_to_square_shape = false,
         });
+
+
 
         // Load and filter the tilt-series.
         // This corrects for the CTF at the "center of the sample", where most of the signal comes from.

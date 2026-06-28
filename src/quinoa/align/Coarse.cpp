@@ -214,7 +214,6 @@ namespace qn {
                 options.fov_mask,
                 options.smooth_edge_percent,
                 options.max_shift_percent,
-                options.output_directory,
                 options.cosine_stretch,
                 false
             ).first;
@@ -241,7 +240,6 @@ namespace qn {
             "first_average_shift={::.3f}, last_average_shift={::.3f}, max_shift={::.3f}, n_iter={}",
             first_average_shift, last_average_shift, max_shifts, i
         );
-        save_plot_shifts(metadata, *options.output_directory / "coarse_shifts.txt", {.title = "Coarse Shifts"});
     }
 
     void AlignmentCoarse::level_stage(
@@ -273,7 +271,6 @@ namespace qn {
                 options.fov_mask,
                 options.smooth_edge_percent,
                 options.max_shift_percent,
-                options.output_directory,
                 true,
                 true
             ).second;
@@ -319,7 +316,6 @@ namespace qn {
         bool fov_mask,
         f64 smooth_edge_percent,
         f64 max_shift_percent,
-        const Path* output_dir,
         bool cosine_stretch,
         bool need_score
     ) -> Pair<Vec<f64, 2>, f64> {
@@ -409,10 +405,10 @@ namespace qn {
             noa::iwise(iwise_shape, device, create_stacks);
         }
 
-        // if (output_dir) {
-        //     auto filename = *output_dir / "stretched_targets.mrc";
+        // if (s_debug_path) {
+        //     auto filename = *s_debug_path / "stretched_targets.mrc";
         //     noa::write_image(buffer(1), filename, {.dtype = "f16"});
-        //     filename = *output_dir / "references.mrc";
+        //     filename = *s_debug_path / "references.mrc";
         //     noa::write_image(buffer(0), filename, {.dtype = "f16"});
         //     Logger::debug("{} saved", filename);
         // }
@@ -420,14 +416,14 @@ namespace qn {
         // (Conventional) cross-correlation, returning a centered map.
         // Note that to compute a ZNCC between -1 and 1, the FFT normalization should be done on the xmap (BACKWARD).
         nf::r2c(buffer(0, 2), buffer_rfft(0, 2), {.norm = nf::Norm::BACKWARD});
-        noa::iwise(buffer_rfft(0).shape().filter(0, 2, 3), device, CrossCorrelate{
+        noa::iwise(buffer_rfft(0).shape().filter(0, 2, 3).as<i32>(), device, CrossCorrelate{
             .references = buffer_rfft(0).span_contiguous<const c32, 3, i32>(),
             .stretched_targets = buffer_rfft(1).span_contiguous<c32, 3, i32>(), // output
         });
         nf::c2r(buffer_rfft(1), buffer(0), {.norm = nf::Norm::BACKWARD}); // centered xmap
 
-        // if (output_dir) {
-        //     auto filename = *output_dir / "xmap.mrc";
+        // if (s_debug_path) {
+        //     auto filename = *s_debug_path / "xmap.mrc";
         //     noa::write_image(buffer(0), filename, {.dtype = "f16"});
         //     Logger::debug("{} saved", filename);
         // }

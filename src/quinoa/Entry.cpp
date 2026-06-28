@@ -1,18 +1,18 @@
 #include <noa/Runtime.hpp>
 #include <noa/Session.hpp>
-#include <noa/Signal.hpp>
 
-#include "Plot.hpp"
-#include "quinoa/align/Align.hpp"
-#include "quinoa/ctf/CTF.hpp"
+#ifndef QN_CTF_ONLY
+#   include "quinoa/align/Align.hpp"
+#   include "quinoa/Thickness.hpp"
+#   include "quinoa/Reconstruct.hpp"
+#endif
 
 #include "quinoa/ExcludeViews.hpp"
 #include "quinoa/Logger.hpp"
 #include "quinoa/Metadata.hpp"
 #include "quinoa/Settings.hpp"
 #include "quinoa/Stack.hpp"
-#include "quinoa/Thickness.hpp"
-#include "quinoa/Reconstruct.hpp"
+#include "quinoa/ctf/CTF.hpp"
 
 namespace {
     using namespace qn;
@@ -91,6 +91,7 @@ namespace {
             auto scope_timer = Logger::status_scope_time("Alignment");
 
             if (settings.alignment.coarse_run) {
+                #ifndef QN_CTF_ONLY
                 coarse_alignment(
                     series.stack_file, metadata, {
                         .device = device,
@@ -101,6 +102,9 @@ namespace {
                         .output_directory = diagnostics_directory / "coarse",
                     }
                 );
+                #else
+                Logger::warn("Build does not include refine tilt-series alignment");
+                #endif
             }
 
             if (settings.alignment.ctf_run) {
@@ -111,7 +115,10 @@ namespace {
 
                         .patch_size_ang = settings.alignment.ctf_patch_size_ang,
                         .patch_size_min_pix = settings.alignment.ctf_patch_size_min_pix,
-                        .n_images_in_initial_average = settings.alignment.ctf_n_images_in_initial_average,
+                        .nb_images_in_initial_average = settings.alignment.ctf_nb_images_in_initial_average,
+                        .max_nb_high_resolution_recovery = settings.alignment.ctf_max_nb_high_resolution_recovery,
+                        .astigmatism_tilt_resolution =  settings.alignment.ctf_astigmatism_tilt_resolution.as<isize>(),
+                        .phase_shift_time_resolution = settings.alignment.ctf_phase_shift_time_resolution.as<isize>(),
                         .resolution_range = settings.alignment.ctf_resolution_range,
                         .fit_phase_shift = settings.alignment.ctf_fit_phase_shift,
                         .fit_astigmatism = settings.alignment.ctf_fit_astigmatism,
@@ -126,6 +133,7 @@ namespace {
             }
 
             if (settings.alignment.refine_run) {
+                #ifndef QN_CTF_ONLY
                 refine_alignment(
                     series.stack_file, metadata, {
                         .compute_device = device,
@@ -138,6 +146,9 @@ namespace {
                         .output_directory = diagnostics_directory / "refine",
                     }
                 );
+                #else
+                Logger::warn("Build does not include refine tilt-series alignment");
+                #endif
             }
 
             // Save the metadata.
@@ -148,6 +159,7 @@ namespace {
 
         // Postprocessing.
         if (settings.postprocessing.run) {
+            #ifndef QN_CTF_ONLY
             auto scope_timer = Logger::status_scope_time("Postprocessing");
             post_processing(series.stack_file, metadata, {
                 .compute_device = device,
@@ -173,6 +185,9 @@ namespace {
                 .oversampling_factor = settings.postprocessing.tomogram_oversampling_factor,
                 .interp = settings.postprocessing.tomogram_interpolation,
             });
+            #else
+            Logger::warn("Build does not include refine tilt-series alignment");
+            #endif
         }
     }
 
@@ -228,6 +243,12 @@ namespace {
             return;
         }
 
+        if (not single_ts) {
+            Logger::info("Batch processing:");
+            Logger::trace("  n_stacks={}\n  devices={}\n  output={}\n",
+                series.size(), settings.compute.devices, series[0].output_directory);
+        }
+
         // Distribute one per device.
         auto workers = noa::ThreadPool(settings.compute.devices.size());
         auto results = std::vector<std::future<void>>{};
@@ -237,34 +258,34 @@ namespace {
             result.get();
     }
 
-    void fix_baseline() {
-        auto spectra = noa::read_image<f32>("~/Tmp/quinoa/test_baseline/test_image_spectra_3A.mrc").data;
-        auto spectrum = spectra.subregion(19).span_1d();
-        auto background = noa::like(spectra.subregion(19));
-        auto fftfreq = Vec{0.02269, 0.23333};
-        auto linspace = noa::Linspace<f64>::from_vec(fftfreq);
-
-        save_plot_xy(linspace, spectrum, "~/Tmp/quinoa/test_baseline/fit.txt", {.label = "spectrum"});
-
-        ctf::Baseline baseline{};
-        baseline.fit(spectrum, fftfreq, fftfreq);
-        baseline.sample(background.span_1d(), fftfreq);
-        save_plot_xy(linspace, background, "~/Tmp/quinoa/test_baseline/fit.txt", {.label = "baseline1"});
-
-        auto ctf = ns::CTFIsotropic<f64>::Parameters{
-            .pixel_size = 0.675,
-            .defocus = 1.4477,
-            .voltage = 300,
-            .amplitude = 0.07,
-            .cs = 2.7,
-            .phase_shift = 0,
-            .bfactor = 0,
-            .scale = 1,
-        }.to_ctf();
-        baseline.fit(spectrum, fftfreq, ctf);
-        baseline.sample(background.span_1d(), fftfreq);
-        save_plot_xy(linspace, background, "~/Tmp/quinoa/test_baseline/fit.txt", {.label = "baseline2"});
-    }
+    // void fix_baseline() {
+    //     auto spectra = noa::read_image<f32>("~/Tmp/quinoa/test_baseline/test_image_spectra_3A.mrc").data;
+    //     auto spectrum = spectra.subregion(19).span_1d();
+    //     auto background = noa::like(spectra.subregion(19));
+    //     auto fftfreq = Vec{0.02269, 0.23333};
+    //     auto linspace = noa::Linspace<f64>::from_vec(fftfreq);
+    //
+    //     save_plot_xy(linspace, spectrum, "~/Tmp/quinoa/test_baseline/fit.txt", {.label = "spectrum"});
+    //
+    //     ctf::Baseline baseline{};
+    //     baseline.fit(spectrum, fftfreq, fftfreq);
+    //     baseline.sample(background.span_1d(), fftfreq);
+    //     save_plot_xy(linspace, background, "~/Tmp/quinoa/test_baseline/fit.txt", {.label = "baseline1"});
+    //
+    //     auto ctf = ns::CTFIsotropic<f64>::Parameters{
+    //         .pixel_size = 0.675,
+    //         .defocus = 1.4477,
+    //         .voltage = 300,
+    //         .amplitude = 0.07,
+    //         .cs = 2.7,
+    //         .phase_shift = 0,
+    //         .bfactor = 0,
+    //         .scale = 1,
+    //     }.to_ctf();
+    //     baseline.fit(spectrum, fftfreq, ctf);
+    //     baseline.sample(background.span_1d(), fftfreq);
+    //     save_plot_xy(linspace, background, "~/Tmp/quinoa/test_baseline/fit.txt", {.label = "baseline2"});
+    // }
 }
 
 auto main(int argc, char* argv[]) -> int {

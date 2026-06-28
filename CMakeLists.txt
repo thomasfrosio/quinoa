@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 
 # Project options.
 option(QN_ENABLE_CUDA "Enable CUDA support" ON)
+option(QN_CTF_ONLY "Only build the CTF fitting" ON)
 
 # Global settings.
 # Note: This project is meant to be the root project and shouldn't be included as a subdirectory.
@@ -24,6 +25,26 @@ project(quinoa
     HOMEPAGE_URL https://github.com/thomasfrosio/quinoa
 )
 
+if(PROJECT_IS_TOP_LEVEL)
+    # Prevent in-source builds.
+    get_filename_component(_srcdir "${CMAKE_SOURCE_DIR}" REALPATH)
+    get_filename_component(_bindir "${CMAKE_BINARY_DIR}" REALPATH)
+    if ("${_srcdir}" STREQUAL "${_bindir}")
+        message("In-source builds are a bad idea")
+        message("Please create a separate build directory (which can be inside the project directory) and run cmake from there")
+        message(FATAL_ERROR "Quitting configuration")
+    endif ()
+
+    # Set default build type if not specified.
+    if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+        set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
+        set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
+    endif()
+
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # generate compile_commands.json for clang-based tools
+    set(CMAKE_DEBUG_POSTFIX "d") # make sure debug and release builds don't collide
+endif()
+
 # Get the sources.
 include(${PROJECT_SOURCE_DIR}/src/quinoa/Append.cmake)
 if (QN_ENABLE_CUDA)
@@ -35,7 +56,9 @@ endif ()
 # Create the executable.
 add_executable(quinoa ${QUINOA_HEADERS} ${QUINOA_SOURCES_CXX} ${QUINOA_SOURCES_UNIFIED})
 target_include_directories(quinoa PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_compile_definitions(quinoa PRIVATE "$<$<CONFIG:DEBUG>:QN_DEBUG>")
+target_compile_definitions(quinoa PRIVATE
+    "$<$<CONFIG:DEBUG>:QN_DEBUG>"
+    "$<$<BOOL:${QN_CTF_ONLY}>:QN_CTF_ONLY>")
 
 # Gather and link dependencies.
 include(${PROJECT_SOURCE_DIR}/cmake/ext/noa.cmake)
