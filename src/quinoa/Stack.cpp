@@ -146,10 +146,10 @@ namespace {
         f32 spacing;
         f32 k;
 
-        constexpr void operator()(i32 u, i32 v) const {
+        NOA_HD void operator()(i32 u, i32 v) const {
             const auto frequency = nf::index2frequency<false, true>(Vec{u, v}, logical_shape);
             const auto fftfreq_2d = frequency.as<f32>() / logical_shape.vec.as<f32>();
-            const auto fftfreq = sqrt(dot(fftfreq_2d, fftfreq_2d));
+            const auto fftfreq = noa::sqrt(noa::dot(fftfreq_2d, fftfreq_2d));
 
             auto filter = f32{1};
 
@@ -158,11 +158,11 @@ namespace {
             filter *=
                 fftfreq <= lowpass_cutoff ? 1 :
                 lowpass_cutoff + lowpass_width <= fftfreq ? 0 :
-                (1.f + cos(PI * (lowpass_cutoff - fftfreq) / lowpass_width)) * 0.5f;
+                (1.f + noa::cos(PI * (lowpass_cutoff - fftfreq) / lowpass_width)) * 0.5f;
             filter *=
                 highpass_cutoff <= fftfreq ? 1 :
                 fftfreq <= highpass_cutoff - highpass_width ? 0 :
-                (1.f + cos(PI * (fftfreq - highpass_cutoff) / highpass_width)) * 0.5f;
+                (1.f + noa::cos(PI * (fftfreq - highpass_cutoff) / highpass_width)) * 0.5f;
 
             // Exposure filter.
             if (exposure > 0) {
@@ -170,8 +170,8 @@ namespace {
                 constexpr f32 A = +0.24499f;
                 constexpr f32 B = -1.6649f;
                 constexpr f32 C = +2.8141f;
-                const f32 c0 = k * (A * pow(fftfreq * fftfreq / spacing, B) + C);
-                filter *= exp(-0.5f * exposure / c0);
+                const f32 c0 = k * (A * noa::pow(fftfreq * fftfreq / spacing, B) + C);
+                filter *= noa::exp(-0.5f * exposure / c0);
             }
 
             spectrum(u, v) *= filter;

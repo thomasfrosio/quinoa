@@ -632,8 +632,8 @@ namespace qn {
                 auto lhs_defocus = lhs.defocus.value;
                 auto rhs_defocus = rhs.defocus.value;
                 if (with_astigmatism) {
-                    lhs_defocus += abs(lhs.defocus.astigmatism);
-                    rhs_defocus += abs(rhs.defocus.astigmatism);
+                    lhs_defocus += noa::abs(lhs.defocus.astigmatism);
+                    rhs_defocus += noa::abs(rhs.defocus.astigmatism);
                 }
                 return lhs_defocus < rhs_defocus;
             });

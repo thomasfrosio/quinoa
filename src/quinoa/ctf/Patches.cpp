@@ -34,11 +34,11 @@ namespace {
             for (i32 i{}; i < 2; ++i)
                 if (grid_indices[i] == 0 or grid_indices[i] == grid_shape[i] - 1) // patch at the edge
                     shape[i] -= overflow[i];
-            const auto size = product(shape.as<f64>());
+            const auto size = noa::product(shape.as<f64>());
 
             const auto& [sum, sum_sqd] = joined;
             mean_stddev[0] = static_cast<f32>(sum / size);
-            mean_stddev[1] = static_cast<f32>(sqrt((sum_sqd - (sum * sum) / size) / size));
+            mean_stddev[1] = static_cast<f32>(noa::sqrt((sum_sqd - (sum * sum) / size) / size));
         }
     };
 
@@ -58,7 +58,7 @@ namespace {
             } else if (radius < centered_coordinate and centered_coordinate <= radius + taper_smoothness) {
                 constexpr auto PI = noa::Constant<f32>::PI;
                 const auto distance = (centered_coordinate - radius) / taper_smoothness;
-                mask *= (f32{1} + cos(PI * distance)) * f32{0.5};
+                mask *= (f32{1} + noa::cos(PI * distance)) * f32{0.5};
             }
         }
 
@@ -79,7 +79,7 @@ namespace {
             for (i32 i{}; i < 2; ++i) {
                 if (not is_at_left_edge[i] and not is_at_right_edge[i]) {
                     // The patch is fully contained within this image axis.
-                    const auto centered_coordinates = abs(static_cast<f32>(coordinates[i] - patch_center));
+                    const auto centered_coordinates = noa::abs(static_cast<f32>(coordinates[i] - patch_center));
                     apply_mask(centered_coordinates, taper_radius, mask);
                 } else {
                     // The patch is at the edge of the grid and may be outside the image,
@@ -90,7 +90,7 @@ namespace {
                     auto centered_coordinates = static_cast<f32>(coordinates[i]) - new_center;
                     if (is_at_left_edge[i])
                         centered_coordinates -= patch_overflow[i];
-                    apply_mask(abs(centered_coordinates), new_radius, mask);
+                    apply_mask(noa::abs(centered_coordinates), new_radius, mask);
                 }
             }
             value *= mask;
