@@ -1,6 +1,6 @@
 #include "quinoa/Logger.hpp"
-#include "quinoa/Reconstruct.hpp"
 #include "quinoa/ctf/CTF.hpp"
+#include "quinoa/align/Reconstruct.hpp"
 
 namespace {
     using namespace qn;

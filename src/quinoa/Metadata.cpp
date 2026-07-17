@@ -74,12 +74,16 @@ namespace {
         }
     }
 
-    void check_metadata(const Metadata& metadata) {
+    void check_metadata(Metadata& metadata) {
         // Check that the tilts are within a reasonable range.
         for (const auto& e: metadata.stack) {
             if (std::abs(e.angles[1]) > 75.)
                 panic("Tilt angle is greater than -+75deg, this is likely a input error");
         }
+
+        // Prevent division by 0.
+        metadata.sample.cs = std::max(metadata.sample.cs, 1e-5);
+
         // TODO
     }
 }
@@ -202,6 +206,7 @@ namespace qn {
                 has_datetime = true;
             }
         }
+        check(not images.empty(), "No image entries were found in {}", mdoc);
         validate_last_image();
 
         // Check that the mdoc doesn't have duplicated tilts.

@@ -7,17 +7,6 @@
 #include "quinoa/ctf/Grid.hpp"
 
 namespace qn::ctf {
-    // void test05(const CTFAnisotropic64& ctf,
-    //     isize polar_width,
-    //     f64 target_bin_angle,
-    //     isize target_phi_size,
-    //     nx::Interp polar_interp,
-    //     noa::Linspace<f64> rho_range,
-    //     noa::Linspace<f64> phi_range,
-    //     View<f32> patches_padded_rfft_ps,
-    //     Shape4 patches_padded_shape,
-    //     const Vec<f64, 2>& fftfreq_range);
-
     class Patches {
     public:
         // Use half-precision floating-points to store the patches.

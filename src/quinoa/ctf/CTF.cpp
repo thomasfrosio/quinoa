@@ -1,6 +1,6 @@
 #include "quinoa/Logger.hpp"
 #include "quinoa/Optimizer.hpp"
-#include "quinoa/Thickness.hpp"
+#include "../align/Thickness.hpp"
 #include "quinoa/ctf/CTF.hpp"
 #include "quinoa/ctf/Refine.hpp"
 

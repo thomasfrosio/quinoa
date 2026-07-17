@@ -3,11 +3,11 @@
 #include "quinoa/align/Coarse.hpp"
 #include "quinoa/align/Projection.hpp"
 #include "quinoa/align/Rotation.hpp"
+#include "quinoa/align/Thickness.hpp"
+#include "quinoa/align/Reconstruct.hpp"
 
 #include "quinoa/Logger.hpp"
 #include "quinoa/Stack.hpp"
-#include "quinoa/Thickness.hpp"
-#include "quinoa/Reconstruct.hpp"
 #include "quinoa/Optimizer.hpp"
 #include "quinoa/GridSearch.hpp"
 #include "quinoa/Plot.hpp"

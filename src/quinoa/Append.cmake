@@ -26,7 +26,7 @@ set(QUINOA_SOURCES_CXX
 )
 
 set(QUINOA_SOURCES_UNIFIED
-    src/quinoa/Entry.cpp
+    src/quinoa/Main.cpp
     src/quinoa/ExcludeViews.cpp
     src/quinoa/Plot.cpp
     src/quinoa/Stack.cpp
@@ -40,23 +40,21 @@ set(QUINOA_SOURCES_UNIFIED
 
 if(NOT QN_CTF_ONLY)
     list(APPEND QUINOA_HEADERS
-        src/quinoa/CommonFOV.hpp
-        src/quinoa/Reconstruct.hpp
-        src/quinoa/Thickness.hpp
-
         src/quinoa/align/Align.hpp
         src/quinoa/align/Coarse.hpp
+        src/quinoa/align/CommonFOV.hpp
         src/quinoa/align/Projection.hpp
+        src/quinoa/align/Reconstruct.hpp
         src/quinoa/align/Rotation.hpp
+        src/quinoa/align/Thickness.hpp
     )
 
     list(APPEND QUINOA_SOURCES_UNIFIED
-        src/quinoa/Reconstruct.cpp
-        src/quinoa/Thickness.cpp
-
         src/quinoa/align/Align.cpp
         src/quinoa/align/Coarse.cpp
         src/quinoa/align/Projection.cpp
+        src/quinoa/align/Reconstruct.cpp
         src/quinoa/align/Rotation.cpp
+        src/quinoa/align/Thickness.cpp
     )
 endif ()
