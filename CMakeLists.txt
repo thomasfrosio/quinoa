@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.23)
 option(QN_ENABLE_CUDA "Enable CUDA support" ON)
 option(QN_CTF_ONLY "Only build the CTF estimation" ON)
 if (NOT QN_CTF_ONLY)
-    message(ERROR "The tilt-series alignment is a work in progress and still in development. Except an update end of August 2026")
+    message(ERROR "The tilt-series alignment is a work in progress and still in development. Expect an update end of August 2026")
 endif()
 
 # Global settings.
