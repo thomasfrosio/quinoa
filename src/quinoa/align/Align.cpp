@@ -39,8 +39,8 @@ namespace qn {
             .bandpass{
                 .highpass_cutoff = 0.03, // FIXME use resolution2fftfreq with a min, check with rescale_min_size
                 .highpass_width = 0.03,
-                .lowpass_cutoff = 0.35,
-                .lowpass_width = 0.15,
+                .lowpass_cutoff = 0.25,
+                .lowpass_width = 0.05,
             },
             .bandpass_mirror_padding_factor = 0.5,
             .exposure_filter_voltage = metadata.sample.voltage,// TODO 0?
@@ -143,32 +143,41 @@ namespace qn {
             }
         }
 
+        // Coarse alignment.
         auto angle_offsets = Vec{0., 0., 0.};
         for (auto i: noa::irange(4)) {
             aligner.align_shifts(tilt_series.view(), metadata.stack, {
                 .cosine_stretch = i != 0,
-                .update_count = i > 2 ? 5 : 10, // FIXME i >= 2?
-                .fov_mask = i > 2,
+                .update_count = i >= 2 ? 5 : 10,
+                .fov_mask = i >= 2,
                 .smooth_edge_percent = i == 0 ? 0.08 : 0.3,
                 .max_shift_percent = i == 0 ? 0.5 : 0.1,
             });
 
             if (settings.fit_rotation_offset) {
+                constexpr auto ROTATION_RANGE = std::array{10., 5., 2., 1.};
                 find_rotation_offset(tilt_series.view(), metadata.stack, angle_offsets, {
-                    .angle_range = i > 2 ? 10. : 5.,
+                    .angle_range = ROTATION_RANGE[i],
                     .output_directory = &settings.output_directory,
                 });
             }
 
             if (settings.fit_tilt_offset or settings.fit_pitch_offset) {
+                constexpr auto TILT_RANGE = std::array{20., 10., 2., 1.};
+                constexpr auto PITCH_RANGE = std::array{10., 5., 2., 1.};
                 aligner.level_stage(tilt_series.view(), metadata.stack, angle_offsets, {
-                    .tilt_search_range = not settings.fit_tilt_offset ? 0. : i == 0 ? 20. : 5.,
-                    .pitch_search_range = not settings.fit_pitch_offset ? 0. : i == 0 ? 10. : 5.,
-                    .fov_mask = i > 2,
+                    .tilt_search_range = not settings.fit_tilt_offset ? 0. : TILT_RANGE[i],
+                    .pitch_search_range = not settings.fit_pitch_offset ? 0. : PITCH_RANGE[i],
+                    .n_global_search_evaluations = 0, // initial global search doesn't seem necessary
+                    .fov_mask = i >= 2,
                     .smooth_edge_percent = i == 0 ? 0.08 : 0.3,
                     .max_shift_percent = i == 0 ? 0.5 : 0.1,
                 });
             }
+
+            // TODO Detect for view with huge shifts and remove them?
+            //      Maybe only for higher tilts, e.g. >20deg, since low tilts
+            //      are likely to blame and are very valuable.
         }
 
         aligner.align_shifts(tilt_series.view(), metadata.stack, {
@@ -187,14 +196,14 @@ namespace qn {
     ) {
         auto timer = Logger::status_scope_time("Refine alignment");
 
-        metadata.sample.thickness = estimate_sample_thickness(stack_filename, metadata, {
-            .apply_fov = false,
-            .device = settings.compute_device,
-            .allocator = Allocator::MANAGED,
-            .resolution = 20.,
-            .output_directory = settings.output_directory / "thickness",
-        });
-        panic();
+        // metadata.sample.thickness = estimate_sample_thickness(stack_filename, metadata, {
+        //     .apply_fov = false,
+        //     .device = settings.compute_device,
+        //     .allocator = Allocator::MANAGED,
+        //     .resolution = 20.,
+        //     .output_directory = settings.output_directory / "thickness",
+        // });
+        // panic();
 
         auto loader = StackLoader(stack_filename, {
             .compute_device = settings.compute_device,
@@ -209,8 +218,8 @@ namespace qn {
             // Signal processing after cropping:
             .bandpass{
                 .highpass_cutoff = 0.03,
-                .highpass_width = 0.01,
-                .lowpass_cutoff = 0.45,
+                .highpass_width = 0.03,
+                .lowpass_cutoff = 0.35,
                 .lowpass_width = 0.05,
             },
             .bandpass_mirror_padding_factor = 0.5,
@@ -223,8 +232,6 @@ namespace qn {
             .zero_pad_to_square_shape = false,
         });
 
-
-
         // Load and filter the tilt-series.
         // This corrects for the CTF at the "center of the sample", where most of the signal comes from.
         // It is up to the thickness estimation and tomogram centering to place that "center of the sample"
@@ -235,16 +242,22 @@ namespace qn {
         metadata.stack.sort("tilt").reset_indices();
         const auto tilt_series = filter_stack(std::move(loader), metadata, {
             .ramp_filter = false,
-            .correct_ctf = settings.correct_ctf,
+            .correct_ctf = false, // FIXME settings.correct_ctf,
             .phase_flip_strength = settings.phase_flip_strength,
             .defocus_step_nm = 15, // TODO probably not worth it, decrease it
             .bfactor = -50,
         });
 
-        metadata.sample.thickness = estimate_sample_thickness(tilt_series.view(), metadata, {
-            .output_directory = settings.output_directory / "thickness",
-        });
-        panic();
+        // metadata.sample.thickness = estimate_sample_thickness(tilt_series.view(), metadata, {
+        //     .output_directory = settings.output_directory / "thickness",
+        // });
+        metadata.sample.thickness = 300; // FIXME
+
+        // Clean up FFT state.
+        if (settings.compute_device.is_gpu()) {
+            nf::clear_cache(settings.compute_device);
+            nf::set_cache_limit(12, settings.compute_device);
+        }
 
         // Prepare for the projection matching.
         const auto n_images = metadata.stack.ssize();
@@ -302,7 +315,6 @@ namespace qn {
                 .smooth_edge_percent = SMOOTH_EDGE_PERCENT,
                 .insertion_sinc = {fftfreq_sinc, fftfreq_blackman},
                 .extraction_sinc = extraction_sinc(),
-                // .debug_directory = settings.output_directory / "projection_matching",
             });
 
             if (settings.fit_rotation_offset) {
@@ -317,40 +329,47 @@ namespace qn {
             // the CTF correction has little effect and is already an approximation anyway.
         }
 
-        if (settings.fit_rotation_offset) {
-            const auto esinc = extraction_sinc();
-            const auto projection_matching_options = ProjectionMatchingParameters{
-                .max_tilt_difference = MAX_TILT_DIFFERENCE,
-                .smooth_edge_percent = SMOOTH_EDGE_PERCENT,
-                .insertion_sinc = {fftfreq_sinc, fftfreq_blackman},
-                .extraction_sinc = esinc,
-                .debug_directory = settings.output_directory / "projection_matching",
-            };
+        projection_matcher.update_shifts(tilt_series.view(), metadata.stack, {
+            .max_tilt_difference = MAX_TILT_DIFFERENCE,
+            .smooth_edge_percent = SMOOTH_EDGE_PERCENT,
+            .insertion_sinc = {fftfreq_sinc, fftfreq_blackman},
+            .extraction_sinc = extraction_sinc(),
+        });
 
-            // TODO store shifts for each
-            // Optimizer optimizer(NLOPT_GN_DIRECT, std::ssize(buffer));
-            // optimizer.set_max_number_of_evaluations(75);
+        // if (settings.fit_rotation_offset) {
+        //     const auto esinc = extraction_sinc();
+        //     const auto projection_matching_options = ProjectionMatchingParameters{
+        //         .max_tilt_difference = MAX_TILT_DIFFERENCE,
+        //         .smooth_edge_percent = SMOOTH_EDGE_PERCENT,
+        //         .insertion_sinc = {fftfreq_sinc, fftfreq_blackman},
+        //         .extraction_sinc = esinc,
+        //         .debug_directory = settings.output_directory / "projection_matching",
+        //     };
+        //
+        //     // TODO store shifts for each
+        //     // Optimizer optimizer(NLOPT_GN_DIRECT, std::ssize(buffer));
+        //     // optimizer.set_max_number_of_evaluations(75);
+        //
+        //     auto grid = GridSearch(Vec{-1., 1., 0.05}); // 0.1 then local opt?
+        //     std::vector<f64> rotations;
+        //     std::vector<f64> ccs;
+        //     grid.for_each([&](const f64& offset) {
+        //         auto tmp = metadata;
+        //         tmp.stack.add_image_angles({offset, 0., 0.});
+        //         auto score = projection_matcher.update_shifts(tilt_series.view(), tmp.stack, projection_matching_options);
+        //
+        //         rotations.emplace_back(tmp.stack[0].angles[0]);
+        //         ccs.emplace_back(score);
+        //         fmt::println("rot={:.2f}, cc={}", tmp.stack[0].angles[0], score);
+        //
+        //         // TODO try common-line with this alignment?
+        //     });
+        //     save_plot_xy(rotations, ccs, settings.output_directory / "projection_matching" / "pm_scores.txt");
+        //
+        //     // TODO set shifts from best
+        // }
 
-            auto grid = GridSearch(Vec{-1., 1., 0.05}); // 0.1 then local opt?
-            std::vector<f64> rotations;
-            std::vector<f64> ccs;
-            grid.for_each([&](const f64& offset) {
-                auto tmp = metadata;
-                tmp.stack.add_image_angles({offset, 0., 0.});
-                auto score = projection_matcher.update_shifts(tilt_series.view(), tmp.stack, projection_matching_options);
-
-                rotations.emplace_back(tmp.stack[0].angles[0]);
-                ccs.emplace_back(score);
-                fmt::println("rot={:.2f}, cc={}", tmp.stack[0].angles[0], score);
-
-                // TODO try common-line with this alignment?
-            });
-            save_plot_xy(rotations, ccs, settings.output_directory / "projection_matching" / "pm_scores.txt");
-
-            // TODO set shifts from best
-        }
-
-        projection_matcher = ProjectionMatcher{};
+        // projection_matcher = ProjectionMatcher{};
 
         // TODO stage level
 

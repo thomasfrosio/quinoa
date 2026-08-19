@@ -15,8 +15,6 @@
 namespace {
     using namespace qn;
 
-    Path debug_dir;
-
     auto is_reference_included(
         const Metadata::Image& target,
         const Metadata::Image& candidate_reference,
@@ -78,8 +76,8 @@ namespace {
         const auto rfftfreq_samples_int = std::max(I{1}, static_cast<I>(rfftfreq_samples));
         auto window_size = 2 * (rfftfreq_samples_int) + 1;
 
-        // Truncate the edges because at these indexes, the window is 0, so there's no need to compute it.
-        // So using the same example, computed_window=[-0.2,-0.15,-0.1,-0.05,0.,0.05,0.1,0.15,0.2]
+        // Truncate the edges because at these indices, the window is 0, so there's no need to compute it.
+        // So using the same example, computed_window_fftfreq_offset=[-0.2,-0.15,-0.1,-0.05,0.,0.05,0.1,0.15,0.2]
         return window_size - 2;
     }
 
@@ -87,7 +85,7 @@ namespace {
     // Compute the sum of the z-window, so that it can be directly applied to the extracted values,
     // thereby correcting for the multiplicity on the fly.
     template<nt::integer Int, nt::real Real>
-    Pair<Int, Real> w_window_spec(Real fftfreq_sinc, Real fftfreq_blackman, Real spectrum_size) {
+    auto w_window_spec(Real fftfreq_sinc, Real fftfreq_blackman, Real spectrum_size) -> Pair<Int, Real> {
         auto window_size = blackman_window_size<Int>(fftfreq_blackman, spectrum_size);
         Real sum{};
         for (Int i{}; i < window_size; ++i) {
@@ -232,7 +230,7 @@ namespace {
 
             auto cc = lhs * conj(rhs);
             cc /= noa::sqrt(abs(lhs) * abs(rhs)) + 1e-6f;
-            cc *= phase_shift;
+            cc *= phase_shift; // produce the centered xmap
 
             // TODO bandpass?
             lhs = cc;
@@ -328,8 +326,23 @@ namespace {
             // Small xmap centered on the peak, needs to be dereferenceable.
             m_xmap_centered = Array<f32>({1, 1, 64, 64}, {device, Allocator::MANAGED});
 
-            // TODO FFT workspace
-            // TODO in-place FFTs
+            // TODO Try in-place FFTs?
+            if (device.is_gpu()) {
+                // All the FFTs.
+                const auto fft_options = nf::FFTOptions{.record_and_share_workspace = true};
+                nf::r2c(m_buffer_padded.view(), m_buffer_padded_rfft.view().subregion(Slice{0, 2}), fft_options);
+                nf::c2r(m_buffer_padded_rfft.view().subregion(Slice{0, 2}), m_buffer_padded.view(), fft_options);
+                nf::r2c(m_buffer.view(), m_buffer_rfft.view(), fft_options);
+                nf::c2r(m_buffer_rfft.view().subregion(0), m_buffer.view().subregion(0), fft_options);
+
+                const auto workspace = Array<std::byte>(nf::workspace_left_to_allocate(device), options);
+                const auto n_plans_set = nf::set_workspace(device, std::move(workspace));
+                if (auto left = nf::workspace_left_to_allocate(device); n_plans_set == 0 or left > 0) {
+                    Logger::warn(
+                        "Failed to set the FFT workspace. A new workspace will have to be allocated, possibly increasing the memory requirements significantly. Please report this. shape={}, workspace_left_to_allocate={}bytes, n_plans_set={}",
+                        shape, left, n_plans_set);
+                }
+            }
 
             const auto n1 = Allocator::bytes_currently_allocated(device);
 
@@ -439,8 +452,8 @@ namespace {
             m_references_metadata_rotations.push_back((
                 nx::rotate_x(+insertion_angles[2]) *
                 nx::rotate_y(+insertion_angles[1]) *
-                nx::rotate_z(-insertion_angles[0])
-            ).transpose());
+                nx::rotate_z(-insertion_angles[0]) // the virtual volume has the tilt-axis aligned onto the y-axis.
+            ).transpose()); // volume to central slice
 
             // Compute the central-slice of the new reference (centered onto the origin) and the target.
             // The buffer is organized as [references..., reference, target, projected].
@@ -520,12 +533,12 @@ namespace {
                 .target_mask = common_fov.set_fov(target_metadata, fov_options),
             });
 
-            // if (not debug_dir.empty()) {
-            //     auto filename = debug_dir / fmt::format("tp_{:0>2}.mrc", target_metadata.index);
+            // if (not Logger::s_debug_path.empty()) {
+            //     auto filename = Logger::s_debug_path / fmt::format("tp_{:0>2}.mrc", target_metadata.index);
             //     noa::write_image(target_and_projected, filename);
             // }
 
-            // Phase-like (i.e. mutual) cross-correlation.
+            // Phase-like (i.e., mutual) cross-correlation.
             // Note that using the conventional CC isn't as good; the peaks are less sharp
             // up to the point that, for some samples, high tilts failed to pick reliably.
             const auto target_and_projected_rfft = m_buffer_rfft.view();
@@ -536,9 +549,9 @@ namespace {
             });
 
             // Find the best CC peak. The resulting shift should be added to the target.
-            const auto xmap = target_and_projected_rfft.subregion(0);
+            const auto centered_xmap_rfft = target_and_projected_rfft.subregion(0);
             const auto centered_xmap = target_and_projected.subregion(0);
-            nf::c2r(xmap, centered_xmap, {.norm = nf::Norm::ORTHO}); // nice scale
+            nf::c2r(centered_xmap_rfft, centered_xmap, {.norm = nf::Norm::ORTHO}); // nice scale
             const auto shift = find_peak<"fc">(centered_xmap, m_xmap_centered.view(), {
                 .distortion_angle_deg = target_metadata.angles[0],
                 .max_shift_percent = 0.15,
@@ -546,13 +559,14 @@ namespace {
 
             // if (not debug_dir.empty()) {
             //     auto filename = debug_dir / fmt::format("xmap_{:0>2}.mrc", target_metadata.index);
+            // if (not Logger::s_debug_path.empty()) {
+            //     auto filename = Logger::s_debug_path / fmt::format("xmap_{:0>2}.mrc", target_metadata.index);
             //     noa::write_image(centered_xmap, filename);
-            //     auto filename = debug_dir / fmt::format("xmap_centered_{:0>2}.mrc", target_metadata.index);
-            //     noa::write_image(m_xmap_centered, filename);
+            //     auto filename2 = Logger::s_debug_path / fmt::format("xmap_centered_{:0>2}.mrc", target_metadata.index);
+            //     noa::write_image(m_xmap_centered, filename2);
             // }
 
             // Compute the ZNCC.
-            // Performance wise, this is trivial (~1ms vs ~28ms for the reprojection).
             f64 zncc{};
             if (compute_score) {
                 // Apply the shift.
@@ -575,8 +589,8 @@ namespace {
                     .target_mask = fov,
                 });
 
-                // if (not debug_dir.empty()) {
-                //     auto filename = debug_dir / fmt::format("tpf_{:0>2}.mrc", target_metadata.index);
+                // if (not Logger::s_debug_path.empty()) {
+                //     auto filename = Logger::s_debug_path / fmt::format("tpf_{:0>2}.mrc", target_metadata.index);
                 //     noa::write_image(target_and_projected, filename);
                 // }
 
@@ -593,7 +607,7 @@ namespace {
     };
 
     // Keep the implementation hidden from the header.
-    // Each thread has its own to support for multi-GPU processing.
+    // Each thread has its own projector to support for multi-GPU processing (one thread per GPU).
     thread_local Projector projector{};
 }
 
@@ -615,7 +629,9 @@ namespace qn {
         Metadata::Stack& metadata,
         const ProjectionMatchingParameters& settings
     ) const -> f64 {
-        // debug_dir = settings.debug_directory; // FIXME
+        auto t = Logger::trace_scope_time("ProjectionMatcher::update_shifts");
+        // Logger::s_debug_path = "/dls/ebic/data/staff-scratch/thomas2/datasets/kyprianos/quinoa"; // FIXME
+
         projector.initialize(stack, settings);
 
         // Projection matching, using the lowest tilt as the initial reference,

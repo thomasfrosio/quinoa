@@ -1,7 +1,5 @@
 #pragma once
 
-#include <noa/Runtime.hpp>
-
 #include "quinoa/Types.hpp"
 #include "quinoa/Metadata.hpp"
 
@@ -18,8 +16,6 @@ namespace qn {
 
         nx::WindowedSinc insertion_sinc{};
         nx::WindowedSinc extraction_sinc{};
-
-        Path debug_directory;
     };
 
     class ProjectionMatcher {
