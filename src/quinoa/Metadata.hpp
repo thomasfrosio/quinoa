@@ -274,7 +274,7 @@ namespace qn {
         Stack stack{};
         Sample sample{};
 
-        /// Spacing (aka pixel size) of the currently referred images, in angstrom.
+        /// Spacing (aka pixel size, aka sampling rate) of the currently referred images, in angstrom.
         /// \warning Changing this value should be done by set_spacing
         ///          to correctly rescale the image shifts at the same time.
         Vec<f64, 2> spacing{};
@@ -286,9 +286,9 @@ namespace qn {
 
     public: // Save
         void save_star(const Path& filename) const;
+        void save_imod(const Path& input_stack, const Path& output_directory, const Path& basename, const Shape2& export_image_shape, const Vec<f64, 2>& export_spacing) const;
         // void save_relion(const Path& filename, Shape<i64, 2> shape, Vec<f64, 2> spacing) const;
         // void save_warp(const Path& filename, Shape<i64, 2> shape, Vec<f64, 2> spacing) const;
-        // void save_imod(const Path& filename, Shape<i64, 2> shape, Vec<f64, 2> spacing) const;
 
     public:
         auto set_spacing(const Vec<f64, 2>& new_spacing) -> Metadata& {

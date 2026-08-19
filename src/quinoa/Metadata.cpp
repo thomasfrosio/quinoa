@@ -227,10 +227,19 @@ namespace qn {
 
         // TODO If stack isn't specified, use the frames.
 
-        // Assign each image in the stack to an MDOC entry.
-        const auto stack_shape = ni::ImageFile(stack, {.read = true}).shape();
-        const auto n_images = stack_shape[0] == 1 and stack_shape[1] > 1 ? stack_shape[1] : stack_shape[0];
+        isize n_images;
+        {
+            auto file = ni::ImageFile(stack, {.read = true});
+            const auto stack_shape = file.shape();
+            n_images = stack_shape[0] == 1 and stack_shape[1] > 1 ? stack_shape[1] : stack_shape[0];
 
+            // The shifts are zero, so set_spacing is not necessary here.
+            // This spacing isn't technically used here and returning {0., 0.} would work (since there are no shifts),
+            // but for consistency and ease of mind, set it to always have a fully initialized metadata.
+            metadata.spacing = file.spacing().pop_front(); // remove z
+        }
+
+        // Assign each image in the stack to an MDOC entry.
         if (rawtlt.empty()) {
             if (n_images > std::ssize(images))
                 panic("The stack has more images ({}) than the number of mdoc entries ({}). "
@@ -483,7 +492,7 @@ namespace qn {
         if (not series.star_file.empty()) {
             if (not settings.compute.dry) {
                 Logger::info("Loading metadata from star file {}.", series.star_file);
-                Logger::warn("Loading metadata from star file is currently experimental and intended for debugging/testing only");
+                Logger::warn("Loading metadata from star file is currently experimental and intended for debugging/testing only.");
             }
             metadata = load_from_star(series.star_file);
             apply_settings(settings, series, metadata);
@@ -509,7 +518,10 @@ namespace qn {
 
     void Metadata::save_star(const Path& filename) const {
         const auto now = round<stdc::minutes>(stdc::system_clock::now());
-        std::string buffer = fmt::format(
+        std::string buffer;
+        buffer.reserve(10'000);
+
+        fmt::format_to(std::back_inserter(buffer),
             "# Created by quinoa at {:%R} on {:%d/%m/%Y}\n\n"
             "_qnVersion {}\n\n"
             "data_sample\n"
@@ -541,7 +553,6 @@ namespace qn {
             "{:>3} {:>8.3f} {:>7.3f} {:>7.3f} {:>9.3f} {:>9.3f} "
             "{:>9.5f} {:>9.5f} {:>7.2f} {:>7.2f} {:>6.2f} {:>5.2f} "
             "{:>7.2f} {:>8.2f} {:>10} {}\n";
-        buffer.reserve(8'000);
 
         // Save in the same order as in the input file and normalize the shifts.
         // If images are removed from the stack, their index_file would still match the original file.
@@ -549,7 +560,7 @@ namespace qn {
         sorted_stack.rescale_shifts(spacing, Vec{1., 1.});
 
         for (const auto& image: sorted_stack) {
-            buffer += fmt::format(FORMAT,
+            fmt::format_to(std::back_inserter(buffer), FORMAT,
                 image.index_file, image.angles[0], image.angles[1], image.angles[2], image.shifts[1], image.shifts[0],
                 image.defocus.value, image.defocus.astigmatism * 2, noa::rad2deg(image.defocus.angle), noa::rad2deg(image.phase_shift),
                 image.ctf_resolution, image.ctf_score,
@@ -558,6 +569,168 @@ namespace qn {
         }
 
         noa::write_text(buffer, filename);
+    }
+
+    void Metadata::save_imod(
+        const Path& input_stack,
+        const Path& output_directory,
+        const Path& basename,
+        const Shape2& export_image_shape,
+        const Vec<f64, 2>& export_spacing
+    ) const {
+        std::string buffer;
+        buffer.reserve(1'000);
+
+        // Save in the same order as in the input file.
+        auto export_metadata = *this;
+        export_metadata.stack.sort("index_file");
+        export_metadata.set_spacing(export_spacing);
+
+        // .xf:
+        // IMOD first rotates by +angle[0] the images from unaligned to aligned (aka image->specimen) around the
+        // (N-1)/2 center, and then adds the shifts to the rotated image. To go from image->specimen, we instead
+        // subtract the shifts and then rotates by -angle[0] around the N//2 center.
+        const auto center = (export_image_shape.vec / 2).as<f64>();
+        const auto imod_center = (export_image_shape.vec - 1).as<f64>() / 2;
+        const auto center_offset = center - imod_center; // even=0.5, odd=0.
+        for (i32 index_file{}; const auto& image: export_metadata.stack) {
+            while (index_file != image.index_file) {
+                // If images are removed from the stack, add their line with no rotation and no shifts.
+                // The com scripts will remove them from the newstack and tilt commands.
+                buffer.append("1.00000  0.00000  0.00000  1.00000     0.0      0.0\n");
+                ++index_file;
+            }
+            const auto rotation_matrix = nx::rotate(noa::deg2rad(-image.angles[0]));
+            const auto imod_shifts = rotation_matrix * (-image.shifts + center_offset) - center_offset;
+            fmt::format_to(
+                std::back_inserter(buffer),
+                "{:.5f} {:>8.5f} {:>8.5f} {:>8.5f}  {:>10.5f} {:>10.5f}\n", // A11 A12 A21 A22 DX DY
+                rotation_matrix[0][0], rotation_matrix[1][0], rotation_matrix[0][1], rotation_matrix[1][1],
+                imod_shifts[1], imod_shifts[0]
+            );
+            ++index_file;
+        }
+        noa::write_text(buffer, output_directory / fmt::format("{}.xf", basename));
+
+        // .tlt
+        buffer.clear();
+        for (i32 index_file{}; const auto& image: export_metadata.stack) {
+            while (index_file != image.index_file) {
+                buffer.append("0.0\n");
+                ++index_file;
+            }
+            fmt::format_to(std::back_inserter(buffer), "{}\n", image.angles[1]);
+            ++index_file;
+        }
+        noa::write_text(buffer, output_directory / fmt::format("{}.tlt", basename));
+
+        auto excluded_sections = std::vector<i32>{};
+        for (i32 index_file{}; const auto& image: export_metadata.stack) {
+            while (index_file != image.index_file) {
+                excluded_sections.push_back(index_file);
+                ++index_file;
+            }
+            ++index_file;
+        }
+
+        // _newstack.com
+        buffer.clear();
+        constexpr i32 BINNING_FACTOR = 4;
+        const auto now = round<stdc::minutes>(stdc::system_clock::now());
+        fmt::format_to(
+            std::back_inserter(buffer),
+            "# Created by quinoa at {:%R} on {:%d/%m/%Y}\n"
+            "# Usage submfg {}_newstack.com\n"
+            "#\n"
+            "$setenv IMOD_OUTPUT_FORMAT MRC\n"
+            "$newstack -StandardInput\n"
+            "InputFile {}\n"
+            "OutputFile {}_ali.mrc\n"
+            "TiltAngleFile {}.tlt\n"
+            "ExcludeSections {}\n"
+            "BlankOutput\n"
+            "TransformFile {}.xf\n"
+            "BinByFactor {}\n"
+            "AntialiasFilter -1\n"
+            "AdjustOrigin \n"
+            "TaperAtFill 1,1\n",
+            now, now,
+            basename,
+            fs::relative(input_stack, output_directory),
+            basename, // OutputFile
+            basename, // TiltAngleFile
+            fmt::join(excluded_sections, ","),
+            basename, // TransformFile
+            BINNING_FACTOR
+        );
+        noa::write_text(buffer, output_directory / fmt::format("{}_newstack.com", basename));
+
+        // _tilt.com
+        buffer.clear();
+        // Assumes all images have the same xtilt.
+        const auto xtilt = -stack[stack.find_lowest_tilt_index()].angles[2];
+        fmt::format_to(
+            std::back_inserter(buffer),
+            "# Created by quinoa at {:%R} on {:%d/%m/%Y}\n"
+            "# Usage submfg {}_tilt.com\n"
+            "$setenv IMOD_OUTPUT_FORMAT MRC\n"
+            "$tilt -StandardInput\n"
+            "SuperSampleFactor 2\n"
+            "InputProjections {}_ali.mrc\n"
+            "OutputFile {}_rec.mrc\n"
+            "IMAGEBINNED {}\n"
+            "TILTFILE {}.tlt\n"
+            "THICKNESS 1500\n"
+            "RADIAL 0.425 0.035\n"
+            "FalloffIsTrueSigma 1\n"
+            "XAXISTILT {}\n"
+            "RotateBy90\n"
+            "MODE 2\n"
+            "FULLIMAGE {} {}\n"
+            "SUBSETSTART 0 0\n"
+            "AdjustOrigin\n"
+            "UseGPU 0\n"
+            "ActionIfGPUFails 1,2\n"
+            "OFFSET 0.0\n"
+            "SHIFT 0.0 0.0\n"
+            "FakeSIRTiterations 15\n",
+            now, now,
+            basename,
+            basename, // InputProjections
+            basename, // OutputFile
+            BINNING_FACTOR,
+            basename, // TILTFILE
+            xtilt,
+            export_image_shape[1], export_image_shape[0]
+        );
+        noa::write_text(buffer, output_directory / fmt::format("{}_tilt.com", basename));
+
+        // _defocus.txt
+        buffer.clear();
+        fmt::format_to(std::back_inserter(buffer),
+            "5 0 0. 0. 0 3\n" // 5: 1 (with astigmatism values) + 4 (with phase shifts)
+        );
+        for (i32 index_file{}; const auto& image: export_metadata.stack) {
+            while (index_file != image.index_file) {
+                buffer.append("0.0\n");
+                ++index_file;
+            }
+            auto defocus_0 = image.defocus.value + image.defocus.astigmatism;
+            auto defocus_1 = image.defocus.value - image.defocus.astigmatism;
+            fmt::format_to(std::back_inserter(buffer),
+                "{} {} {} {} {} {} {} {}\n",
+                image.index_file + 1, // start view, from 1
+                image.index_file + 1, // end view, from 1
+                image.angles[1],
+                image.angles[1],
+                defocus_0 * 1e3, // defocus in nm
+                defocus_1 * 1e3,
+                noa::rad2deg(image.defocus.angle),
+                noa::rad2deg(image.phase_shift)
+            );
+            ++index_file;
+        }
+        noa::write_text(buffer, output_directory / fmt::format("{}_defocus.txt", basename));
     }
 
     auto Metadata::Stack::sort(std::string_view key, bool ascending) & -> Stack& {

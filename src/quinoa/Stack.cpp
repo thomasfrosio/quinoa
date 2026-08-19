@@ -183,7 +183,7 @@ namespace qn {
     thread_local Array<std::byte> StackLoader::s_input_stack{};
     thread_local noa::io::DataType StackLoader::s_input_stack_dtype{};
 
-    void StackLoader::register_input_stack(const Path& filename) {
+    auto StackLoader::register_input_stack(const Path& filename) -> Pair<Shape2, Vec<f64, 2>> {
         auto timer = Logger::info_scope_time("Loading and decoding the input stack");
 
         using namespace noa::io;
@@ -227,6 +227,8 @@ namespace qn {
 
         auto input_stack = s_input_stack.view().subregion(Ellipsis{}, Slice{0, n_bytes}).reshape(type_erased_shape);
         file.read_all(input_stack.span_1d(), s_input_stack_dtype, {.n_threads = n_threads});
+
+        return Pair{file_shape.filter(2, 3), file.spacing().pop_front()};
     }
 
     StackLoader::StackLoader(ni::ImageFile&& file, const LoadStackParameters& parameters)

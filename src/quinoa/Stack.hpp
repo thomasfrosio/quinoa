@@ -39,7 +39,7 @@ namespace qn {
 
     class StackLoader {
     public:
-        static void register_input_stack(const Path& filename);
+        static auto register_input_stack(const Path& filename) -> Pair<Shape2, Vec<f64, 2>>;
 
     public:
         StackLoader() = default;

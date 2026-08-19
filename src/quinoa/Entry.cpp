@@ -54,11 +54,19 @@ namespace {
         Session::set_thread_limit(settings.compute.n_threads);
         Stream::set_current(Stream({}, Stream::SYNC));
 
-        // Register the input stack. The application loads the input stack many times. To save computation,
-        // load the stack to memory once and save it inside a static array. The StackLoader will
-        // check for it the next time it needs it.
-        if (settings.compute.register_stack)
-            StackLoader::register_input_stack(series.stack_file);
+        // Capture the stack shape and spacing for when exporting to IMOD.
+        auto exported_image_shape = Shape2{};
+        auto exported_spacing = Vec<f64, 2>{};
+        if (settings.compute.register_stack) {
+            // Register the input stack. The application loads the input stack many times. To save computation,
+            // load the stack to memory once and save it inside a static array. The StackLoader will
+            // check for it the next time it needs it.
+            noa::tie(exported_image_shape, exported_spacing) = StackLoader::register_input_stack(series.stack_file);
+        } else {
+            auto file = ni::ImageFile(series.stack_file, {.read = true});
+            exported_image_shape = file.shape().filter(2, 3);
+            exported_spacing = file.spacing().pop_front(); // remove z
+        }
 
         if (settings.preprocessing.run) {
             auto scope_timer = Logger::status_scope_time("Preprocessing");
@@ -156,6 +164,11 @@ namespace {
             metadata.save_star(star_filename);
             Logger::info("{} saved", star_filename);
         }
+
+        // Save IMOD files.
+        const auto imod_directory = series.output_directory / "quinoa-exports" / "imod";
+        metadata.save_imod(series.stack_file, imod_directory, basename, exported_image_shape, exported_spacing);
+        Logger::info("{} files saved", imod_directory);
 
         // Postprocessing.
         if (settings.postprocessing.run) {
