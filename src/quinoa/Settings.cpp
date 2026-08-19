@@ -282,7 +282,7 @@ namespace {
                 }
             }
         }
-        check(is_optional or index >= 0, "Could not find the {} for {}", info, stem);
+        check(is_optional or index >= 0, "Could not find the {} for basename \"{}\"", info, stem);
         if (paths.empty())
             return Path{};
         return paths[static_cast<usize>(index)];
@@ -382,7 +382,7 @@ namespace {
               experiment.amplitude);
         check(noa::allclose(UNSPECIFIED_VALUE, experiment.cs) or
               (experiment.cs >= 0 and experiment.cs <= 4),
-              "experiment.cs={} (micrometers). Should be between 0 and 4 micrometers.",
+              "experiment.cs={} (micrometers). Should be between 0 and 4 millimeters.",
               experiment.cs);
 
         return experiment;
@@ -494,21 +494,23 @@ namespace {
         Settings::Compute compute;
 
         // device
-        std::string device_name;
+        auto auto_find_device = [&compute] {
+            if (Device::is_any_gpu()) {
+                // Get all the available GPUs, placing the freest first.
+                compute.devices = Device::all(Device::GPU);
+                const auto most_free = Device::most_free_gpu();
+                stdr::stable_partition(compute.devices, [most_free](Device id) {
+                    return id == most_free;
+                });
+            } else {
+                compute.devices.emplace_back("cpu");
+            }
+        };
         if (auto device = table.at_path("compute.device")) {
             device.visit([&]<typename T>(T&& value) {
                 if constexpr (toml::is_string<T>) {
                     if (*value == "auto") {
-                        if (Device::is_any_gpu()) {
-                            // Get all the available GPUs, placing the freest first.
-                            compute.devices = Device::all(Device::GPU);
-                            const auto most_free = Device::most_free_gpu();
-                            stdr::stable_partition(compute.devices, [most_free](Device id) {
-                                return id == most_free;
-                            });
-                        } else {
-                            compute.devices.emplace_back("cpu");
-                        }
+                        auto_find_device();
                     } else {
                         compute.devices.emplace_back(*value); // let Device do the parsing
                     }
@@ -522,6 +524,8 @@ namespace {
                     panic("compute.device={} is not convertible to a string or an array of strings", device);
                 }
             });
+        } else {
+            auto_find_device();
         }
 
         if (const auto result = parse_value_<i32>("compute.n_threads", table))
@@ -540,7 +544,7 @@ namespace {
         }
 
         compute.register_stack = parse_value_("compute.register_stack", table, true);
-        compute.dry = parse_value_("compute.dry", table, "dry", cl, true);
+        compute.dry = parse_value_("compute.dry", table, "dry", cl, false);
         compute.stop_at_first_error = parse_value_("compute.stop_at_first_error", table, true);
 
         return compute;

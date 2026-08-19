@@ -1,8 +1,11 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.23)
 
 # Project options.
 option(QN_ENABLE_CUDA "Enable CUDA support" ON)
-option(QN_CTF_ONLY "Only build the CTF fitting" ON)
+option(QN_CTF_ONLY "Only build the CTF estimation" ON)
+if (NOT QN_CTF_ONLY)
+    message(ERROR "The tilt-series alignment is a work in progress and still in development. Except an update end of August 2026")
+endif()
 
 # Global settings.
 # Note: This project is meant to be the root project and shouldn't be included as a subdirectory.
@@ -25,6 +28,7 @@ project(quinoa
     HOMEPAGE_URL https://github.com/thomasfrosio/quinoa
 )
 
+include(GNUInstallDirs)
 if(PROJECT_IS_TOP_LEVEL)
     # Prevent in-source builds.
     get_filename_component(_srcdir "${CMAKE_SOURCE_DIR}" REALPATH)
@@ -54,7 +58,17 @@ if (QN_ENABLE_CUDA)
 endif ()
 
 # Create the executable.
-add_executable(quinoa ${QUINOA_HEADERS} ${QUINOA_SOURCES_CXX} ${QUINOA_SOURCES_UNIFIED})
+add_executable(quinoa)
+target_sources(quinoa
+    PRIVATE
+    ${QUINOA_SOURCES_CXX}
+    ${QUINOA_SOURCES_UNIFIED}
+    PRIVATE
+    FILE_SET quinoa_headers
+    TYPE HEADERS
+    BASE_DIRS ${PROJECT_SOURCE_DIR}/src
+    FILES ${QUINOA_HEADERS}
+)
 target_include_directories(quinoa PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(quinoa PRIVATE
     "$<$<CONFIG:DEBUG>:QN_DEBUG>"
@@ -84,4 +98,13 @@ target_link_libraries(quinoa
 # In CUDA, allow extended lambdas. We use this feature in a few places.
 target_compile_options(quinoa PRIVATE $<$<COMPILE_LANGUAGE:CUDA>: --extended-lambda>)
 
-# TODO install
+install(TARGETS quinoa
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+install(FILES
+    ${PROJECT_SOURCE_DIR}/share/settings_ctf.toml
+    ${PROJECT_SOURCE_DIR}/share/settings_all.toml
+    ${PROJECT_SOURCE_DIR}/share/plot_diagnostics.py
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/quinoa
+)

@@ -39,6 +39,7 @@ namespace qn::ctf {
     };
 
     /// Smooth baseline of a 1d power-spectrum.
+    /// TODO Rename to Background
     class Baseline {
     public:
         Spline spline;

@@ -2,11 +2,11 @@
 #include <noa/Xform.hpp>
 
 #include "quinoa/Optimizer.hpp"
-#include "quinoa/CommonFOV.hpp"
 #include "quinoa/GridSearch.hpp"
 #include "quinoa/Logger.hpp"
 #include "quinoa/Plot.hpp"
 
+#include "quinoa/align/CommonFOV.hpp"
 #include "quinoa/align/Rotation.hpp"
 
 namespace {

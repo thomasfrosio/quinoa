@@ -1,32 +1,40 @@
+## `Work In Progress`
+
+This repository is a work in progress. The CTF estimation is the only completed part (and the only part built by default). The tilt-series alignment and tomogram reconstruction are mostly done, but the code in this repository is incomplete and not ready for use. The full version should be available by the end of August 2026.
+
+
+## `Quinoa`
+
+### `CTF estimate`
+Fast CTF fitting, running independently of the tilt-series alignment and including fit of:
+  - per-image defoci.
+  - tilt-dependent astigmatisms (up to per-image).
+  - time-dependent phase-shifts (up to per-image).
+  - specimen orientation (tilt, pitch, and refine rotation).
+  - specimen thickness.
+
+### `Tilt-series alignment`
 Fast tilt-series alignment, including methods for:
 - Excluding tilt images based on tilt-series image statistics.
 - Finding the specimen orientation (rotation, tilt, pitch) using image cross-correlation and common-lines.
 - Aligning images (XY translation) using projection matching.
 - Refining tilt-axis angle using projection matching.
 - Finding the specimen thickness by analyzing the signal in the tomogram.
-- Fitting the CTF of the tilt-series.
-
-The CTF fitting can be run independently of the tilt-series alignment and can fit:
-- per-image defoci.
-- tilt-dependent astigmatisms (up to per-image).
-- time-dependent phase-shifts (up to per-image).
-- specimen orientation (rotation, tilt, pitch).
-- specimen thickness.
 
 
 ## `Dependencies`
 
-- `CMake >=3.21`.
+- `CMake >=3.23`.
 - `clang++ >=21` or `g++ >=14.2`
-- If `CUDA` is enabled, use a toolkit version `>=12.8`, including `>=13` if you GPU supports it.
-- `libtiff`. It should be already installed on most systems and automatically found by CMake. If it is not found, TIFF files will not be supported.
-- Other dependencies are automatically downloaded by CMake, built with `quinoa` and statically linked. This includes `noa`, `spdlog`, `nlopt`, `cxxopts`, `tomlplusplus`, `Eigen`, `glob-cpp`.
+- If `CUDA` is enabled, use a toolkit version `>=12.8`, including `>=13` if your GPU supports it.
+- For TIFF file support, `libtiff` is required. It should be already installed on most systems and automatically found by CMake. If it is not found, TIFF files will not be supported.
+- Other dependencies are automatically downloaded by CMake, built, and statically linked to the application. This includes `noa`, `spdlog`, `nlopt`, `cxxopts`, `tomlplusplus`, `Eigen`, `glob-cpp`.
 
 
 ## `Build`
 
 ```shell
-git clone https://github.com/thomasfrosio/quinoa.git
+git clone git@github.com:thomasfrosio/quinoa.git
 cd quinoa
 cmake -B ./build -DCMAKE_INSTALL_PREFIX=./install -DQN_ENABLE_CUDA=ON # enable GPU support
 cmake --build ./build --parallel
@@ -52,12 +60,10 @@ When compiling a single binary to run on GPU with different architectures, use `
 
 ## `Run`
 
-Copy the `settings.toml` from the repository. Feel free
-
 ```shell
+# Examples:
 quinoa --help
-
-quinoa --settings=quinoa.toml
-quinoa --settings=quinoa.toml --mdocs=mdocs/*
-
+quinoa --settings=share/settings_ctf.toml
+quinoa --mdocs=*.mdoc --stacks=*.mrc --tilt-axis=175
 ```
+See setting files in the installation directory (or in [share](share/)) for more information.

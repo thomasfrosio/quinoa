@@ -325,8 +325,8 @@ namespace qn::ctf {
         // TODO As opposed to decrease the smoothing if certain resolution are reached (e.g. 3.7A bump of amorphous ice)
         //      or increase the smoothing if the resolution range is small, which I expect may be necessary for some
         //      data, it would probably be better to fit, subtract, and fit-again. This is already done when computing
-        //      the EPA of the stack for diagnostics, but should be safe to do. In practice, the CC is very resilient
-        //      to errors in the background, so I'm should worry about this now.
+        //      the EPA of the stack for diagnostics, but should be safe to do here. In practice, the CC is very
+        //      resilient to errors in the background, so I should not worry about this now.
         const auto x = midpoints_x.subregion(Slice{0, n_points});
         const auto y = midpoints_y.subregion(Slice{0, n_points});
         const auto z = spectrum_smooth.subregion(Slice{0, n_points});

@@ -154,82 +154,82 @@ namespace qn {
     }
 
     auto find_best_peak(const SpanContiguous<const f32, 2>& data) -> Pair<Vec<f64, 2>, f32> {
-        constexpr isize BLOCK_SIZE = 5;
-        constexpr isize BLOCK_RADIUS = BLOCK_SIZE / 2;
-        constexpr isize N_BLOCKS_Y = 3;
-        constexpr isize N_BLOCKS_X = 7;
-        constexpr f32 THRESHOLD = 0.8f;
-
-        // Get the position of the max within the block.
-        auto argmax = [&](const Vec<isize, 2>& block_center) {
-            auto max_value = std::numeric_limits<f32>::lowest();
-            auto max_indices = Vec<isize, 2>{};
-            for (isize y{-BLOCK_RADIUS}; y <= BLOCK_RADIUS; ++y) {
-                for (isize x{-BLOCK_RADIUS}; x <= BLOCK_RADIUS; ++x) {
-                    const auto indices = block_center + Vec{y, x};
-                    if (noa::is_inbound(data.shape(), indices)) {
-                        const auto& value = data(indices);
-                        if (max_value < value) {
-                            max_value = value;
-                            max_indices = indices;
-                        }
-                    }
-                }
-            }
-            return max_indices;
-        };
-
-        // Find whether the given position points to a peak
-        // by checking that the 8 neighbors have lower values.
-        auto is_a_peak = [&](const Vec<isize, 2>& position) {
-            const auto& value = data(position);
-            for (isize y{-1}; y <= 1; ++y) {
-                for (isize x{-1}; x <= 1; ++x) {
-                    const auto indices = position + Vec{y, x};
-                    if (noa::is_inbound(data.shape(), indices)) {
-                        if (value < data(indices))
-                            return false;
-                    }
-                }
-            }
-            return true;
-        };
-
-        // Offset the peak height by offsetting its base to 0. To select between peaks with very similar values,
-        // we adjust each peak value by looking at its base and offset the peak value to put its base at zero.
-        // Indeed, it seems that the "true" peak is surrounded by low/negative CC values, as opposed to less sharp
-        // peaks which are surrounded by the background noise/CC.
-        // Selecting the sharpest peak doesn't seem to work well with multi-lobe peaks.
-        auto peak_base_value = [&](const Vec<isize, 2>& peak_position) {
-            const auto& peak_value = data(peak_position);
-            auto find_base = [&](isize direction) {
-                f32 previous_base = peak_value;
-
-                // Find the base of the peak along that direction.
-                // Peaks should only be a few pixels wide.
-                for (isize y{1}; y < 10; ++y) {
-
-                    // Compute the base value at this y-offset.
-                    // The base value is the average of the 3 values at y-offset.
-                    f32 base{};
-                    for (isize x{-1}; x <= 1; ++x) {
-                        auto position = peak_position + Vec{y * direction, x};
-                        position = noa::index_at<noa::Border::REFLECT>(position, data.shape());
-                        base += data(position);
-                    }
-                    base /= 3;
-
-                    // Stop when the average CC is going back up.
-                    if (base > previous_base)
-                        break;
-                    previous_base = base;
-                }
-                return previous_base;
-            };
-            const auto lower_base = find_base(-1);
-            const auto upper_base = find_base(+1);
-            return (upper_base + lower_base) / 2;
-        };
+        // constexpr isize BLOCK_SIZE = 5;
+        // constexpr isize BLOCK_RADIUS = BLOCK_SIZE / 2;
+        // constexpr isize N_BLOCKS_Y = 3;
+        // constexpr isize N_BLOCKS_X = 7;
+        // constexpr f32 THRESHOLD = 0.8f;
+        //
+        // // Get the position of the max within the block.
+        // auto argmax = [&](const Vec<isize, 2>& block_center) {
+        //     auto max_value = std::numeric_limits<f32>::lowest();
+        //     auto max_indices = Vec<isize, 2>{};
+        //     for (isize y{-BLOCK_RADIUS}; y <= BLOCK_RADIUS; ++y) {
+        //         for (isize x{-BLOCK_RADIUS}; x <= BLOCK_RADIUS; ++x) {
+        //             const auto indices = block_center + Vec{y, x};
+        //             if (noa::is_inbound(data.shape(), indices)) {
+        //                 const auto& value = data(indices);
+        //                 if (max_value < value) {
+        //                     max_value = value;
+        //                     max_indices = indices;
+        //                 }
+        //             }
+        //         }
+        //     }
+        //     return max_indices;
+        // };
+        //
+        // // Find whether the given position points to a peak
+        // // by checking that the 8 neighbors have lower values.
+        // auto is_a_peak = [&](const Vec<isize, 2>& position) {
+        //     const auto& value = data(position);
+        //     for (isize y{-1}; y <= 1; ++y) {
+        //         for (isize x{-1}; x <= 1; ++x) {
+        //             const auto indices = position + Vec{y, x};
+        //             if (noa::is_inbound(data.shape(), indices)) {
+        //                 if (value < data(indices))
+        //                     return false;
+        //             }
+        //         }
+        //     }
+        //     return true;
+        // };
+        //
+        // // Offset the peak height by offsetting its base to 0. To select between peaks with very similar values,
+        // // we adjust each peak value by looking at its base and offset the peak value to put its base at zero.
+        // // Indeed, it seems that the "true" peak is surrounded by low/negative CC values, as opposed to less sharp
+        // // peaks which are surrounded by the background noise/CC.
+        // // Selecting the sharpest peak doesn't seem to work well with multi-lobe peaks.
+        // auto peak_base_value = [&](const Vec<isize, 2>& peak_position) {
+        //     const auto& peak_value = data(peak_position);
+        //     auto find_base = [&](isize direction) {
+        //         f32 previous_base = peak_value;
+        //
+        //         // Find the base of the peak along that direction.
+        //         // Peaks should only be a few pixels wide.
+        //         for (isize y{1}; y < 10; ++y) {
+        //
+        //             // Compute the base value at this y-offset.
+        //             // The base value is the average of the 3 values at y-offset.
+        //             f32 base{};
+        //             for (isize x{-1}; x <= 1; ++x) {
+        //                 auto position = peak_position + Vec{y * direction, x};
+        //                 position = noa::index_at<noa::Border::REFLECT>(position, data.shape());
+        //                 base += data(position);
+        //             }
+        //             base /= 3;
+        //
+        //             // Stop when the average CC is going back up.
+        //             if (base > previous_base)
+        //                 break;
+        //             previous_base = base;
+        //         }
+        //         return previous_base;
+        //     };
+        //     const auto lower_base = find_base(-1);
+        //     const auto upper_base = find_base(+1);
+        //     return (upper_base + lower_base) / 2;
+        // };
 
         // Fit a 3-points parabola along the y and x of the peak to get
         // the peak offset and value with subpixel accuracy.
@@ -255,13 +255,13 @@ namespace qn {
         // and peaks with multilobes can appear. In these cases, adjusting for the peak heights based on their
         // base value (where the peak starts) seems to be a good way to discern the correct peaks from the others.
         const auto center = data.shape().vec / 2;
-        const auto center_peak_value = data(center);
+        // const auto center_peak_value = data(center);
         const auto center_peak_registration = subpixel_registration(center);
-        const auto center_peak_base = peak_base_value(center);
-        const auto center_peak_adjusted_value = center_peak_registration.second - center_peak_base;
+        // const auto center_peak_base = peak_base_value(center);
+        // const auto center_peak_adjusted_value = center_peak_registration.second - center_peak_base;
         const auto center_peak_coordinates_offset = center_peak_registration.first;
 
-        auto best_peak_value_adjusted = center_peak_adjusted_value;
+        // auto best_peak_value_adjusted = center_peak_adjusted_value;
         auto best_peak_coordinates_offset = center_peak_coordinates_offset;
 
         // for (isize y = -(N_BLOCKS_Y / 2); y <= N_BLOCKS_Y / 2; ++y) {

@@ -64,10 +64,8 @@ run = false
 # Whether to run the coarse image alignment step. Both the specimen orientation and image translations are updated.
 run = false
 
-# TODO
-check_rotation = true
-
-# Whether to fit the specimen angles using the image-stretching leveling and common-line algorithm. This substantially affects the image translations.
+# TODO Add doc
+#check_rotation = true
 #fit_rotation = false
 #fit_tilt = true
 #fit_pitch = true
@@ -90,7 +88,7 @@ run = true
 # This is based on the lowest-tilt image.
 #nb_images_in_initial_average = 3
 
-
+# TODO Add doc
 #max_nb_high_resolution_recovery = 0
 #astigmatism_tilt_resolution = [5, -4]
 #phase_shift_time_resolution = [2, 3]
@@ -104,6 +102,8 @@ run = true
 
 [alignment.refine] # ---------------------------------------------------------------------
 run = false
+
+# TODO Add doc
 correct_ctf = true
 phase_flip_strength = 8
 fit_rotation = false
@@ -113,13 +113,13 @@ fit_thickness = true
 
 [postprocessing] # ---------------------------------------------------------------------
 run = false
-resolution = 16
 
+# TODO Add doc
+resolution = 16
 stack.run = true
 stack.correct_rotation = false
 stack.interpolation = 'linear'
 stack.dtype = 'f16'
-
 tomogram.run = true
 tomogram.correct_rotation = true
 tomogram.dtype = 'f16'

@@ -3,13 +3,13 @@
 #include <noa/Signal.hpp>
 #include <noa/IO.hpp>
 
-#include "quinoa/CommonFOV.hpp"
 #include "quinoa/Metadata.hpp"
 #include "quinoa/Optimizer.hpp"
 #include "quinoa/Plot.hpp"
 #include "quinoa/Types.hpp"
 #include "quinoa/Utilities.hpp"
 
+#include "quinoa/align/CommonFOV.hpp"
 #include "quinoa/align/Projection.hpp"
 
 namespace {

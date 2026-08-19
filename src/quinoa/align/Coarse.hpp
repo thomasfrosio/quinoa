@@ -2,10 +2,10 @@
 
 #include <noa/Types.hpp>
 
-#include "quinoa/CommonFOV.hpp"
 #include "quinoa/Metadata.hpp"
 #include "quinoa/Stack.hpp"
 #include "quinoa/Types.hpp"
+#include "quinoa/align/CommonFOV.hpp"
 
 namespace qn {
     struct AlignShiftsOptions {
