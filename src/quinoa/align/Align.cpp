@@ -67,7 +67,7 @@ namespace qn {
             auto t1 = Logger::info_scope_time("Rotation check");
             auto metadata_check = metadata.stack;
 
-            for (auto i: noa::irange(2)) {
+            for (auto i: noa::irange<usize>(2)) {
                 aligner.align_shifts(tilt_series.view(), metadata_check, {
                     .cosine_stretch = i > 0,
                     .update_count = 1,
@@ -145,7 +145,7 @@ namespace qn {
 
         // Coarse alignment.
         auto angle_offsets = Vec{0., 0., 0.};
-        for (auto i: noa::irange(4)) {
+        for (auto i: noa::irange<usize>(4)) {
             aligner.align_shifts(tilt_series.view(), metadata.stack, {
                 .cosine_stretch = i != 0,
                 .update_count = i >= 2 ? 5 : 10,
