@@ -652,7 +652,7 @@ namespace qn {
             "InputFile {}\n"
             "OutputFile {}_ali.mrc\n"
             "TiltAngleFile {}.tlt\n"
-            "ExcludeSections {}\n"
+            "{}ExcludeSections {}\n"
             "BlankOutput\n"
             "TransformFile {}.xf\n"
             "BinByFactor {}\n"
@@ -664,7 +664,7 @@ namespace qn {
             fs::relative(input_stack, output_directory),
             basename, // OutputFile
             basename, // TiltAngleFile
-            fmt::join(excluded_sections, ","),
+            excluded_sections.empty() ? "#" : "", fmt::join(excluded_sections, ","),
             basename, // TransformFile
             BINNING_FACTOR
         );
@@ -685,7 +685,8 @@ namespace qn {
             "OutputFile {}_rec.mrc\n"
             "IMAGEBINNED {}\n"
             "TILTFILE {}.tlt\n"
-            "THICKNESS 1500\n"
+            "{}EXCLUDELIST2 {}\n"
+            "THICKNESS {}\n"
             "RADIAL 0.425 0.035\n"
             "FalloffIsTrueSigma 1\n"
             "XAXISTILT {}\n"
@@ -705,6 +706,8 @@ namespace qn {
             basename, // OutputFile
             BINNING_FACTOR,
             basename, // TILTFILE
+            excluded_sections.empty() ? "#" : "", fmt::join(excluded_sections, ","),
+            static_cast<i32>(sample.thickness * 10 / mean(export_spacing)), // THICKNESS (pix)
             xtilt,
             export_image_shape[1], export_image_shape[0]
         );
