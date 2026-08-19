@@ -1,3 +1,14 @@
+#!/usr/bin/env -S uv run --script
+#
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "numpy",
+#   "matplotlib",
+#   "typing"
+# ]
+# ///
+
 import numpy as np
 from matplotlib import pyplot as plt
 from typing import List, Iterator
@@ -101,7 +112,7 @@ def add_ctf_fit(lines: Iterator[str], style):
             z_range = z.max() - z.min()
             z = z * (y_range / z_range)
             plt.plot(x, z + offset, color=colors[color_idx], alpha=0.7, linestyle='dashed', linewidth=2)
-            offset += 0.15
+            offset += 1.1
 
 
 def add_scatter(lines: Iterator[str], size):
