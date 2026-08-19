@@ -66,6 +66,7 @@ run = false
 
 # TODO Add doc
 #check_rotation = true
+#allow_90_and_flip_rotation_from_mdoc = false
 #fit_rotation = false
 #fit_tilt = true
 #fit_pitch = true
