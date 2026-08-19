@@ -78,10 +78,7 @@ namespace qn {
             } else if (not noa::allclose(initial_rotation_offset, slice.angles[0])) {
                 slice.angles[0] = initial_rotation_offset;
                 Logger::warn_once(
-                    "The rotation search algorithm is assuming a fixed tilt-axis, "
-                    "but the provided stack has images with different rotation offsets. "
-                    "To continue, the existing values will be overwritten with the "
-                    "rotation offset of the lowest tilt."
+                    "The rotation search algorithm is assuming a fixed tilt-axis, but the provided stack has images with different rotation offsets. To continue, the existing values will be overwritten with the rotation offset of the lowest tilt."
                 );
             }
             max_shift = std::max(max_shift, noa::max(slice.shifts));
@@ -130,7 +127,7 @@ namespace qn {
                 ).inverse().pop_back().as<f32>();
             }
 
-            // Set the FOV mask.
+            // Set the FOV masks.
             auto fov = CommonFOV{};
             fov.set_geometry(image_shape, meta);
             fov.set_fovs(meta, fov_masks.span_1d(), {
@@ -175,7 +172,7 @@ namespace qn {
                 device, line_size, image_shape, max_shift
             );
 
-            auto grid_search = GridSearch<f64>({.start = -90., .end = 90., .step = 1.});
+            auto grid_search = GridSearch<f64>({.start = -90., .end = 90., .step = -options.angle_range});
             grid_search.for_each([&](f64 rotation_offset) {
                 auto ncc = eval(1, &rotation_offset, nullptr);
                 if (ncc > best_ncc) {

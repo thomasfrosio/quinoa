@@ -14,6 +14,7 @@ namespace {
 namespace qn {
     thread_local spdlog::logger Logger::s_logger("quinoa");
     thread_local usize Logger::s_uuid = noa::random_value(noa::Uniform<usize>{0, std::numeric_limits<usize>::max()});
+    Path Logger::s_debug_path{};
 
     void Logger::initialize() {
         // Configure the console sink. All processing threads share the same console.
@@ -71,11 +72,11 @@ namespace qn {
         if (elapsed > std::chrono::minutes(1)) {
             auto minutes = stdc::floor<stdc::minutes>(elapsed);
             auto seconds = stdc::duration_cast<stdc::seconds>(elapsed - minutes);
-            s_logger.log(level, "{}... done. Took {} {}.{}", name, minutes, seconds, end);
+            s_logger.log(level, "{}... done. Took {}{}.{}", name, minutes, seconds, end);
         } else if (elapsed > std::chrono::seconds(1)) {
             auto seconds = stdc::floor<stdc::seconds>(elapsed);
             auto milliseconds = stdc::duration_cast<stdc::milliseconds>(elapsed - seconds);
-            s_logger.log(level, "{}... done. Took {} {}.{}", name, seconds, milliseconds, end);
+            s_logger.log(level, "{}... done. Took {}{}.{}", name, seconds, milliseconds, end);
         } else {
             auto milliseconds = stdc::round<stdc::milliseconds>(elapsed);
             s_logger.log(level, "{}... done. Took {}.{}", name, milliseconds, end);

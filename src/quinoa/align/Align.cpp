@@ -52,10 +52,13 @@ namespace qn {
             .zero_pad_to_square_shape = false,
         });
 
-        auto aligner = AlignmentCoarse(tilt_series.shape(), tilt_series.device());
+        // Clean up FFT state.
+        if (settings.device.is_gpu()) {
+            nf::clear_cache(settings.device);
+            nf::set_cache_limit(12, settings.device);
+        }
 
-        // TODO Detect for view with huge shifts and remove them?
-        //      Maybe only for higher tilts, e.g. >20deg, I don't want to remove valuable low tilts...
+        auto aligner = AlignmentCoarse(tilt_series.shape(), tilt_series.device());
 
         // We require the rotation angle from the mdoc, but we can check that this rotation matches the images.
         // In this case, do a quick shift alignment and search for the rotation offset across the full angle range.
@@ -73,8 +76,10 @@ namespace qn {
                     .max_shift_percent = 0.5,
                 });
 
+                constexpr auto ROTATION_RANGE = std::array{2., 1.};
                 find_rotation_offset(tilt_series.view(), metadata_check, {
-                    .angle_range = -1, // full range
+                    // TODO 1 degree step might be too much considering how expensive this step is.
+                    .angle_range = -ROTATION_RANGE[i], // negative means full range, with step=-angle_range degrees
                     .output_directory = &settings.output_directory,
                 });
             }
@@ -82,13 +87,57 @@ namespace qn {
             const auto expected_rotation = Metadata::Image::to_angle_range(metadata.stack[0].angles[0]);
             const auto measured_rotation_1 = Metadata::Image::to_angle_range(metadata_check[0].angles[0]);
             const auto measured_rotation_2 = Metadata::Image::to_angle_range(metadata_check[0].angles[0] + 180);
-            if (std::abs(expected_rotation - measured_rotation_1) > 5 and
-                std::abs(expected_rotation - measured_rotation_2) > 5) {
-                panic(
-                    "The tilt-axis from the mdoc file or the experiment.tilt_axis setting (rotation={:.2f}) does not "
-                    "seem to match the tilt images (rotation_estimate={:.2f}deg, or equivalently {:.2f}deg). Since "
-                    "this check is fairly reliable, the program will stop now. If you are certain that the provided "
-                    "tilt-axis is correct, this check can be turned off using alignment.coarse.check_rotation=false",
+            auto distance_from_measured = [&](f64 e) {
+                return std::min(std::abs(e - measured_rotation_1), std::abs(e - measured_rotation_2));
+            };
+
+            if (distance_from_measured(expected_rotation) > 5.) {
+                if (settings.is_tilt_axis_from_mdoc and settings.allow_90_and_flip_rotation_from_mdoc) {
+                    // The mdoc doesn't always encode the tilt-axis correctly.
+                    // A 90degree offset and/or image flip may be present.
+                    // Check if these configurations result in a closer distance from the measured line.
+                    const auto expected_rotations = Vec{
+                        Metadata::Image::to_angle_range(metadata.stack[0].angles[0] + 90.),
+                        Metadata::Image::to_angle_range(metadata.stack[0].angles[0] * -1.),
+                        Metadata::Image::to_angle_range(metadata.stack[0].angles[0] * -1. + 90.),
+                    };
+                    const auto distances = Vec{
+                        distance_from_measured(expected_rotations[0]),
+                        distance_from_measured(expected_rotations[1]),
+                        distance_from_measured(expected_rotations[2]),
+                    };
+                    const auto MESSAGES = std::array{
+                        "Rotating 90 degrees",
+                        "Flipping",
+                        "Flipping and rotating 90 degrees",
+                    };
+
+                    const auto index = noa::argmin(distances);
+                    check(expected_rotations[index] <= 5.,
+                          "The tilt-axis from the mdoc file ({:.2f}) does not seem to match the tilt images (rotation_estimate={:.2f}deg, or equivalently {:.2f}deg) and does not seem to be flipped and/or rotated 90 degrees (which is allowed given alignment.coarse.allow_90_and_flip_rotation_from_mdoc=true). Since this check is fairly reliable, the program will stop now. If you are certain that the provided tilt-axis is correct, this check can be turned off using alignment.coarse.check_rotation=false.",
+                          expected_rotation, measured_rotation_1, measured_rotation_2);
+
+                    const auto new_rotations = Vec{
+                        expected_rotations[index],
+                        Metadata::Image::to_angle_range(expected_rotations[index] + 180),
+                    };
+                    const auto new_rotation = new_rotations[argmin(abs(new_rotations))];
+                    Logger::info(
+                        "{} ({:.3f} to {:.3f}) to match the tilt images (alignment.coarse.allow_90_and_flip_rotation_from_mdoc=true)",
+                        MESSAGES[index], expected_rotation, new_rotation);
+                    for (auto& e: metadata.stack)
+                        e.angles[0] = new_rotation;
+                } else {
+                    panic(
+                        "The tilt-axis from the {} ({:.2f}) does not seem to match the tilt images (rotation_estimate={:.2f}deg, or equivalently {:.2f}deg) and alignment.coarse.allow_90_and_flip_rotation_from_mdoc=false. Since this check is fairly reliable, the program will stop now. If you are certain that the provided tilt-axis is correct, this check can be turned off using alignment.coarse.check_rotation=false.",
+                        settings.is_tilt_axis_from_mdoc ? "mdoc file" : "experiment.tilt_axis setting",
+                        expected_rotation, measured_rotation_1, measured_rotation_2
+                    );
+                }
+            } else {
+                Logger::info(
+                    "The tilt-axis from the {} ({:.2f}) seem to match the tilt images (rotation_estimate={:.2f}deg, or equivalently {:.2f}deg)",
+                    settings.is_tilt_axis_from_mdoc ? "mdoc file" : "experiment.tilt_axis setting",
                     expected_rotation, measured_rotation_1, measured_rotation_2
                 );
             }

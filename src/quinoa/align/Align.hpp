@@ -8,6 +8,8 @@ namespace qn {
     struct CoarseAlignmentSettings {
         Device device;
         bool check_rotation;
+        bool allow_90_and_flip_rotation_from_mdoc;
+        bool is_tilt_axis_from_mdoc;
         bool fit_rotation_offset;
         bool fit_tilt_offset;
         bool fit_pitch_offset;

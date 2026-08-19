@@ -20,6 +20,7 @@ namespace qn {
     struct LevelStageOptions {
         f64 tilt_search_range{};
         f64 pitch_search_range{};
+        i32 n_global_search_evaluations{};
 
         bool fov_mask{};
         f64 smooth_edge_percent{};

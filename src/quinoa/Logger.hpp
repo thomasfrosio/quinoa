@@ -7,10 +7,6 @@
 #include <quinoa/Types.hpp>
 
 namespace qn {
-    static auto s_debug_path = Path{""};
-}
-
-namespace qn {
     class Logger {
     public:
         static void initialize();
@@ -121,5 +117,6 @@ namespace qn {
     public:
         static thread_local spdlog::logger s_logger;
         static thread_local usize s_uuid;
+        static Path s_debug_path;
     };
 }

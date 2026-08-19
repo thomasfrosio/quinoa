@@ -66,6 +66,8 @@ namespace qn {
         struct Alignment {
             bool coarse_run{};
             bool coarse_check_rotation{};
+            bool coarse_allow_90_and_flip_rotation_from_mdoc{};
+            bool coarse_is_tilt_axis_from_mdoc{};
             bool coarse_fit_rotation{};
             bool coarse_fit_tilt{};
             bool coarse_fit_pitch{};

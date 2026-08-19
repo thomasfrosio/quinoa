@@ -3,7 +3,6 @@
 
 #include "quinoa/Logger.hpp"
 #include "quinoa/Optimizer.hpp"
-#include "quinoa/Plot.hpp"
 #include "quinoa/Utilities.hpp"
 
 #include "quinoa/align/Coarse.hpp"
@@ -15,7 +14,7 @@ namespace {
         if (idx_target >= index_lowest_tilt)
             idx_target += 1;
 
-        // The tilts are sorted in ascending order, so if the ith target has:
+        // The tilts are sorted in ascending order (e.g. -60,..,60), so if the ith target has:
         //  - a negative tilt angle, then the reference is at i + 1.
         //  - a positive tilt angle, then the reference is at i - 1.
         const bool is_negative = idx_target < index_lowest_tilt;
@@ -161,18 +160,14 @@ namespace qn {
 
         // Prepare FFT plans and set the workspace.
         if (device.is_gpu()) {
-            nf::clear_cache(device);
-            nf::set_cache_limit(10, device);
             nf::r2c(buffer(0, 2), buffer_rfft(0, 2), {.record_and_share_workspace = true});
             nf::c2r(buffer_rfft(1), buffer(0), {.record_and_share_workspace = true});
             const auto workspace = m_buffer_rfft.subregion(Offset{2 * n_target_images});
             const auto n_plans_set = nf::set_workspace(device, workspace);
-            if (n_plans_set != 2) {
+            if (auto left = nf::workspace_left_to_allocate(device); n_plans_set == 0 or left > 0) {
                 Logger::warn(
-                    "Failed to set the FFT workspace. An new workspace will have to be allocated, "
-                    "possibly increasing the memory requirements significantly. Please report this. "
-                    "shape={}, workspace_left_to_allocate={}bytes, n_plans_set={}",
-                    shape, nf::workspace_left_to_allocate(device), n_plans_set);
+                    "Failed to set the FFT workspace. A new workspace will have to be allocated, possibly increasing the memory requirements significantly. Please report this. shape={}, workspace_left_to_allocate={}bytes, n_plans_set={}",
+                    shape, left, n_plans_set);
             }
         }
 
@@ -236,10 +231,17 @@ namespace qn {
                 break;
         }
 
-        Logger::info(
-            "first_average_shift={::.3f}, last_average_shift={::.3f}, max_shift={::.3f}, n_iter={}",
-            first_average_shift, last_average_shift, max_shifts, i
-        );
+        if (count == 1) {
+            Logger::info(
+                "average_shift={::.3f}, max_shift={::.3f}, n_iter={}",
+                first_average_shift, max_shifts, i
+            );
+        } else {
+            Logger::info(
+                "first_average_shift={::.3f}, last_average_shift={::.3f}, max_shift={::.3f}, n_iter={}",
+                first_average_shift, last_average_shift, max_shifts, i
+            );
+        }
     }
 
     void AlignmentCoarse::level_stage(
@@ -274,6 +276,7 @@ namespace qn {
                 true,
                 true
             ).second;
+            // Logger::trace("stage=[tilt={:.5f}, pitch={:.5f}deg] (zncc={:.10f})", p[0], p[1], zncc);
             return zncc;
         };
 
@@ -283,16 +286,18 @@ namespace qn {
         auto n_evaluations = i32{0};
 
         auto optimizer = Optimizer{};
-        if (options.tilt_search_range > 10.) {
+        if (options.n_global_search_evaluations > 0) {
             optimizer = Optimizer(NLOPT_GN_DIRECT_L, 2);
-            optimizer.set_max_number_of_evaluations(100); // this should be more than enough
+            optimizer.set_max_number_of_evaluations(options.n_global_search_evaluations);
             optimizer.set_bounds(tilt_range, pitch_range);
             optimizer.set_max_objective(eval);
             optimizer.optimize(parameters.data());
             n_evaluations += optimizer.n_evaluations();
+            tilt_range = parameters + Vec{-2., 2.};
+            pitch_range = parameters + Vec{-2., 2.};
         }
         optimizer = Optimizer(NLOPT_LN_SBPLX, 2);
-        optimizer.set_x_tolerance_abs(0.01);
+        optimizer.set_x_tolerance_abs(0.05);
         optimizer.set_bounds(tilt_range, pitch_range);
         optimizer.set_max_objective(eval);
         const f64 zncc = optimizer.optimize(parameters.data());
@@ -405,11 +410,11 @@ namespace qn {
             noa::iwise(iwise_shape, device, create_stacks);
         }
 
-        // if (s_debug_path) {
-        //     auto filename = *s_debug_path / "stretched_targets.mrc";
-        //     noa::write_image(buffer(1), filename, {.dtype = "f16"});
-        //     filename = *s_debug_path / "references.mrc";
-        //     noa::write_image(buffer(0), filename, {.dtype = "f16"});
+        // if (not Logger::s_debug_path.empty()) {
+        //     auto filename = Logger::s_debug_path / "stretched_targets.mrc";
+        //     noa::write_image(buffer(1), filename, {.dtype = "f32"});
+        //     filename = Logger::s_debug_path / "references.mrc";
+        //     noa::write_image(buffer(0), filename, {.dtype = "f32"});
         //     Logger::debug("{} saved", filename);
         // }
 
@@ -422,9 +427,9 @@ namespace qn {
         });
         nf::c2r(buffer_rfft(1), buffer(0), {.norm = nf::Norm::BACKWARD}); // centered xmap
 
-        // if (s_debug_path) {
-        //     auto filename = *s_debug_path / "xmap.mrc";
-        //     noa::write_image(buffer(0), filename, {.dtype = "f16"});
+        // if (not Logger::s_debug_path.empty()) {
+        //     auto filename = Logger::s_debug_path / "xmap.mrc";
+        //     noa::write_image(buffer(0), filename, {.dtype = "f32"});
         //     Logger::debug("{} saved", filename);
         // }
 
@@ -486,6 +491,9 @@ namespace qn {
                 const auto rhs_variance = rhs_sum_sqd - mask_sum * rhs_mean * rhs_mean;
                 const auto energy = std::sqrt(lhs_variance * rhs_variance);
                 if (energy >= 1e-6) {
+                    // The ZNCC can be very close to zero, which doesn't inspire confidence.
+                    // However, when testing with identical images, it correctly gives one.
+                    // On simulated data, it is also fairly accurate.
                     auto zncc = (static_cast<f64>(peak_value) - mask_sum * lhs_mean * rhs_mean) / energy;
                     average_zncc += zncc;
                 }

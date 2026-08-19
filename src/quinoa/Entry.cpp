@@ -104,6 +104,8 @@ namespace {
                     series.stack_file, metadata, {
                         .device = device,
                         .check_rotation = settings.alignment.coarse_check_rotation,
+                        .allow_90_and_flip_rotation_from_mdoc = settings.alignment.coarse_allow_90_and_flip_rotation_from_mdoc,
+                        .is_tilt_axis_from_mdoc = settings.alignment.coarse_is_tilt_axis_from_mdoc,
                         .fit_rotation_offset = settings.alignment.coarse_fit_rotation,
                         .fit_tilt_offset = settings.alignment.coarse_fit_tilt,
                         .fit_pitch_offset = settings.alignment.coarse_fit_pitch,

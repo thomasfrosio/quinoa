@@ -18,6 +18,8 @@ namespace fmt {
 namespace {
     using namespace qn;
 
+    constexpr f64 UNSPECIFIED_VALUE = std::numeric_limits<f64>::max();
+
     void sanitize_table_(const toml::table& table, const std::string& path = {}) {
         using namespace std::string_view_literals;
         constexpr std::array VALID_PATHS{
@@ -39,6 +41,7 @@ namespace {
             "preprocessing.exclude_stack_indices"sv,
             "alignment.coarse.run"sv,
             "alignment.coarse.check_rotation"sv,
+            "alignment.coarse.allow_90_and_flip_rotation_from_mdoc"sv,
             "alignment.coarse.fit_rotation"sv,
             "alignment.coarse.fit_tilt"sv,
             "alignment.coarse.fit_pitch"sv,
@@ -336,8 +339,6 @@ namespace {
     }
 
     auto parse_experiment_(const toml::table& table, const cxxopts::ParseResult& cl) -> Settings::Experiment {
-        constexpr f64 UNSPECIFIED_VALUE = std::numeric_limits<f64>::max();
-
         Settings::Experiment experiment;
 
         // These are marked as unspecified because the metadata will need to know if the user entered.
@@ -409,11 +410,13 @@ namespace {
         return preprocessing;
     }
 
-    auto parse_alignment_(const toml::table& table) -> Settings::Alignment {
+    auto parse_alignment_(const toml::table& table, f64 tilt_axis) -> Settings::Alignment {
         Settings::Alignment alignment;
 
         alignment.coarse_run = parse_value_("alignment.coarse.run", table, true);
         alignment.coarse_check_rotation = parse_value_("alignment.coarse.check_rotation", table, true);
+        alignment.coarse_allow_90_and_flip_rotation_from_mdoc = parse_value_("alignment.coarse.allow_90_and_flip_rotation_from_mdoc", table, false);
+        alignment.coarse_is_tilt_axis_from_mdoc = noa::allclose(UNSPECIFIED_VALUE, tilt_axis);
         alignment.coarse_fit_rotation = parse_value_("alignment.coarse.fit_rotation", table, true);
         alignment.coarse_fit_tilt = parse_value_("alignment.coarse.fit_tilt", table, true);
         alignment.coarse_fit_pitch = parse_value_("alignment.coarse.fit_pitch", table, true);
@@ -587,7 +590,7 @@ namespace qn {
             series = parse_data_(settings, cl);
             experiment = parse_experiment_(settings, cl);
             preprocessing = parse_preprocessing_(settings);
-            alignment = parse_alignment_(settings);
+            alignment = parse_alignment_(settings, experiment.tilt_axis);
             postprocessing = parse_postprocessing_(settings);
             compute = parse_compute_(settings, cl);
         } catch (...) {

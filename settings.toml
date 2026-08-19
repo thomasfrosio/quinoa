@@ -47,6 +47,7 @@ exclude_blank_views = true
 [alignment.coarse]
 run = false
 check_rotation = true
+allow_90_and_flip_rotation_from_mdoc = true
 fit_rotation = true
 fit_tilt = true
 fit_pitch = true
