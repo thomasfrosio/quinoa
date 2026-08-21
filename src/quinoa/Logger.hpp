@@ -45,18 +45,6 @@ namespace qn {
             s_logger.trace(fmt::runtime(fmt), std::forward<Args>(args)...);
         }
 
-        template<typename... Args>
-        static auto warn_once(noa::details::FormatWithLocation<std::type_identity_t<Args>...> fmt, Args&&... args) -> bool {
-            static std::vector<std::string> hashes;
-            std::string hash = fmt::format("{}:{}", fmt.location.file_name(), fmt.location.line());
-            if (std::ranges::find(hashes, hash) == hashes.end()) {
-                hashes.push_back(std::move(hash));
-                return false;
-            }
-            s_logger.error(fmt::runtime(fmt.fmt), std::forward<Args>(args)...);
-            return true;
-        }
-
     public:
         struct ScopeTimer {
             noa::Timer timer{};

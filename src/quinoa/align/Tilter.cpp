@@ -202,21 +202,25 @@ namespace qn {
         Vec<f64, 3>& angle_offsets,
         const FindAccurateImageRotationOptions& options
     ) {
-        auto timer = Logger::info_scope_time("Rotation offset");
+        auto timer = Logger::info_scope_time("Finding image rotation");
 
         const bool full_rotation = options.angle_range < 0 or options.angle_range >= 90.;
         const f64 initial_rotation_offset = full_rotation ? 0 : metadata[0].angles[0];
         f64 max_shift{};
+        bool warn{};
         for (auto& slice: metadata) {
             if (full_rotation) {
                 slice.angles[0] = 0.;
             } else if (not noa::allclose(initial_rotation_offset, slice.angles[0])) {
                 slice.angles[0] = initial_rotation_offset;
-                Logger::warn_once(
-                    "The rotation search algorithm is assuming a fixed tilt-axis, but the provided stack has images with different rotation offsets. To continue, the existing values will be overwritten with the rotation offset of the lowest tilt."
-                );
+                warn = true;
             }
             max_shift = std::max(max_shift, noa::max(slice.shifts));
+        }
+        if (warn) {
+            Logger::warn(
+                "The rotation search algorithm is assuming a fixed tilt-axis, but the provided stack has images with different rotation offsets. To continue, the existing values will be overwritten with the rotation offset of the lowest tilt."
+            );
         }
 
         // The projection kernel reduces the height dimension. To project the stack along any axis,
@@ -435,21 +439,25 @@ namespace qn {
             });
         }
 
-        auto t = Logger::info_scope_time("Rotation offset");
+        auto t = Logger::info_scope_time("Finding image rotation");
 
         // If the full range is searched, center on 0 degree.
         // In any case, make sure images share a common rotation.
         const bool full_rotation = options.angle_range < 0. or options.angle_range >= 90.;
         const f64 initial_rotation_offset = full_rotation ? 0. : metadata[0].angles[0];
+        bool warn{};
         for (auto& slice: metadata) {
             if (full_rotation) {
                 slice.angles[0] = 0.;
             } else if (not noa::allclose(initial_rotation_offset, slice.angles[0])) {
                 slice.angles[0] = initial_rotation_offset;
-                Logger::warn_once(
-                    "The rotation search algorithm is assuming a fixed tilt-axis, but the provided stack has images with different rotation offsets. To continue, the existing values will be overwritten with the rotation offset of the lowest tilt."
-                );
+                warn = true;
             }
+        }
+        if (warn) {
+            Logger::warn(
+                "The rotation search algorithm is assuming a fixed tilt-axis, but the provided stack has images with different rotation offsets. To continue, the existing values will be overwritten with the rotation offset of the lowest tilt."
+            );
         }
 
         // Define the angular range around the current tilt-axis
@@ -558,7 +566,7 @@ namespace qn {
         Metadata::Stack& metadata,
         const FindImageShiftsOptions& options
     ) {
-        auto timer = Logger::info_scope_time("Coarse shift alignment");
+        auto timer = Logger::info_scope_time("Finding image shifts");
         Logger::trace(
             "  device={}\n"
             "  stretching={}\n"
@@ -627,7 +635,7 @@ namespace qn {
         Vec<f64, 3>& angle_offsets,
         const FindSpecimenLevelOptions& options
     ) {
-        auto timer = Logger::info_scope_time("Leveling the stage");
+        auto timer = Logger::info_scope_time("Finding specimen level");
         Logger::trace(
             "  tilt_search_range=+-{:.2f}deg\n"
             "  pitch_search_range=+-{:.2f}deg\n"
