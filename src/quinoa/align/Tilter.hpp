@@ -8,7 +8,7 @@
 #include "quinoa/align/CommonFOV.hpp"
 
 namespace qn {
-    struct AlignShiftsOptions {
+    struct FindImageShiftsOptions {
         bool cosine_stretch{};
         i32 update_count{1}; // negative means until convergence
 
@@ -17,7 +17,14 @@ namespace qn {
         f64 max_shift_percent{1};
     };
 
-    struct LevelStageOptions {
+    struct FindImageRotationOptions {
+        bool accurate_fov{true}; // false triggers faster algorithm with inaccurate FOV
+        f64 angle_range{-1}; // negative means full rotation (+-90 degrees)
+        f64 angle_step{1}; // only used if accurate_fov=false
+        const Path* output_directory{};
+    };
+
+    struct FindSpecimenLevelOptions {
         f64 tilt_search_range{};
         f64 pitch_search_range{};
         i32 n_global_search_evaluations{};
@@ -27,25 +34,42 @@ namespace qn {
         f64 max_shift_percent{1};
     };
 
-    class AlignmentCoarse {
+    struct FindAccurateImageRotationOptions {
+        f64 angle_range{};
+        const Path* output_directory{};
+    };
+
+    class Tilter {
     public:
-        AlignmentCoarse() = default;
-        AlignmentCoarse(
-            const Shape4& shape,
-            Device device
-        );
-
-        void align_shifts(
-            const View<f32>& stack,
+        static void find_accurate_image_rotation(
+            const View<const f32>& stack,
             Metadata::Stack& metadata,
-            const AlignShiftsOptions& options
+            Vec<f64, 3>& angle_offsets,
+            const FindAccurateImageRotationOptions& parameters
         );
 
-        void level_stage(
+    public:
+        Tilter() = default;
+        Tilter(const Shape4& shape, Device device);
+
+        void find_image_rotation(
             const View<f32>& stack,
             Metadata::Stack& metadata,
             Vec<f64, 3>& angle_offsets,
-            const LevelStageOptions& options
+            const FindImageRotationOptions& options
+        );
+
+        void find_image_shifts(
+            const View<f32>& stack,
+            Metadata::Stack& metadata,
+            const FindImageShiftsOptions& options
+        );
+
+        void find_specimen_level(
+            const View<f32>& stack,
+            Metadata::Stack& metadata,
+            Vec<f64, 3>& angle_offsets,
+            const FindSpecimenLevelOptions& options
         );
 
     private:
@@ -81,6 +105,7 @@ namespace qn {
         Array<Vec<f32, 4>> m_plane_coefficients;
         Array<Mat<f32, 2, 4>> m_projection_matrices;
         Array<ParallelogramMask> m_fov_masks;
+        Array<Mat<f32, 2, 3>> m_shift_matrices;
 
         Array<f32> m_xmap_centered;
         Array<Vec<f32, 2>> m_peak_shifts;

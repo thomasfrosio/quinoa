@@ -1,14 +1,65 @@
+#include <noa/Runtime.hpp>
 #include <noa/Signal.hpp>
 #include <noa/FFT.hpp>
 
 #include "quinoa/Logger.hpp"
 #include "quinoa/Optimizer.hpp"
 #include "quinoa/Utilities.hpp"
+#include "quinoa/Plot.hpp"
+#include "quinoa/GridSearch.hpp"
 
-#include "quinoa/align/Coarse.hpp"
+#include "quinoa/align/Tilter.hpp"
+#include "quinoa/align/CommonFOV.hpp"
 
 namespace {
     using namespace qn;
+
+    struct ReduceHeight {
+        using span_t = SpanContiguous<const f32, 3>;
+        using interp_t = nx::Interpolator<2, nx::Interp::LINEAR, noa::Border::ZERO, span_t>;
+
+        interp_t images{};
+        SpanContiguous<const Mat<f32, 2, 3>> matrices{};
+        SpanContiguous<const ParallelogramMask> fov_masks{};
+
+        NOA_HD void operator()(isize i, isize h, isize w, f32& sum) const {
+            const auto image_coordinates = matrices[i] * Vec<f32, 3>::from_values(h, w, 1);
+            const auto mask = fov_masks[i](image_coordinates);
+
+            f32 value{};
+            if (mask > 1e-6f)
+                value = images.interpolate_at(image_coordinates, i);
+
+            sum += value * mask;
+        }
+
+        NOA_HD static void join(f32 isum, f32& sum) { sum += isum; }
+    };
+
+    constexpr auto zero_normalized_cross_correlation(auto lhs, auto rhs) {
+        f64 sum_lhs{};
+        f64 sum_rhs{};
+        f64 sum_lhs_lhs{};
+        f64 sum_rhs_rhs{};
+        f64 sum_lhs_rhs{};
+        for (isize i{}; i < lhs.ssize(); ++i) {
+            const auto lhs_ = static_cast<f64>(lhs[i]);
+            const auto rhs_ = static_cast<f64>(rhs[i]);
+            sum_lhs += lhs_;
+            sum_rhs += rhs_;
+            sum_lhs_lhs += lhs_ * lhs_;
+            sum_rhs_rhs += rhs_ * rhs_;
+            sum_lhs_rhs += lhs_ * rhs_;
+        }
+        const f64 count = static_cast<f64>(lhs.ssize());
+        const f64 denominator_lhs = sum_lhs_lhs - sum_lhs * sum_lhs / count;
+        const f64 denominator_rhs = sum_rhs_rhs - sum_rhs * sum_rhs / count;
+        f64 denominator = denominator_lhs * denominator_rhs;
+        if (denominator <= 0.0)
+            return 0.0;
+        const f64 numerator = sum_lhs_rhs - sum_lhs * sum_rhs / count;
+        return numerator / std::sqrt(denominator);
+    }
 
     constexpr auto get_indices(i32 idx_target, i32 index_lowest_tilt) {
         if (idx_target >= index_lowest_tilt)
@@ -118,10 +169,195 @@ namespace {
         }
         return mean;
     }
+
+    struct ShiftAlignAndMask {
+        using input_type = SpanContiguous<const f32, 3, i32>;
+        nx::Interpolator<2, nx::Interp::LINEAR, noa::Border::ZERO, input_type> input{};
+        SpanContiguous<f32, 3, i32> output{};
+        SpanContiguous<const Mat<f32, 2, 3>, 1, i32> xforms{};
+        nx::DrawEllipse<2, f32, true> ellipse{};
+
+        NOA_HD void operator()(i32 i, i32 y, i32 x) const {
+            const auto output_coordinates = Vec<f32, 2>::from_values(y, x);
+            const auto input_coordinates = xforms[i] * output_coordinates.push_back(1);
+            const auto mask = ellipse.draw_at(output_coordinates);
+            output(i, y, x) = input.interpolate_at(input_coordinates, i) * mask;
+        }
+    };
+
+    struct PowerSum {
+        NOA_HD void operator()(c32 i, c32& r) const { r += i; }
+        NOA_HD void join(c32 r, c32& j) const { j += r; }
+        NOA_HD void post(c32 reduced, f32& power_sum) const {
+            auto sum = noa::abs(reduced);
+            power_sum = sum * sum;
+        }
+    };
 }
 
 namespace qn {
-    AlignmentCoarse::AlignmentCoarse(
+    void Tilter::find_accurate_image_rotation(
+        const View<const f32>& stack,
+        Metadata::Stack& metadata,
+        Vec<f64, 3>& angle_offsets,
+        const FindAccurateImageRotationOptions& options
+    ) {
+        auto timer = Logger::info_scope_time("Rotation offset");
+
+        const bool full_rotation = options.angle_range < 0 or options.angle_range >= 90.;
+        const f64 initial_rotation_offset = full_rotation ? 0 : metadata[0].angles[0];
+        f64 max_shift{};
+        for (auto& slice: metadata) {
+            if (full_rotation) {
+                slice.angles[0] = 0.;
+            } else if (not noa::allclose(initial_rotation_offset, slice.angles[0])) {
+                slice.angles[0] = initial_rotation_offset;
+                Logger::warn_once(
+                    "The rotation search algorithm is assuming a fixed tilt-axis, but the provided stack has images with different rotation offsets. To continue, the existing values will be overwritten with the rotation offset of the lowest tilt."
+                );
+            }
+            max_shift = std::max(max_shift, noa::max(slice.shifts));
+        }
+
+        // The projection kernel reduces the height dimension. To project the stack along any axis,
+        // we rotate and center it so that the projection axis is perpendicular to the height.
+        // To make sure the image doesn't go out-of-bound when rotating, we need to zero-pad appropriately.
+        const auto image_shape = stack.shape().filter(2, 3);
+        const auto n_images = stack.shape()[0];
+        const auto line_size = static_cast<isize>(std::sqrt(2) * static_cast<f64>(noa::max(image_shape)) + max_shift);
+
+        const auto image_padded_shape = Shape{line_size, line_size};
+        const auto image_padded_center = (image_padded_shape.vec / 2).as<f64>();
+        const auto image_center = (image_shape.vec / 2).as<f64>();
+
+        // Allocate small dereferenceable buffers.
+        const auto device = stack.device();
+        const auto options_managed = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
+        const auto matrices = Array<Mat<f32, 2, 3>>(n_images, options_managed);
+        const auto fov_masks = Array<ParallelogramMask>(n_images, options_managed);
+        const auto lines = Array<f32>({n_images, 1, 1, line_size}, options_managed);
+
+        // Sort metadata in the same order as the stack.
+        auto meta = metadata;
+        meta.sort("index");
+        const auto pivot = meta.find_lowest_tilt_index();
+
+        // The function to maximize.
+        auto znccs = std::vector<Vec<f64, 2>>{}; // diagnostics
+        auto eval = [&](u32 n, const f64* rotation_offset, f64* g) {
+            check(n == 1 and g == nullptr);
+
+            // Set to the current rotation.
+            for (auto& slice: meta)
+                slice.angles[0] = *rotation_offset;
+
+            // Set the image matrices.
+            for (auto&& [image, matrix]: noa::zip(meta, matrices.span_1d())) {
+                const auto rotation = noa::deg2rad(image.angles[0]);
+                matrix = (
+                    nx::translate(image_padded_center) *
+                    nx::rotate<true>(noa::deg2rad(-90.)) * // align tilt-axis on x-axis
+                    nx::rotate<true>(-rotation) *
+                    nx::translate(-image_center - image.shifts)
+                ).inverse().pop_back().as<f32>();
+            }
+
+            // Set the FOV masks.
+            auto fov = CommonFOV{};
+            fov.set_geometry(image_shape, meta);
+            fov.set_fovs(meta, fov_masks.span_1d(), {
+                .smooth_edge_percent = 0.1,
+                .add_shifts = true, // unaligned image
+            });
+
+            // Compute the lines.
+            using interp_t = ReduceHeight::interp_t;
+            noa::reduce_axes_iwise(
+                image_padded_shape.push_front(n_images), device, f32{0}, lines.permute({1, 0, 2, 3}),
+                ReduceHeight{
+                    .images = interp_t(stack.span_contiguous<const f32, 3>(), image_shape),
+                    .matrices = matrices.span_1d(),
+                    .fov_masks = fov_masks.span_1d(),
+                });
+
+            // Cross-correlation.
+            f64 zncc{};
+            const auto reference = lines.eval().span().subregion(pivot).as_1d();
+            const auto targets = lines.span().filter(0, 3).as_contiguous();
+            for (isize i{}; i < n_images; ++i)
+                if (i != pivot)
+                    zncc += zero_normalized_cross_correlation(reference, targets[i]);
+            zncc /= static_cast<f64>(n_images - 1);
+
+            znccs.push_back({*rotation_offset, zncc}); // diagnostics
+            return zncc;
+        };
+
+        f64 best_ncc{-1};
+        f64 best_rotation_offset{initial_rotation_offset};
+        i32 n_evaluations{};
+
+        if (full_rotation) {
+            Logger::trace(
+                "rotation_offset:\n"
+                "  device={}\n"
+                "  mode=accurate-fov (grid-search)\n"
+                "  line_size={} (image_shape={}, max_shift={:.2f})\n"
+                "  angle_range=90.00deg (initial_rotation_offset=0.00)",
+                device, line_size, image_shape, max_shift
+            );
+
+            auto grid_search = GridSearch<f64>({.start = -90., .end = 90., .step = -options.angle_range});
+            grid_search.for_each([&](f64 rotation_offset) {
+                auto ncc = eval(1, &rotation_offset, nullptr);
+                if (ncc > best_ncc) {
+                    best_ncc = ncc;
+                    best_rotation_offset = rotation_offset;
+                }
+            });
+            n_evaluations = static_cast<i32>(grid_search.size());
+        } else {
+            Logger::trace(
+                "rotation_offset:\n"
+                "  device={}\n"
+                "  mode=accurate-fov (local-optimizer)\n"
+                "  line_size={} (image_shape={}, max_shift={:.2f})\n"
+                "  angle_range={:.2f}deg (initial_rotation_offset={:.2f})",
+                device, line_size, image_shape, max_shift,
+                options.angle_range, initial_rotation_offset
+            );
+            auto optimizer = Optimizer(NLOPT_LN_SBPLX, 1);
+            optimizer.set_x_tolerance_abs(0.005);
+            optimizer.set_bounds(
+                initial_rotation_offset - options.angle_range,
+                initial_rotation_offset + options.angle_range
+            );
+            optimizer.set_max_objective(eval);
+            best_ncc = optimizer.optimize(&best_rotation_offset);
+            n_evaluations += optimizer.n_evaluations();
+        }
+
+        angle_offsets[0] += best_rotation_offset - initial_rotation_offset;
+        Logger::info(
+            "rotation_offset={:.3f}deg (increment={:+.3f}, zncc={:.4f}, n_iter={}), or equivalently {:.3f}deg",
+            best_rotation_offset, angle_offsets[0], best_ncc, n_evaluations,
+            Metadata::Image::to_angle_range(best_rotation_offset + 180)
+        );
+        save_plot_xy(
+            znccs | stdv::transform([](auto& e) { return e[0]; }),
+            znccs | stdv::transform([](auto& e) { return e[1]; }),
+            *options.output_directory / "rotation_offset.txt", {
+                .title = "Rotation offset search",
+                .x_name = "Rotation offset (degrees)",
+                .y_name = "ZNCC",
+            });
+
+        // Update metadata with the new rotation.
+        for (auto& slice: metadata)
+            slice.angles[0] = Metadata::Image::to_angle_range(best_rotation_offset);
+    }
+
+    Tilter::Tilter(
         const Shape4& shape,
         Device device
     ) {
@@ -133,7 +369,7 @@ namespace qn {
         // This alignment is meant for low-resolution images (<=2Kx2K images), so a bigger workspace should be fine.
         const auto n_total_images = shape[0];
         const auto n_target_images = shape[0] - 1;
-        const auto buffer_shape = shape.set<0>(n_total_images * 4);
+        const auto buffer_shape = shape.set<0>(n_total_images * 4); // TODO shouldn't it be n_target_images * 4?
 
         // Use device-only memory (which seems faster than managed memory) for the big buffer, if possible.
         const auto n_bytes_to_allocate = static_cast<usize>(buffer_shape.rfft().n_elements()) * sizeof(c32);
@@ -148,6 +384,7 @@ namespace qn {
         m_fov_masks = Array<ParallelogramMask>(n_target_images, {.device = device, .allocator = Allocator::MANAGED});
         m_plane_coefficients = noa::like<Vec<f32, 4>>(m_fov_masks);
         m_projection_matrices = noa::like<Mat<f32, 2, 4>>(m_fov_masks);
+        m_shift_matrices = Array<Mat<f32, 2, 3>>(n_total_images, m_fov_masks.options());
 
         m_xmap_centered = Array<f32>({n_target_images, 1, 64, 64}, m_fov_masks.options());
         m_peak_shifts = noa::like<Vec<f32, 2>>(m_fov_masks);
@@ -160,26 +397,166 @@ namespace qn {
 
         // Prepare FFT plans and set the workspace.
         if (device.is_gpu()) {
+            // eval_
             nf::r2c(buffer(0, 2), buffer_rfft(0, 2), {.record_and_share_workspace = true});
             nf::c2r(buffer_rfft(1), buffer(0), {.record_and_share_workspace = true});
+
+            // find_image_rotation
+            nf::r2c(
+                m_buffer.subregion(Slice{0, n_total_images}),
+                m_buffer_rfft.view().subregion(Slice{0, n_total_images}),
+                {.record_and_share_workspace = true}
+            );
+
             const auto workspace = m_buffer_rfft.subregion(Offset{2 * n_target_images});
             const auto n_plans_set = nf::set_workspace(device, workspace);
             if (auto left = nf::workspace_left_to_allocate(device); n_plans_set == 0 or left > 0) {
                 Logger::warn(
-                    "Failed to set the FFT workspace. A new workspace will have to be allocated, possibly increasing the memory requirements significantly. Please report this. shape={}, workspace_left_to_allocate={}bytes, n_plans_set={}",
+                    "Failed to set the FFT workspace. A new workspace will have to be allocated, likely increasing the memory requirements substantially. Please report this. shape={}, workspace_left_to_allocate={}bytes, n_plans_set={}",
                     shape, left, n_plans_set);
             }
         }
 
         const auto allocated = Allocator::bytes_currently_allocated(device) - allocated_start;
-        Logger::trace("AlignmentCoarse() allocated {:.2f}GB on {} ({})",
+        Logger::trace("Tilter() allocated {:.2f}GB on {} ({})",
                       static_cast<f64>(allocated) * 1e-9, m_buffer.device(), m_buffer.allocator());
     }
 
-    void AlignmentCoarse::align_shifts(
+    void Tilter::find_image_rotation(
         const View<f32>& stack,
         Metadata::Stack& metadata,
-        const AlignShiftsOptions& options
+        Vec<f64, 3>& angle_offsets,
+        const FindImageRotationOptions& options
+    ) {
+        if (options.accurate_fov) {
+            return find_accurate_image_rotation(stack, metadata, angle_offsets, {
+                .angle_range = options.angle_range,
+                .output_directory = options.output_directory,
+            });
+        }
+
+        auto t = Logger::info_scope_time("Rotation offset");
+
+        // If the full range is searched, center on 0 degree.
+        // In any case, make sure images share a common rotation.
+        const bool full_rotation = options.angle_range < 0. or options.angle_range >= 90.;
+        const f64 initial_rotation_offset = full_rotation ? 0. : metadata[0].angles[0];
+        for (auto& slice: metadata) {
+            if (full_rotation) {
+                slice.angles[0] = 0.;
+            } else if (not noa::allclose(initial_rotation_offset, slice.angles[0])) {
+                slice.angles[0] = initial_rotation_offset;
+                Logger::warn_once(
+                    "The rotation search algorithm is assuming a fixed tilt-axis, but the provided stack has images with different rotation offsets. To continue, the existing values will be overwritten with the rotation offset of the lowest tilt."
+                );
+            }
+        }
+
+        // Define the angular range around the current tilt-axis
+        const auto angle_pivot = initial_rotation_offset + 90.; // polar range is centered on the corresponding line
+        const auto angle_start = angle_pivot - options.angle_range;
+        const auto angle_end = angle_pivot + options.angle_range;
+        const auto n_lines = static_cast<isize>(std::round(
+            (angle_end - angle_start + options.angle_step) / options.angle_step));
+        Logger::trace(
+            "rotation_offset:\n"
+            "  device={}\n"
+            "  mode=power-sum\n"
+            "  line_size={}\n"
+            "  n_lines={} (range={:.2f}deg, step={:.2f}deg)\n"
+            "  initial_rotation_offset={:.2f}",
+            stack.device(), stack.shape()[3] / 2 + 1,
+            n_lines, options.angle_range, options.angle_step,
+            initial_rotation_offset
+        );
+
+        // Credit to Marten Chaillet (and EMAN2): https://github.com/teamtomo/teamtomo/pull/105.
+        // This is essentially the same approach, except the spectrum2polar call that is more performant and accurate
+        // to what they are doing in torch. The only issue with this method is that the FOV changes due to the different
+        // tilt-axes is not explicitly handed (hence the find_accurate_image_rotation). The initial elliptical mask to
+        // focus on the center of the FOV should help. Compared to find_accurate_image_rotation, which handles the FOV,
+        // the results are very similar but this is much faster (x10-100 depending on the angle range).
+
+        const auto input = stack.span_contiguous().as<const f32, 3, i32>();
+        const auto n_images = metadata.ssize();
+        const auto aligned_stack = m_buffer.subregion(Slice{0, n_images});
+        const auto aligned_stack_rfft = m_buffer_rfft.view().subregion(Slice{0, n_images});
+
+        // Shift-align the stack, and add a mask to focus on the center and reduce the changes in the FOV.
+        // Since we mask towards zero, images should be mean normalized already.
+        const auto shape_2d = input.shape().pop_front();
+        for (auto&& [image, inverse_matrix]: noa::zip(metadata, m_shift_matrices.span_1d()))
+            inverse_matrix = nx::translate(image.shifts).pop_back().as<f32>();
+
+        const auto center = (shape_2d.vec / 2).as<f64>();
+        using input_span_t = SpanContiguous<const f32, 3, i32>;
+        using interpolator_t = nx::Interpolator<2, nx::Interp::LINEAR, noa::Border::ZERO, input_span_t>;
+        noa::iwise(input.shape(), aligned_stack.device(), ShiftAlignAndMask{
+            .input = interpolator_t(input, shape_2d),
+            .output = aligned_stack.span_contiguous().as<f32, 3, i32>(),
+            .xforms = m_shift_matrices.span_1d().as_index<i32>(),
+            .ellipse = nx::Ellipse{.center = center, .radius = center / 2, .smoothness = min(center / 2)}.draw<f32>(),
+        });
+
+        // Compute the sum of the spectra and save the power spectrum of that sum.
+        nf::r2c(aligned_stack, aligned_stack_rfft); // inplace
+        const auto image_shape = aligned_stack.shape().set<0>(1);
+        const auto image_shape_rfft = image_shape.rfft();
+        const auto spectral_sum_power = m_buffer_rfft.view().reinterpret_as<f32>() // get contiguous buffer
+            .subregion(Offset{n_images}) // offset to unused region
+            .flat(0).subregion(Slice{0, image_shape_rfft.n_elements()}) // select slice
+            .reshape(image_shape_rfft);
+        noa::reduce_axes_ewise(aligned_stack_rfft, c32{}, spectral_sum_power, PowerSum{}); // (n,1,h,w/2+1)->(1,1,h,w/2+1)
+
+        // Compute the lines.
+        const auto line_size = image_shape_rfft[3];
+        const auto line_pitch = noa::next_multiple_of(line_size, 256);
+        const auto lines =  m_buffer_rfft.view().reinterpret_as<f32>() // get contiguous buffer
+            .flat(0).subregion(Slice{0, n_lines * line_pitch}) // keep lines well aligned
+            .reshape({1, 1, n_lines, line_pitch})
+            .subregion(Ellipsis{}, Slice{0, line_size});
+        nx::spectrum2polar<"h2fc">(spectral_sum_power, image_shape, lines, {
+            .phi_range = noa::Linspace{
+                .start = noa::deg2rad(angle_start),
+                .stop = noa::deg2rad(angle_end),
+                .endpoint = true,
+            },
+            .interp = nx::Interp::LINEAR,
+        });
+
+        // Compute the sum of each line.
+        auto sums = Array<f32>(n_lines, {.device = lines.device(), .allocator = Allocator::MANAGED});
+        noa::reduce_axes_ewise(lines, f32{}, sums.flat(2), noa::ReduceSum{}); // (1,1,n,w/2+1)->(1,1,n,1)
+        sums = sums.reinterpret_as_cpu();
+
+        // The common line should be the line with the highest sum.
+        const auto offset = noa::argmax(sums).second;
+        const auto common_line_angle = angle_start + static_cast<f64>(offset) * options.angle_step;
+        const auto new_rotation_offset = common_line_angle - 90.;
+
+        angle_offsets[0] += new_rotation_offset - initial_rotation_offset;
+        Logger::info(
+            "rotation_offset={:.3f}deg (increment={:+.3f}), or equivalently {:.3f}deg",
+            new_rotation_offset, angle_offsets[0],
+            Metadata::Image::to_angle_range(new_rotation_offset + 180)
+        );
+        save_plot_xy(
+            noa::Linspace{.start = angle_start - 90, .stop = angle_end - 90, .endpoint = true}, sums.span_1d(),
+            *options.output_directory / "rotation_offset_fast.txt", {
+                .title = "Rotation offset search",
+                .x_name = "Rotation offset (degrees)",
+                .y_name = "Power Sum",
+            });
+
+        // Update metadata with the new rotation.
+        for (auto& slice: metadata)
+            slice.angles[0] = Metadata::Image::to_angle_range(new_rotation_offset);
+    }
+
+    void Tilter::find_image_shifts(
+        const View<f32>& stack,
+        Metadata::Stack& metadata,
+        const FindImageShiftsOptions& options
     ) {
         auto timer = Logger::info_scope_time("Coarse shift alignment");
         Logger::trace(
@@ -244,11 +621,11 @@ namespace qn {
         }
     }
 
-    void AlignmentCoarse::level_stage(
+    void Tilter::find_specimen_level(
         const View<f32>& stack,
         Metadata::Stack& metadata,
         Vec<f64, 3>& angle_offsets,
-        const LevelStageOptions& options
+        const FindSpecimenLevelOptions& options
     ) {
         auto timer = Logger::info_scope_time("Leveling the stage");
         Logger::trace(
@@ -315,7 +692,7 @@ namespace qn {
         );
     }
 
-    auto AlignmentCoarse::eval_(
+    auto Tilter::eval_(
         const View<f32>& stack,
         const Metadata::Stack& metadata,
         bool fov_mask,

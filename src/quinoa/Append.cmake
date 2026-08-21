@@ -41,20 +41,18 @@ set(QUINOA_SOURCES_UNIFIED
 if(NOT QN_CTF_ONLY)
     list(APPEND QUINOA_HEADERS
         src/quinoa/align/Align.hpp
-        src/quinoa/align/Coarse.hpp
+        src/quinoa/align/Tilter.hpp
         src/quinoa/align/CommonFOV.hpp
         src/quinoa/align/Projection.hpp
         src/quinoa/align/Reconstruct.hpp
-        src/quinoa/align/Rotation.hpp
         src/quinoa/align/Thickness.hpp
     )
 
     list(APPEND QUINOA_SOURCES_UNIFIED
         src/quinoa/align/Align.cpp
-        src/quinoa/align/Coarse.cpp
+        src/quinoa/align/Tilter.cpp
         src/quinoa/align/Projection.cpp
         src/quinoa/align/Reconstruct.cpp
-        src/quinoa/align/Rotation.cpp
         src/quinoa/align/Thickness.cpp
     )
 endif ()

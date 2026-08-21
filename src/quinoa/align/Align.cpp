@@ -1,17 +1,14 @@
 #include "quinoa/align/Align.hpp"
 
-#include "quinoa/align/Coarse.hpp"
+#include "quinoa/align/Tilter.hpp"
 #include "quinoa/align/Projection.hpp"
-#include "quinoa/align/Rotation.hpp"
 #include "quinoa/align/Thickness.hpp"
 #include "quinoa/align/Reconstruct.hpp"
 
 #include "quinoa/Logger.hpp"
 #include "quinoa/Stack.hpp"
 #include "quinoa/Optimizer.hpp"
-#include "quinoa/GridSearch.hpp"
 #include "quinoa/Plot.hpp"
-#include "quinoa/SplineGrid.hpp"
 
 namespace qn {
     void coarse_alignment(
@@ -37,7 +34,7 @@ namespace qn {
 
             // Signal processing after cropping:
             .bandpass{
-                .highpass_cutoff = 0.03, // FIXME use resolution2fftfreq with a min, check with rescale_min_size
+                .highpass_cutoff = 0.03,
                 .highpass_width = 0.03,
                 .lowpass_cutoff = 0.25,
                 .lowpass_width = 0.05,
@@ -58,7 +55,8 @@ namespace qn {
             nf::set_cache_limit(12, settings.device);
         }
 
-        auto aligner = AlignmentCoarse(tilt_series.shape(), tilt_series.device());
+        auto tilter = Tilter(tilt_series.shape(), tilt_series.device());
+        auto angle_offsets = Vec{0., 0., 0.};
 
         // We require the rotation angle from the mdoc, but we can check that this rotation matches the images.
         // In this case, do a quick shift alignment and search for the rotation offset across the full angle range.
@@ -68,7 +66,7 @@ namespace qn {
             auto metadata_check = metadata.stack;
 
             for (auto i: noa::irange<usize>(2)) {
-                aligner.align_shifts(tilt_series.view(), metadata_check, {
+                tilter.find_image_shifts(tilt_series.view(), metadata_check, {
                     .cosine_stretch = i > 0,
                     .update_count = 1,
                     .fov_mask = false,
@@ -76,12 +74,14 @@ namespace qn {
                     .max_shift_percent = 0.5,
                 });
 
-                constexpr auto ROTATION_RANGE = std::array{2., 1.};
-                find_rotation_offset(tilt_series.view(), metadata_check, {
-                    // TODO 1 degree step might be too much considering how expensive this step is.
-                    .angle_range = -ROTATION_RANGE[i], // negative means full range, with step=-angle_range degrees
+                constexpr auto ROTATION_STEP = std::array{0.25, 0.1};
+                tilter.find_image_rotation(tilt_series.view(), metadata_check, angle_offsets, {
+                    .accurate_fov = false,
+                    .angle_range = 90.,
+                    .angle_step = ROTATION_STEP[i],
                     .output_directory = &settings.output_directory,
                 });
+                angle_offsets = 0; // we don't care about the offsets here
             }
 
             const auto expected_rotation = Metadata::Image::to_angle_range(metadata.stack[0].angles[0]);
@@ -144,9 +144,8 @@ namespace qn {
         }
 
         // Coarse alignment.
-        auto angle_offsets = Vec{0., 0., 0.};
         for (auto i: noa::irange<usize>(4)) {
-            aligner.align_shifts(tilt_series.view(), metadata.stack, {
+            tilter.find_image_shifts(tilt_series.view(), metadata.stack, {
                 .cosine_stretch = i != 0,
                 .update_count = i >= 2 ? 5 : 10,
                 .fov_mask = i >= 2,
@@ -156,8 +155,10 @@ namespace qn {
 
             if (settings.fit_rotation_offset) {
                 constexpr auto ROTATION_RANGE = std::array{10., 5., 2., 1.};
-                find_rotation_offset(tilt_series.view(), metadata.stack, angle_offsets, {
+                tilter.find_image_rotation(tilt_series.view(), metadata.stack, angle_offsets, {
+                    .accurate_fov = i >= 2,
                     .angle_range = ROTATION_RANGE[i],
+                    .angle_step = 0.01,
                     .output_directory = &settings.output_directory,
                 });
             }
@@ -165,7 +166,7 @@ namespace qn {
             if (settings.fit_tilt_offset or settings.fit_pitch_offset) {
                 constexpr auto TILT_RANGE = std::array{20., 10., 2., 1.};
                 constexpr auto PITCH_RANGE = std::array{10., 5., 2., 1.};
-                aligner.level_stage(tilt_series.view(), metadata.stack, angle_offsets, {
+                tilter.find_specimen_level(tilt_series.view(), metadata.stack, angle_offsets, {
                     .tilt_search_range = not settings.fit_tilt_offset ? 0. : TILT_RANGE[i],
                     .pitch_search_range = not settings.fit_pitch_offset ? 0. : PITCH_RANGE[i],
                     .n_global_search_evaluations = 0, // initial global search doesn't seem necessary
@@ -180,7 +181,7 @@ namespace qn {
             //      are likely to blame and are very valuable.
         }
 
-        aligner.align_shifts(tilt_series.view(), metadata.stack, {
+        tilter.find_image_shifts(tilt_series.view(), metadata.stack, {
             .cosine_stretch = true,
             .update_count = 15,
             .fov_mask = true,
@@ -318,7 +319,7 @@ namespace qn {
             });
 
             if (settings.fit_rotation_offset) {
-                find_rotation_offset(tilt_series.view(), metadata.stack, angle_offsets, {
+                Tilter::find_accurate_image_rotation(tilt_series.view(), metadata.stack, angle_offsets, {
                     .angle_range = 4,
                     .output_directory = &settings.output_directory,
                 });
