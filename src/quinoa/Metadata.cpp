@@ -606,11 +606,12 @@ namespace qn {
                 ++index_file;
             }
             const auto rotation_matrix = nx::rotate(noa::deg2rad(-image.angles[0]));
-            const auto imod_shifts = rotation_matrix * (-image.shifts + center_offset) - center_offset;
+            const auto imod_shifts = rotation_matrix * (-image.shifts - center_offset) + center_offset;
             fmt::format_to(
                 std::back_inserter(buffer),
                 "{:.5f} {:>8.5f} {:>8.5f} {:>8.5f}  {:>10.5f} {:>10.5f}\n", // A11 A12 A21 A22 DX DY
-                rotation_matrix[0][0], rotation_matrix[1][0], rotation_matrix[0][1], rotation_matrix[1][1],
+                rotation_matrix[0][0], rotation_matrix[1][0],
+                rotation_matrix[0][1], rotation_matrix[1][1],
                 imod_shifts[1], imod_shifts[0]
             );
             ++index_file;
