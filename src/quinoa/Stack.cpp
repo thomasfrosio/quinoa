@@ -181,6 +181,7 @@ namespace {
 
 namespace qn {
     thread_local Array<std::byte> StackLoader::s_input_stack{};
+    thread_local Path StackLoader::s_input_stack_path{};
     thread_local noa::io::DataType StackLoader::s_input_stack_dtype{};
 
     auto StackLoader::register_input_stack(const Path& filename) -> Pair<Shape2, Vec<f64, 2>> {
@@ -227,6 +228,9 @@ namespace qn {
 
         auto input_stack = s_input_stack.view().subregion(Ellipsis{}, Slice{0, n_bytes}).reshape(type_erased_shape);
         file.read_all(input_stack.span_1d(), s_input_stack_dtype, {.n_threads = n_threads});
+
+        // Save the path to check if future files match the registered stack.
+        s_input_stack_path = file.path(); // user expanded
 
         return Pair{file_shape.filter(2, 3), file.spacing().pop_front()};
     }
@@ -307,7 +311,7 @@ namespace qn {
         // Read the slice.
         // We use an intermediary buffer, creating an extra copy, but this is to keep things contiguous
         // when reading from the file or register, and to not have to rely on unified memory.
-        if (m_parameters.use_stack_register and not s_input_stack.is_empty()) {
+        if (m_parameters.use_stack_register) {
             const auto& [h, w] = m_input_slice_shape;
             const auto stack_shape = Shape4{m_file_slice_count, 1, h, w * s_input_stack_dtype.n_bytes(1)};
             auto input_stack = s_input_stack.view().subregion(Ellipsis{}, Slice{0, stack_shape.n_elements()}).reshape(stack_shape);
@@ -416,8 +420,7 @@ namespace qn {
         auto file_shape = m_file.shape();
         if (file_shape[0] == 1 and file_shape[1] > 1) {
             Logger::warn(
-                "{}. A tilt-series was expected, but the image file encodes a volume. To continue, we will assume "
-                "the file metadata is not encoded properly and will interpret this volume as a stack of 2d images",
+                "{}. A tilt-series was expected, but the image file encodes a volume. To continue, we will assume the file metadata is not encoded properly and will interpret this volume as a stack of 2d images",
                 m_file.path()
             );
             std::swap(file_shape[0], file_shape[1]);
@@ -430,9 +433,10 @@ namespace qn {
         m_input_slice_shape = file_shape.filter(2, 3);
         m_input_spacing = m_file.spacing().pop_front().as<f64>();
 
-        // Assume the stack is in the register.
-        if (m_parameters.use_stack_register and not s_input_stack.is_empty())
-            m_file.close();
+        if (m_parameters.use_stack_register and m_file.path() == s_input_stack_path)
+            m_file.close(); // the stack is in the register, we can close the file
+        else
+            m_parameters.use_stack_register = false; // we can't use the register
 
         // Fourier cropping parameters.
         const auto target_spacing = Vec<f64, 2>::from_value(m_parameters.rescale_target_resolution / 2);

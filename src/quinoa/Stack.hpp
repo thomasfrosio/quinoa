@@ -79,6 +79,7 @@ namespace qn {
 
     private:
         static thread_local Array<std::byte> s_input_stack; // register the input stack
+        static thread_local Path s_input_stack_path;
         static thread_local noa::io::DataType s_input_stack_dtype;
 
         ni::ImageFile m_file{};
