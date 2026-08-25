@@ -45,7 +45,7 @@ namespace {
     /// \param target_min_size          Minimum tolerable size. It is used to ensure a minimum output.cropped_shape.
     /// \param target_max_size          Maximum tolerable size. It is used to ensure a maximum output.cropped_shape.
     auto fourier_crop_dimensions(
-        Shape2 current_shape,
+        const Shape2& current_shape,
         Vec<f64, 2> current_spacing,
         Vec<f64, 2> target_spacing,
         f64 maximum_relative_error = 5e-4,
@@ -93,7 +93,8 @@ namespace {
                     // We found a good enough solution.
                     best_size = i_size;
                     break;
-                } else if (relative_error < best_error) {
+                }
+                if (relative_error < best_error) {
                     // We found a better solution.
                     best_error = relative_error;
                     best_size = i_size;
@@ -105,30 +106,41 @@ namespace {
             }
             return best_size;
         };
-        current_shape[0] = pad_to_align_cutoff(current_shape[0], current_spacing[0], target_spacing[0]);
-        current_shape[1] = pad_to_align_cutoff(current_shape[1], current_spacing[1], target_spacing[1]);
+        const auto padded_shape = Shape2{
+            pad_to_align_cutoff(current_shape[0], current_spacing[0], target_spacing[0]),
+            pad_to_align_cutoff(current_shape[1], current_spacing[1], target_spacing[1]),
+        };
+        const auto padded_shape_f64 = padded_shape.vec.as<f64>();
 
         // Get Fourier cropped shape.
-        const auto current_shape_f64 = current_shape.vec.as<f64>();
-        auto new_shape_f64 = current_shape_f64 * current_spacing / target_spacing;
-
         // Round to the nearest integer (this is where we crop).
-        // We'll need to recompute the actual frequency after rounding, but of course,
-        // this new frequency should be within a "maximum_relative_error" from the target spacing.
-        new_shape_f64 = noa::round(new_shape_f64);
-        const auto new_shape = Shape{new_shape_f64.as<isize>()};
-        const auto new_spacing = current_spacing * current_shape_f64 / new_shape_f64;
+        // This new spacing should be within a "maximum_relative_error" from the target spacing.
+        const auto cropped_shape_f64 = noa::round(padded_shape_f64 * current_spacing / target_spacing);
+        const auto cropped_shape = Shape2{cropped_shape_f64.as<isize>()};
+        const auto cropped_spacing = current_spacing * padded_shape_f64 / cropped_shape_f64;
 
-        // To preserve the image center, we may need to shift the Fourier-cropped image.
-        const auto current_center = (current_shape / 2).vec.as<f64>();
-        const auto new_center = (new_shape / 2).vec.as<f64>();
-        const auto current_center_rescaled = current_center * (current_spacing / new_spacing);
-        const auto shift_to_add = new_center - current_center_rescaled;
+        // Corrected shifts.
+        // If the initial padding was centered, this should be relative to the padded shape.
+        // However, we zero-pad on the right side only, so the FOV center is unchanged by the padding and
+        // we need to keep track of the shift relative to the original image.
+        const auto orig_center = (current_shape / 2).vec.as<f64>();
+        const auto cropped_center = (cropped_shape / 2).vec.as<f64>();
+        const auto mapped_orig_center = orig_center * (cropped_shape_f64 / padded_shape_f64);
+        const auto shift_to_add = cropped_center - mapped_orig_center;
+
+        // Note that this won't match IMOD's rescaling because IMOD uses the "read" center, (N-1)/2, like shows:
+        // const auto orig_center_imod = (current_shape.vec.as<f64>() - 1.0) / 2.0;
+        // const auto cropped_center_imod = (cropped_shape.vec.as<f64>() - 1.0) / 2.0;
+        // const auto mapped_orig_center = orig_center_imod * cropped_shape_f64 / padded_shape_f64;
+        // const auto base_shift = cropped_center_imod - mapped_orig_center;
+        // const auto red_fac = 1.0 / (cropped_shape_f64 / padded_shape_f64); // R
+        // const auto imod_dxy = -(red_fac - 1.0) / (2.0 * red_fac); // dxy = -(R - 1) / (2 * R) where R = N_pad / N_crop
+        // shift_to_add = base_shift + imod_dxy;
 
         return {
-            .padded_shape = current_shape,
-            .cropped_shape = new_shape,
-            .cropped_spacing = new_spacing,
+            .padded_shape = padded_shape,
+            .cropped_shape = cropped_shape,
+            .cropped_spacing = cropped_spacing,
             .rescale_shifts = shift_to_add,
         };
     }
