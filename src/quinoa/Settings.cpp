@@ -183,13 +183,17 @@ namespace {
 
     auto parse_interp(std::string_view name, const toml::table& table, const std::string& fallback) {
         const auto stack_interp = parse_value_(name, table, fallback);
+        if (stack_interp == "nearest")
+            return nx::Interp::NEAREST;
         if (stack_interp == "linear")
             return nx::Interp::LINEAR;
-        if (stack_interp == "cubic-bspline")
+        if (stack_interp == "cubic")
+            return nx::Interp::CUBIC;
+        if (stack_interp == "cubic-bspline" or stack_interp == "cubicbspline")
             return nx::Interp::CUBIC_BSPLINE;
-        if (stack_interp == "lanczos")
+        if (stack_interp == "lanczos" or stack_interp == "lanczos6")
             return nx::Interp::LANCZOS6;
-        panic(R"({} should be "linear" or "cubic-bspline", but got "{}")", name, stack_interp);
+        panic(R"({} should be "nearest", "linear", "cubic", "cubic-bspline", or "lanczos", but got "{}")", name, stack_interp);
     }
 
     auto parse_dtype(std::string_view name, const toml::table& table, const std::string& fallback) {
