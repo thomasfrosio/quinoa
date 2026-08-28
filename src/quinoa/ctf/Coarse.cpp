@@ -173,7 +173,7 @@ namespace {
             const auto phase_shift_range = noa::deg2rad(Vec{
                 std::max(0., phase_shift - phase_shift_offset[i]),
                 phase_shift + phase_shift_offset[i],
-                1. // FIXME 5 or 10
+                1. // TODO 5 or 10?
             });
 
             best_ncc = coarse_grid_search_(

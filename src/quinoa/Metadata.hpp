@@ -244,6 +244,8 @@ namespace qn {
                 f64 ignore_angle_below_magnitude = 0.05
             ) const -> bool;
 
+            [[nodiscard]] auto has_single_rotation(f64 tolerance = 0.005) const -> bool;
+
         public: // Range support
             using container = std::vector<Image>;
             using const_iterator = container::const_iterator;

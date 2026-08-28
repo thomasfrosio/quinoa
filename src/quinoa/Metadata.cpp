@@ -843,4 +843,11 @@ namespace qn {
         }
         return false;
     }
+
+    auto Metadata::Stack::has_single_rotation(f64 tolerance) const -> bool {
+        for (auto& image: images)
+            if (not noa::allclose(image.angles[0], tolerance))
+                return false;
+        return true;
+    }
 }

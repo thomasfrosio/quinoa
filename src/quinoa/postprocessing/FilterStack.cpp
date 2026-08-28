@@ -401,7 +401,7 @@ namespace qn {
         if (keep_spectra_on_device) {
             nf::r2c(m_images_padded, m_images_padded_rfft, {.norm = nf::Norm::FORWARD, .cache_plan = false});
             if (ramp_filter) {
-                // check(metadata.has_single_rotation()); FIXME update tilter too
+                check(metadata.has_single_rotation(), "TODO Varying rotation. Add per-image ramp filter.");
                 const auto normal_to_tilt_axis = nx::rotate(noa::deg2rad(-metadata[0].angles[0]))[1].as<f32>();
                 ns::filter_spectrum_2d<"h">(resize_buffer_rfft, resize_buffer_rfft, resize_buffer.shape(),
                     RampFilter(ramp_filter, normal_to_tilt_axis, fake_sirt_iterations)
