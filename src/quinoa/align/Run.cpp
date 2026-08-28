@@ -1,20 +1,21 @@
-#include "quinoa/align/Align.hpp"
-
-#include "quinoa/align/Tilter.hpp"
-#include "quinoa/align/Projection.hpp"
-#include "quinoa/align/Thickness.hpp"
-#include "quinoa/align/Reconstruct.hpp"
-
 #include "quinoa/Logger.hpp"
 #include "quinoa/Stack.hpp"
 #include "quinoa/Optimizer.hpp"
 #include "quinoa/Plot.hpp"
 
+#include "quinoa/align/Run.hpp"
+#include "quinoa/align/Tilter.hpp"
+#include "quinoa/align/Projection.hpp"
+#include "quinoa/align/Thickness.hpp"
+#include "quinoa/postprocessing/FilterStack.hpp"
+
 namespace qn {
     void coarse_alignment(
         const Path& stack_path,
         Metadata& metadata,
-        const CoarseAlignmentSettings& settings
+        Device device,
+        const Settings::Alignment::Coarse& settings,
+        const Path& output_directory
     ) {
         auto t0 = Logger::status_scope_time("Coarse alignment");
 
@@ -22,7 +23,7 @@ namespace qn {
         metadata.stack.sort("tilt").reset_indices();
 
         const auto tilt_series = load_stack(stack_path, metadata, {
-            .compute_device = settings.device,
+            .compute_device = device,
             .allocator = Allocator::DEFAULT_ASYNC,
 
             // Fourier cropping:
@@ -50,9 +51,9 @@ namespace qn {
         });
 
         // Clean up FFT state.
-        if (settings.device.is_gpu()) {
-            nf::clear_cache(settings.device);
-            nf::set_cache_limit(12, settings.device);
+        if (device.is_gpu()) {
+            nf::clear_cache(device);
+            nf::set_cache_limit(12, device);
         }
 
         auto tilter = Tilter(tilt_series.shape(), tilt_series.device());
@@ -79,7 +80,7 @@ namespace qn {
                     .accurate_fov = false,
                     .angle_range = 90.,
                     .angle_step = ROTATION_STEP[i],
-                    .output_directory = &settings.output_directory,
+                    .output_directory = &output_directory,
                 });
                 angle_offsets = 0; // we don't care about the offsets here
             }
@@ -153,22 +154,22 @@ namespace qn {
                 .max_shift_percent = i == 0 ? 0.5 : 0.1,
             });
 
-            if (settings.fit_rotation_offset) {
+            if (settings.fit_rotation) {
                 constexpr auto ROTATION_RANGE = std::array{10., 5., 2., 1.};
                 tilter.find_image_rotation(tilt_series.view(), metadata.stack, angle_offsets, {
                     .accurate_fov = i >= 2,
                     .angle_range = ROTATION_RANGE[i],
                     .angle_step = 0.01,
-                    .output_directory = &settings.output_directory,
+                    .output_directory = &output_directory,
                 });
             }
 
-            if (settings.fit_tilt_offset or settings.fit_pitch_offset) {
+            if (settings.fit_tilt or settings.fit_pitch) {
                 constexpr auto TILT_RANGE = std::array{20., 10., 2., 1.};
                 constexpr auto PITCH_RANGE = std::array{10., 5., 2., 1.};
                 tilter.find_specimen_level(tilt_series.view(), metadata.stack, angle_offsets, {
-                    .tilt_search_range = not settings.fit_tilt_offset ? 0. : TILT_RANGE[i],
-                    .pitch_search_range = not settings.fit_pitch_offset ? 0. : PITCH_RANGE[i],
+                    .tilt_search_range = not settings.fit_tilt ? 0. : TILT_RANGE[i],
+                    .pitch_search_range = not settings.fit_pitch ? 0. : PITCH_RANGE[i],
                     .n_global_search_evaluations = 0, // initial global search doesn't seem necessary
                     .fov_mask = i >= 2,
                     .smooth_edge_percent = i == 0 ? 0.08 : 0.3,
@@ -193,21 +194,14 @@ namespace qn {
     void refine_alignment(
         const Path& stack_filename,
         Metadata& metadata,
-        const RefineAlignmentSettings& settings
+        Device device,
+        const Settings::Alignment::Refine& settings,
+        const Path& output_directory
     ) {
         auto timer = Logger::status_scope_time("Refine alignment");
 
-        // metadata.sample.thickness = estimate_sample_thickness(stack_filename, metadata, {
-        //     .apply_fov = false,
-        //     .device = settings.compute_device,
-        //     .allocator = Allocator::MANAGED,
-        //     .resolution = 20.,
-        //     .output_directory = settings.output_directory / "thickness",
-        // });
-        // panic();
-
         auto loader = StackLoader(stack_filename, {
-            .compute_device = settings.compute_device,
+            .compute_device = device,
             .allocator = Allocator::MANAGED,
 
             // Fourier cropping:
@@ -233,6 +227,8 @@ namespace qn {
             .zero_pad_to_square_shape = false,
         });
 
+        metadata.sample.thickness = 250; // FIXME
+
         // Load and filter the tilt-series.
         // This corrects for the CTF at the "center of the sample", where most of the signal comes from.
         // It is up to the thickness estimation and tomogram centering to place that "center of the sample"
@@ -241,31 +237,33 @@ namespace qn {
         const auto stack_spacing = mean(loader.stack_spacing());
         metadata.set_spacing(stack_spacing);
         metadata.stack.sort("tilt").reset_indices();
+
+        Logger::s_debug_path = "/dls/ebic/data/staff-scratch/thomas2/datasets/kyprianos/quinoa/quinoa-diagnostics/Position_1_2/filter";
         const auto tilt_series = filter_stack(std::move(loader), metadata, {
+            .prealign_stack = false,
             .ramp_filter = false,
-            .correct_ctf = false, // FIXME settings.correct_ctf,
-            .phase_flip_strength = settings.phase_flip_strength,
-            .defocus_step_nm = 15, // TODO probably not worth it, decrease it
-            .bfactor = -50,
+            .fake_sirt_iterations = 15,
+            .correct_ctf = settings.correct_ctf,
+            .ctf_phase_flip_strength = settings.ctf_phase_flip_strength,
+            .ctf_defocus_step_nm = 15, // TODO probably not worth it, decrease it
+            .ctf_bfactor = 0,
         });
+        noa::write_image(tilt_series, Logger::s_debug_path / "filtered.mrc"); // check with no highpass filter and bfactor to compare with input.
 
         // metadata.sample.thickness = estimate_sample_thickness(tilt_series.view(), metadata, {
         //     .output_directory = settings.output_directory / "thickness",
         // });
-        metadata.sample.thickness = 300; // FIXME
 
         // Clean up FFT state.
-        if (settings.compute_device.is_gpu()) {
-            nf::clear_cache(settings.compute_device);
-            nf::set_cache_limit(12, settings.compute_device);
+        if (device.is_gpu()) {
+            nf::clear_cache(device);
+            nf::set_cache_limit(12, device);
         }
 
         // Prepare for the projection matching.
         const auto n_images = metadata.stack.ssize();
         const auto image_shape = tilt_series.shape().filter(2, 3);
         auto projection_matcher = ProjectionMatcher(n_images, image_shape, tilt_series.device());
-
-        // FIXME PLOT sincs
 
         // Set up the central-slice insertion.
         constexpr auto INSERT_SINC_OSCILLATIONS = 8;
@@ -301,11 +299,11 @@ namespace qn {
 
         auto angle_offsets = Vec{0., 0., 0.};
 
-        const i32 N_ITERATIONS = settings.fit_rotation_offset ? 2 : 1;
+        const i32 N_ITERATIONS = settings.fit_rotation ? 2 : 1;
         for (auto _: noa::irange(N_ITERATIONS)) {
             // TODO Fourier crop stack to lower resolution and estimate thickness
             // metadata.sample.thickness = estimate_sample_thickness(stack_filename, metadata, {
-            //     .device = settings.compute_device,
+            //     .device = device,
             //     .allocator = Allocator::ASYNC,
             //     .resolution = 24.,
             //     .output_directory = settings.output_directory / "thickness",
@@ -318,10 +316,10 @@ namespace qn {
                 .extraction_sinc = extraction_sinc(),
             });
 
-            if (settings.fit_rotation_offset) {
+            if (settings.fit_rotation) {
                 Tilter::find_accurate_image_rotation(tilt_series.view(), metadata.stack, angle_offsets, {
                     .angle_range = 4,
-                    .output_directory = &settings.output_directory,
+                    .output_directory = &output_directory,
                 });
             }
 
@@ -337,7 +335,7 @@ namespace qn {
             .extraction_sinc = extraction_sinc(),
         });
 
-        // if (settings.fit_rotation_offset) {
+        // if (settings.fit_rotation) {
         //     const auto esinc = extraction_sinc();
         //     const auto projection_matching_options = ProjectionMatchingParameters{
         //         .max_tilt_difference = MAX_TILT_DIFFERENCE,
@@ -376,7 +374,7 @@ namespace qn {
 
         // TODO thickness center the sample ?
         // metadata.sample.thickness = estimate_sample_thickness(stack_filename, metadata, {
-        //     .device = settings.compute_device,
+        //     .device = device,
         //     .allocator = Allocator::ASYNC,
         //     .resolution = 24.,
         //     .output_directory = settings.output_directory / "thickness",

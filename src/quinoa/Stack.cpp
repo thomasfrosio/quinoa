@@ -564,10 +564,10 @@ namespace qn {
 
     void StackLoader::read_stack(Metadata::Stack& metadata, const View<f32>& stack) {
         auto timer = Logger::trace_scope_time("Loading the stack");
-        for (i32 batch{}; auto& image: metadata) {
-            read_slice(stack.subregion(batch), image.index_file, false, image.exposure[1]);
-            image.index = batch; // reset order of the slices in the stack.
-            ++batch;
+        for (i32 i{}; auto& image: metadata) {
+            read_slice(stack.subregion(i), image.index_file, false, image.exposure[1]);
+            image.index = i; // reset order of the slices in the stack.
+            ++i;
         }
     }
 
@@ -576,96 +576,5 @@ namespace qn {
         auto stack = noa::Array<f32>(shape, {.device = compute_device(), .allocator = Allocator::DEFAULT_ASYNC});
         read_stack(metadata, stack.view());
         return stack;
-    }
-
-    void save_stack(
-        StackLoader& stack,
-        const Path& filename,
-        const Metadata::Stack& metadata,
-        const SaveStackParameters& saving_parameters
-    ) {
-        auto timer = Logger::trace_scope_time("Saving stack");
-
-        // Output buffer.
-        const auto center = (stack.slice_shape().vec / 2).as<f64>();
-        auto output = Array<f32>(stack.slice_shape().push_front(Vec<isize, 2>{2, 1}), {
-            .device = stack.compute_device(),
-            .allocator = Allocator::MANAGED
-        });
-
-        // Set up the output file.
-        auto output_file = noa::io::ImageFile(filename, {.write = true}, {
-            .shape = stack.slice_shape().push_front(Vec{metadata.ssize(), isize{1}}),
-            .spacing = stack.stack_spacing().push_front(1),
-            .dtype = saving_parameters.dtype,
-        });
-
-        // Slices will be saved in the same order as in the metadata.
-        for (isize i{}; const auto& image: metadata) {
-            const auto rotation = saving_parameters.correct_rotation ? noa::deg2rad(image.angles[0]) : 0;
-            const auto inverse_transform = (
-                nx::translate(center) *
-                nx::rotate<true>(-rotation) *
-                nx::translate(-center - image.shifts)
-            ).inverse().as<f32>();
-
-            stack.read_slice(output.view().subregion(0), image.index_file, saving_parameters.cache_loader);
-            nx::transform_2d(output.view().subregion(0), output.view().subregion(1), inverse_transform, {
-                .interp = saving_parameters.interp,
-                .border = saving_parameters.border,
-            });
-
-            output_file.write_slice(
-                output.view().subregion(1).reinterpret_as_cpu().span<const f32>(),
-                {.bd_offset = {i++, 0}}
-            );
-        }
-        Logger::trace("{} saved", filename);
-    }
-
-    void save_stack(
-        const View<const f32>& stack,
-        const Vec<f64, 2>& spacing,
-        const Metadata::Stack& metadata,
-        const Path& filename,
-        const SaveStackParameters& saving_parameters
-    ) {
-        auto timer = Logger::trace_scope_time("Saving stack");
-
-        // Output buffer.
-        const auto slice_shape = stack.shape().set<0>(1);
-        const auto center = (slice_shape.filter(2, 3).vec / 2).as<f64>();
-        auto output = noa::Array<f32>(slice_shape, {
-            .device = stack.device(),
-            .allocator = Allocator::MANAGED
-        });
-
-        // Set up the output file.
-        auto output_file = noa::io::ImageFile(filename, {.write = true}, {
-            .shape = stack.shape(),
-            .spacing = spacing.push_front(1),
-            .dtype = saving_parameters.dtype,
-        });
-
-        // Slices will be saved in the same order as in the metadata.
-        for (i64 i{}; const auto& image: metadata) {
-            const auto rotation = saving_parameters.correct_rotation ? noa::deg2rad(image.angles[0]) : 0;
-            const auto inverse_transform = (
-                nx::translate(center) *
-                nx::rotate<true>(-rotation) *
-                nx::translate(-center - image.shifts)
-            ).inverse().as<f32>();
-
-            nx::transform_2d(stack.subregion(image.index), output.view(), inverse_transform, {
-                .interp = saving_parameters.interp,
-                .border = saving_parameters.border,
-            });
-
-            output_file.write_slice(
-                output.view().reinterpret_as_cpu().span<const f32>(),
-                {.bd_offset = {i++, 0}}
-            );
-        }
-        Logger::trace("{} saved", filename);
     }
 }

@@ -64,58 +64,87 @@ namespace qn {
         } preprocessing;
 
         struct Alignment {
-            bool coarse_run{};
-            bool coarse_check_rotation{};
-            bool coarse_allow_90_and_flip_rotation_from_mdoc{};
-            bool coarse_is_tilt_axis_from_mdoc{};
-            bool coarse_fit_rotation{};
-            bool coarse_fit_tilt{};
-            bool coarse_fit_pitch{};
+            struct Coarse {
+                bool run{};
+                bool check_rotation{};
+                bool allow_90_and_flip_rotation_from_mdoc{};
+                bool is_tilt_axis_from_mdoc{};
+                bool fit_rotation{};
+                bool fit_tilt{};
+                bool fit_pitch{};
+            } coarse;
 
-            bool ctf_run{};
-            bool ctf_check_defocus_gradient{};
-            f64 ctf_patch_size_ang{};
-            i32 ctf_patch_size_min_pix{};
-            Vec<f64, 2> ctf_resolution_range{};
-            i32 ctf_nb_images_in_initial_average{};
-            i32 ctf_max_nb_high_resolution_recovery{};
-            Vec<i32, 2> ctf_astigmatism_tilt_resolution{};
-            Vec<i32, 2> ctf_phase_shift_time_resolution{};
-            bool ctf_fit_rotation{};
-            bool ctf_fit_tilt{};
-            bool ctf_fit_pitch{};
-            bool ctf_fit_phase_shift{};
-            bool ctf_fit_astigmatism{};
-            bool ctf_fit_thickness{};
-
-            bool refine_run{};
-            bool refine_correct_ctf{};
-            f64 refine_phase_flip_strength{};
-            bool refine_fit_rotation{};
-            bool refine_fit_tilt{};
-            bool refine_fit_pitch{};
-            bool refine_fit_thickness{};
+            struct Refine {
+                bool run{};
+                bool correct_ctf{};
+                f64 ctf_phase_flip_strength{};
+                bool fit_rotation{};
+                bool fit_tilt{};
+                bool fit_pitch{};
+                bool fit_thickness{};
+            } refine;
         } alignment;
+
+        struct CTF {
+            bool run{};
+            bool check_defocus_gradient{};
+            f64 patch_size_ang{};
+            isize patch_size_min_pix{};
+            Vec<f64, 2> resolution_range{};
+            i32 nb_images_in_initial_average{};
+            i32 max_nb_high_resolution_recovery{};
+            Vec<isize, 2> astigmatism_tilt_resolution{};
+            Vec<isize, 2> phase_shift_time_resolution{};
+            bool fit_rotation{};
+            bool fit_tilt{};
+            bool fit_pitch{};
+            bool fit_phase_shift{};
+            bool fit_astigmatism{};
+            bool fit_thickness{};
+        } ctf;
 
         struct PostProcessing {
             bool run{};
             f64 resolution{};
+            isize min_size_pix{};
 
-            bool stack_run{};
-            bool stack_correct_rotation{};
-            nx::Interp stack_interpolation{};
-            noa::io::DataType stack_dtype{};
+            struct Stack {
+                bool run{};
+                noa::io::DataType dtype{};
+                bool correct_rotation{};
+                bool correct_shift{};
+                nx::Interp interpolation{};
+                i32 fake_sirt_iterations{};
+            } stack;
 
-            bool tomogram_run{};
-            bool tomogram_correct_rotation{};
-            nx::Interp tomogram_interpolation{};
-            noa::io::DataType tomogram_dtype{};
-            std::string tomogram_algorithm{};
-            i32 tomogram_oversampling_factor{};
-            bool tomogram_ramp_filter{};
-            bool tomogram_correct_ctf{};
-            f64 tomogram_z_padding_percent{};
-            f64 tomogram_phase_flip_strength{};
+            struct Tomogram {
+                bool run{};
+                noa::io::DataType dtype{};
+                bool correct_rotation{};
+                bool correct_ctf{};
+                f64 ctf_phase_flip_strength{};
+                f64 ctf_defocus_step_nm{};
+                f64 ctf_bfactor{};
+
+                f64 z_padding_percent{};
+                i32 fake_sirt_iterations{};
+                std::string algorithm{};
+
+                struct Real {
+                    i32 oversampling_factor{};
+                    bool prealign_stack{};
+                    nx::Interp prealign_stack_interpolation{};
+                    bool ramp_filter{};
+                    nx::Interp interpolation{};
+                } real;
+
+                struct Fourier {
+                    i32 oversampling_factor{};
+                    bool prealign_stack{};
+                    nx::Interp prealign_stack_interpolation{};
+                    nx::Interp interpolation{};
+                } fourier;
+            } tomogram;
         } postprocessing;
 
         struct Compute {

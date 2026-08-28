@@ -8,7 +8,6 @@
 
 namespace qn {
     struct LoadStackParameters {
-        bool use_stack_register{true};
         Device compute_device;
         Allocator allocator;
 
@@ -34,6 +33,7 @@ namespace qn {
         bool zero_pad_to_fast_fft_shape{true};
         bool zero_pad_to_square_shape{false};
 
+        bool use_stack_register{true};
         bool allocate_fft_workspace{true};
     };
 
@@ -138,27 +138,4 @@ namespace qn {
         tilt_series_metadata.set_spacing(stack_loader.stack_spacing());
         return stack;
     }
-
-    struct SaveStackParameters {
-        bool correct_rotation{false};
-        bool cache_loader{false};
-        nx::Interp interp{nx::Interp::LINEAR};
-        noa::Border border{noa::Border::ZERO};
-        noa::io::DataType dtype = noa::io::DataType::F32;
-    };
-
-    void save_stack(
-        StackLoader& stack,
-        const Path& filename,
-        const Metadata::Stack& metadata,
-        const SaveStackParameters& saving_parameters = {}
-    );
-
-    void save_stack(
-        const View<const f32>& stack,
-        const Vec<f64, 2>& spacing,
-        const Metadata::Stack& metadata,
-        const Path& filename,
-        const SaveStackParameters& saving_parameters = {}
-    );
 }

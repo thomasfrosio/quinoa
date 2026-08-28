@@ -28,6 +28,7 @@ namespace {
             "data.rawtlts"sv,
             "data.stars"sv,
             "data.output"sv,
+
             "experiment.tilt_axis"sv,
             "experiment.add_specimen_tilt"sv,
             "experiment.add_specimen_pitch"sv,
@@ -36,53 +37,75 @@ namespace {
             "experiment.cs"sv,
             "experiment.phase_shift"sv,
             "experiment.thickness"sv,
+
             "preprocessing.run"sv,
             "preprocessing.exclude_blank_views"sv,
             "preprocessing.exclude_stack_indices"sv,
+
             "alignment.coarse.run"sv,
             "alignment.coarse.check_rotation"sv,
             "alignment.coarse.allow_90_and_flip_rotation_from_mdoc"sv,
             "alignment.coarse.fit_rotation"sv,
             "alignment.coarse.fit_tilt"sv,
             "alignment.coarse.fit_pitch"sv,
-            "alignment.ctf.run"sv,
-            "alignment.ctf.patch_size_ang"sv,
-            "alignment.ctf.patch_size_min_pix"sv,
-            "alignment.ctf.resolution_range"sv,
-            "alignment.ctf.nb_images_in_initial_average"sv,
-            "alignment.ctf.max_nb_high_resolution_recovery"sv,
-            "alignment.ctf.astigmatism_tilt_resolution"sv,
-            "alignment.ctf.phase_shift_time_resolution"sv,
-            "alignment.ctf.check_defocus_gradient"sv,
-            "alignment.ctf.fit_rotation"sv,
-            "alignment.ctf.fit_tilt"sv,
-            "alignment.ctf.fit_pitch"sv,
-            "alignment.ctf.fit_phase_shift"sv,
-            "alignment.ctf.fit_astigmatism"sv,
-            "alignment.ctf.fit_thickness"sv,
+
             "alignment.refine.run"sv,
             "alignment.refine.correct_ctf"sv,
-            "alignment.refine.phase_flip_strength"sv,
+            "alignment.refine.ctf_phase_flip_strength"sv,
             "alignment.refine.fit_rotation"sv,
             "alignment.refine.fit_tilt"sv,
             "alignment.refine.fit_pitch"sv,
             "alignment.refine.fit_thickness"sv,
+
+            "ctf.run"sv,
+            "ctf.check_defocus_gradient"sv,
+            "ctf.patch_size_ang"sv,
+            "ctf.patch_size_min_pix"sv,
+            "ctf.resolution_range"sv,
+            "ctf.nb_images_in_initial_average"sv,
+            "ctf.max_nb_high_resolution_recovery"sv,
+            "ctf.astigmatism_tilt_resolution"sv,
+            "ctf.phase_shift_time_resolution"sv,
+            "ctf.fit_rotation"sv,
+            "ctf.fit_tilt"sv,
+            "ctf.fit_pitch"sv,
+            "ctf.fit_phase_shift"sv,
+            "ctf.fit_astigmatism"sv,
+            "ctf.fit_thickness"sv,
+
             "postprocessing.run"sv,
             "postprocessing.resolution"sv,
+            "postprocessing.min_size_pix"sv,
+
             "postprocessing.stack.run"sv,
-            "postprocessing.stack.correct_rotation"sv,
-            "postprocessing.stack.interpolation"sv,
             "postprocessing.stack.dtype"sv,
+            "postprocessing.stack.correct_rotation"sv,
+            "postprocessing.stack.correct_shift"sv,
+            "postprocessing.stack.interpolation"sv,
+            "postprocessing.stack.fake_sirt_iterations"sv,
+
             "postprocessing.tomogram.run"sv,
-            "postprocessing.tomogram.correct_rotation"sv,
-            "postprocessing.tomogram.interpolation"sv,
             "postprocessing.tomogram.dtype"sv,
-            "postprocessing.tomogram.algorithm"sv,
-            "postprocessing.tomogram.oversampling_factor"sv,
-            "postprocessing.tomogram.ramp_filter"sv,
+            "postprocessing.tomogram.correct_rotation"sv,
             "postprocessing.tomogram.correct_ctf"sv,
+            "postprocessing.tomogram.ctf_phase_flip_strength"sv,
+            "postprocessing.tomogram.ctf_defocus_step_nm"sv,
+            "postprocessing.tomogram.ctf_bfactor"sv,
             "postprocessing.tomogram.z_padding_percent"sv,
-            "postprocessing.tomogram.phase_flip_strength"sv,
+            "postprocessing.tomogram.fake_sirt_iterations"sv,
+            "postprocessing.tomogram.algorithm"sv,
+
+            "postprocessing.tomogram.real.oversampling_factor"sv,
+            "postprocessing.tomogram.real.prealign_stack"sv,
+            "postprocessing.tomogram.real.prealign_stack_interpolation"sv,
+            "postprocessing.tomogram.real.ramp_filter"sv,
+            "postprocessing.tomogram.real.interpolation"sv,
+
+            "postprocessing.tomogram.fourier.oversampling_factor"sv,
+            "postprocessing.tomogram.fourier.prealign_stack"sv,
+            "postprocessing.tomogram.fourier.prealign_stack_interpolation"sv,
+            "postprocessing.tomogram.fourier.interpolation"sv,
+
             "compute.device"sv,
             "compute.n_threads"sv,
             "compute.register_stack"sv,
@@ -417,79 +440,109 @@ namespace {
     auto parse_alignment_(const toml::table& table, f64 tilt_axis) -> Settings::Alignment {
         Settings::Alignment alignment;
 
-        alignment.coarse_run = parse_value_("alignment.coarse.run", table, true);
-        alignment.coarse_check_rotation = parse_value_("alignment.coarse.check_rotation", table, true);
-        alignment.coarse_allow_90_and_flip_rotation_from_mdoc = parse_value_("alignment.coarse.allow_90_and_flip_rotation_from_mdoc", table, false);
-        alignment.coarse_is_tilt_axis_from_mdoc = noa::allclose(UNSPECIFIED_VALUE, tilt_axis);
-        alignment.coarse_fit_rotation = parse_value_("alignment.coarse.fit_rotation", table, true);
-        alignment.coarse_fit_tilt = parse_value_("alignment.coarse.fit_tilt", table, true);
-        alignment.coarse_fit_pitch = parse_value_("alignment.coarse.fit_pitch", table, true);
+        alignment.coarse.run = parse_value_("alignment.coarse.run", table, true);
+        alignment.coarse.check_rotation = parse_value_("alignment.coarse.check_rotation", table, true);
+        alignment.coarse.allow_90_and_flip_rotation_from_mdoc = parse_value_("alignment.coarse.allow_90_and_flip_rotation_from_mdoc", table, false);
+        alignment.coarse.is_tilt_axis_from_mdoc = noa::allclose(UNSPECIFIED_VALUE, tilt_axis);
+        alignment.coarse.fit_rotation = parse_value_("alignment.coarse.fit_rotation", table, true);
+        alignment.coarse.fit_tilt = parse_value_("alignment.coarse.fit_tilt", table, true);
+        alignment.coarse.fit_pitch = parse_value_("alignment.coarse.fit_pitch", table, true);
 
-        alignment.ctf_run = parse_value_("alignment.ctf.run", table, true);
-        alignment.ctf_check_defocus_gradient = parse_value_("alignment.ctf.check_defocus_gradient", table, true);
-        alignment.ctf_fit_rotation = parse_value_("alignment.ctf.fit_rotation", table, false);
-        alignment.ctf_fit_tilt = parse_value_("alignment.ctf.fit_tilt", table, true);
-        alignment.ctf_fit_pitch = parse_value_("alignment.ctf.fit_pitch", table, true);
-        alignment.ctf_fit_phase_shift = parse_value_("alignment.ctf.fit_phase_shift", table, false);
-        alignment.ctf_fit_astigmatism = parse_value_("alignment.ctf.fit_astigmatism", table, true);
-        alignment.ctf_fit_thickness = parse_value_("alignment.ctf.fit_thickness", table, false);
-        alignment.ctf_patch_size_ang = parse_value_("alignment.ctf.patch_size_ang", table, 750.);
-        alignment.ctf_patch_size_min_pix = parse_value_("alignment.ctf.patch_size_min_pix", table, 512);
-        alignment.ctf_resolution_range = parse_values_("alignment.ctf.resolution_range", table, Vec{30., 4.});
-        alignment.ctf_nb_images_in_initial_average = parse_value_("alignment.ctf.nb_images_in_initial_average", table, 3);
-        alignment.ctf_max_nb_high_resolution_recovery = parse_value_("alignment.ctf.max_nb_high_resolution_recovery", table, 3);
-        alignment.ctf_astigmatism_tilt_resolution = parse_values_("alignment.ctf.astigmatism_tilt_resolution", table, Vec{5, -4});
-        alignment.ctf_phase_shift_time_resolution = parse_values_("alignment.ctf.phase_shift_time_resolution", table, Vec{2, 3});
-        check(alignment.ctf_astigmatism_tilt_resolution != 0, "alignment.ctf.astigmatism_tilt_resolution should be a non-zero Vec<int, 2>");
-        check(alignment.ctf_phase_shift_time_resolution != 0, "alignment.ctf.phase_shift_time_resolution should be a non-zero Vec<int, 2>");
+        alignment.refine.run = parse_value_("alignment.refine.run", table, true);
+        alignment.refine.correct_ctf = parse_value_("alignment.refine.correct_ctf", table, true);
+        alignment.refine.ctf_phase_flip_strength = parse_value_("alignment.refine.ctf_phase_flip_strength", table, 8.);
+        alignment.refine.fit_rotation = parse_value_("alignment.refine.fit_rotation", table, true);
+        alignment.refine.fit_tilt = parse_value_("alignment.refine.fit_tilt", table, true);
+        alignment.refine.fit_pitch = parse_value_("alignment.refine.fit_pitch", table, true);
+        alignment.refine.fit_thickness = parse_value_("alignment.refine.fit_thickness", table, true);
 
-        alignment.refine_run = parse_value_("alignment.refine.run", table, true);
-        alignment.refine_correct_ctf = parse_value_("alignment.refine.correct_ctf", table, true);
-        alignment.refine_fit_rotation = parse_value_("alignment.refine.fit_rotation", table, true);
-        alignment.refine_fit_tilt = parse_value_("alignment.refine.fit_tilt", table, true);
-        alignment.refine_fit_pitch = parse_value_("alignment.refine.fit_pitch", table, true);
-        alignment.refine_fit_thickness = parse_value_("alignment.refine.fit_thickness", table, true);
-
-        alignment.refine_phase_flip_strength = parse_value_("alignment.refine.phase_flip_strength", table, 8.);
-        check(alignment.refine_phase_flip_strength >= 0 and alignment.refine_phase_flip_strength <= 10,
-              "postprocessing:tomogram_phase_flip_strength should be between 0 and 10, but got {}",
-              alignment.refine_phase_flip_strength);
+        check(alignment.refine.ctf_phase_flip_strength >= 0 and alignment.refine.ctf_phase_flip_strength <= 10,
+              "alignment.refine.ctf_phase_flip_strength should be between 0 and 10, but got {}",
+              alignment.refine.ctf_phase_flip_strength);
 
         return alignment;
+    }
+
+    auto parse_ctf_(const toml::table& table) -> Settings::CTF {
+        Settings::CTF ctf;
+        ctf.run = parse_value_("ctf.run", table, true);
+        ctf.check_defocus_gradient = parse_value_("ctf.check_defocus_gradient", table, true);
+        ctf.patch_size_ang = parse_value_("ctf.patch_size_ang", table, 750.);
+        ctf.patch_size_min_pix = parse_value_("ctf.patch_size_min_pix", table, 512);
+        ctf.resolution_range = parse_values_("ctf.resolution_range", table, Vec{30., 4.});
+        ctf.nb_images_in_initial_average = parse_value_("ctf.nb_images_in_initial_average", table, 3);
+        ctf.max_nb_high_resolution_recovery = parse_value_("ctf.max_nb_high_resolution_recovery", table, 3);
+        ctf.astigmatism_tilt_resolution = parse_values_("ctf.astigmatism_tilt_resolution", table, Vec<isize, 2>{5, -4});
+        ctf.phase_shift_time_resolution = parse_values_("ctf.phase_shift_time_resolution", table, Vec<isize, 2>{2, 3});
+
+        ctf.fit_rotation = parse_value_("ctf.fit_rotation", table, false);
+        ctf.fit_tilt = parse_value_("ctf.fit_tilt", table, true);
+        ctf.fit_pitch = parse_value_("ctf.fit_pitch", table, true);
+        ctf.fit_phase_shift = parse_value_("ctf.fit_phase_shift", table, false);
+        ctf.fit_astigmatism = parse_value_("ctf.fit_astigmatism", table, true);
+        ctf.fit_thickness = parse_value_("ctf.fit_thickness", table, false);
+
+        check(ctf.astigmatism_tilt_resolution != 0, "ctf.astigmatism_tilt_resolution should be a non-zero Vec<int, 2>");
+        check(ctf.phase_shift_time_resolution != 0, "ctf.phase_shift_time_resolution should be a non-zero Vec<int, 2>");
+        return ctf;
     }
 
     auto parse_postprocessing_(const toml::table& table) -> Settings::PostProcessing {
         Settings::PostProcessing postprocessing;
         postprocessing.run = parse_value_("postprocessing.run", table, true);
         postprocessing.resolution = parse_value_("postprocessing.resolution", table, -1.);
+        postprocessing.min_size_pix = parse_value_("postprocessing.min_size_pix", table, 512);
 
-        postprocessing.stack_run = parse_value_("postprocessing.stack.run", table, false);
-        postprocessing.stack_correct_rotation = parse_value_("postprocessing.stack.correct_rotation", table, true);
-        postprocessing.stack_interpolation = parse_interp("postprocessing.stack.interpolation", table, "linear");
-        postprocessing.stack_dtype = parse_dtype("postprocessing.stack.dtype", table, "f32");
+        postprocessing.stack.run = parse_value_("postprocessing.stack.run", table, false);
+        postprocessing.stack.dtype = parse_dtype("postprocessing.stack.dtype", table, "f32");
+        postprocessing.stack.correct_rotation = parse_value_("postprocessing.stack.correct_rotation", table, true);
+        postprocessing.stack.correct_shift = parse_value_("postprocessing.stack.correct_shift", table, true);
+        postprocessing.stack.interpolation = parse_interp("postprocessing.stack.interpolation", table, "linear");
+        postprocessing.stack.fake_sirt_iterations = parse_value_("postprocessing.stack.fake_sirt_iterations", table, 0);
 
-        postprocessing.tomogram_run = parse_value_("postprocessing.tomogram.run", table, true);
-        postprocessing.tomogram_correct_rotation = parse_value_("postprocessing.tomogram.correct_rotation", table, true);
-        postprocessing.tomogram_interpolation = parse_interp("postprocessing.tomogram.interpolation", table, "linear");
-        postprocessing.tomogram_dtype = parse_dtype("postprocessing.tomogram.dtype", table, "f32");
-        postprocessing.tomogram_oversampling_factor = parse_value_("postprocessing.tomogram.oversampling_factor", table, 2);
-        postprocessing.tomogram_ramp_filter = parse_value_("postprocessing.tomogram.ramp_filter", table, true);
-        postprocessing.tomogram_correct_ctf = parse_value_("postprocessing.tomogram.correct_ctf", table, true);
+        postprocessing.tomogram.run = parse_value_("postprocessing.tomogram.run", table, true);
+        postprocessing.tomogram.dtype = parse_dtype("postprocessing.tomogram.dtype", table, "f32");
+        postprocessing.tomogram.correct_rotation = parse_value_("postprocessing.tomogram.correct_rotation", table, true);
+        postprocessing.tomogram.correct_ctf = parse_value_("postprocessing.tomogram.correct_ctf", table, true);
+        postprocessing.tomogram.ctf_phase_flip_strength = parse_value_("postprocessing.tomogram.ctf_phase_flip_strength", table, 8);
+        postprocessing.tomogram.ctf_defocus_step_nm = parse_value_("postprocessing.tomogram.ctf_defocus_step_nm", table, 15.);
+        postprocessing.tomogram.ctf_bfactor = parse_value_("postprocessing.tomogram.ctf_bfactor", table, 0.);
 
-        postprocessing.tomogram_algorithm = parse_value_("postprocessing.tomogram.algorithm", table, std::string("fourier-wbp"));
-        check(postprocessing.tomogram_algorithm == "fourier-wbp" or postprocessing.tomogram_algorithm == "real-bp",
-              "postprocessing.tomogram_algorithm should be 'fourier-wbp' or 'real-bp', but got '{}'",
-              postprocessing.tomogram_algorithm);
+        postprocessing.tomogram.z_padding_percent = parse_value_("postprocessing.tomogram.z_padding_percent", table, 10.);
+        postprocessing.tomogram.fake_sirt_iterations = parse_value_("postprocessing.tomogram.fake_sirt_iterations", table, 0);
+        postprocessing.tomogram.algorithm = parse_value_("postprocessing.tomogram.algorithm", table, std::string("real"));
 
-        postprocessing.tomogram_z_padding_percent = parse_value_("postprocessing.tomogram.z_padding_percent", table, 10.);
-        check(postprocessing.tomogram_z_padding_percent >= 0 and postprocessing.tomogram_z_padding_percent <= 200,
+        check(postprocessing.tomogram.z_padding_percent >= 0 and postprocessing.tomogram.z_padding_percent <= 200,
               "postprocessing:tomogram_z_padding_percent should be between 0 and 200, but got {}",
-              postprocessing.tomogram_z_padding_percent);
+              postprocessing.tomogram.z_padding_percent);
+        postprocessing.tomogram.z_padding_percent /= 100.; // [0,1] range
 
-        postprocessing.tomogram_phase_flip_strength = parse_value_("postprocessing.tomogram.phase_flip_strength", table, 8.);
-        check(postprocessing.tomogram_phase_flip_strength >= 0 and postprocessing.tomogram_phase_flip_strength <= 10,
-              "postprocessing:tomogram_phase_flip_strength should be between 0 and 10, but got {}",
-              postprocessing.tomogram_phase_flip_strength);
+        check(postprocessing.tomogram.ctf_phase_flip_strength >= 0 and postprocessing.tomogram.ctf_phase_flip_strength <= 10,
+              "postprocessing:tomogram_ctf_phase_flip_strength should be between 0 and 10, but got {}",
+              postprocessing.tomogram.ctf_phase_flip_strength);
+
+        check(postprocessing.tomogram.algorithm == "fourier" or postprocessing.tomogram.algorithm == "real",
+              "postprocessing.tomogram.algorithm should be 'fourier' or 'real', but got '{}'",
+              postprocessing.tomogram.algorithm);
+
+        postprocessing.tomogram.real.oversampling_factor = parse_value_("postprocessing.tomogram.real.oversampling_factor", table, 1);
+        postprocessing.tomogram.real.prealign_stack = parse_value_("postprocessing.tomogram.real.prealign_stack", table, true);
+        postprocessing.tomogram.real.prealign_stack_interpolation = parse_interp("postprocessing.tomogram.real.prealign_stack_interpolation", table, "linear");
+        postprocessing.tomogram.real.ramp_filter = parse_value_("postprocessing.tomogram.real.ramp_filter", table, true);
+        postprocessing.tomogram.real.interpolation = parse_interp("postprocessing.tomogram.real.interpolation", table, "linear");
+
+        check(postprocessing.tomogram.real.oversampling_factor >= 1,
+              "postprocessing.tomogram.real.oversampling_factor should be greater than 0, but got {}",
+              postprocessing.tomogram.real.oversampling_factor);
+
+        postprocessing.tomogram.fourier.oversampling_factor = parse_value_("postprocessing.tomogram.fourier.oversampling_factor", table, 4);
+        postprocessing.tomogram.fourier.prealign_stack = parse_value_("postprocessing.tomogram.fourier.prealign_stack", table, false);
+        postprocessing.tomogram.fourier.prealign_stack_interpolation = parse_interp("postprocessing.tomogram.fourier.prealign_stack_interpolation", table, "linear");
+        postprocessing.tomogram.fourier.interpolation = parse_interp("postprocessing.tomogram.fourier.interpolation", table, "linear");
+
+        check(postprocessing.tomogram.fourier.oversampling_factor >= 3,
+              "postprocessing.tomogram.fourier.oversampling_factor should be greater than or equal to 3, but got {}",
+              postprocessing.tomogram.fourier.oversampling_factor);
 
         return postprocessing;
     }
@@ -599,6 +652,7 @@ namespace qn {
             experiment = parse_experiment_(settings, cl);
             preprocessing = parse_preprocessing_(settings);
             alignment = parse_alignment_(settings, experiment.tilt_axis);
+            ctf = parse_ctf_(settings);
             postprocessing = parse_postprocessing_(settings);
             compute = parse_compute_(settings, cl);
         } catch (...) {

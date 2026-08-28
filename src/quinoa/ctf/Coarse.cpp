@@ -4,6 +4,7 @@
 #include "quinoa/Plot.hpp"
 #include "quinoa/Stack.hpp"
 #include "quinoa/ctf/CTF.hpp"
+#include "quinoa/ctf/Run.hpp"
 
 namespace {
     using namespace qn;

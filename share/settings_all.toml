@@ -60,16 +60,6 @@ run = false
 # Indices, from 0, of the images in the stack to exclude. E.g. [0,1,41].
 #exclude_stack_indices = []
 
-[alignment.coarse] # ---------------------------------------------------------------------
-# Whether to run the coarse image alignment step. Both the specimen orientation and image translations are updated.
-run = false
-
-# TODO Add doc
-#check_rotation = true
-#allow_90_and_flip_rotation_from_mdoc = false
-#fit_rotation = false
-#fit_tilt = true
-#fit_pitch = true
 
 [alignment.ctf] # ---------------------------------------------------------------------
 # Whether to run the CTF alignment step. Both the specimen orientation and image translations are updated.
@@ -101,12 +91,24 @@ run = true
 #fit_phase_shift = false
 #fit_thickness = true
 
+[alignment.coarse] # ---------------------------------------------------------------------
+# Whether to run the coarse image alignment step. Both the specimen orientation and image translations are updated.
+run = false
+
+# TODO Add doc
+#check_rotation = true
+#allow_90_and_flip_rotation_from_mdoc = false
+#fit_rotation = false
+#fit_tilt = true
+#fit_pitch = true
+
+
 [alignment.refine] # ---------------------------------------------------------------------
 run = false
 
 # TODO Add doc
 correct_ctf = true
-phase_flip_strength = 8
+ctf_phase_flip_strength = 8
 fit_rotation = false
 fit_tilt = true
 fit_pitch = true
@@ -116,21 +118,38 @@ fit_thickness = true
 run = false
 
 # TODO Add doc
-resolution = 16
-stack.run = true
-stack.correct_rotation = false
+resolution = 20
+min_size_pix = 512
+
+stack.run = false
+stack.correct_rotation = true
+stack.correct_shift = true
 stack.interpolation = 'linear'
 stack.dtype = 'f16'
+stack.fake_sirt_iterations = 15
+
 tomogram.run = true
-tomogram.correct_rotation = true
 tomogram.dtype = 'f16'
-tomogram.algorithm = 'fourier-wbp' # or real-wp
-tomogram.interpolation = 'linear'
-tomogram.oversampling_factor = 4
-tomogram.ramp_filter = false
-tomogram.correct_ctf = true
+tomogram.correct_rotation = true
 tomogram.z_padding_percent = 10
-tomogram.phase_flip_strength = 0.7
+tomogram.correct_ctf = false
+tomogram.ctf_phase_flip_strength = 8
+tomogram.ctf_defocus_step_nm = 15
+tomogram.ctf_bfactor = 0
+tomogram.fake_sirt_iterations = 0
+tomogram.algorithm = 'fourier'
+
+tomogram.real.oversampling_factor = 2
+tomogram.real.prealign_stack = false
+tomogram.real.prealign_stack_interpolation = 'linear'
+tomogram.real.ramp_filter = true
+tomogram.real.interpolation = 'linear'
+
+tomogram.fourier.oversampling_factor = 4
+tomogram.fourier.prealign_stack = false
+tomogram.fourier.prealign_stack_interpolation = 'linear'
+tomogram.fourier.interpolation = 'linear'
+
 
 [compute] # ---------------------------------------------------------------------
 device = 'auto'

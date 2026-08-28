@@ -3,8 +3,6 @@
 #include "quinoa/Metadata.hpp"
 #include "quinoa/Types.hpp"
 #include "quinoa/ctf/Baseline.hpp"
-#include "quinoa/ctf/Grid.hpp"
-#include "quinoa/ctf/Patches.hpp"
 
 namespace qn::ctf {
     /// Range-like type designed to iterate through a |CTF| curve and efficiently analyze its gradient.
@@ -312,65 +310,4 @@ namespace qn::ctf {
         const f64 numerator = sum_lhs_rhs - sum_lhs * sum_rhs / count;
         return numerator / std::sqrt(denominator);
     }
-}
-
-namespace qn::ctf {
-    struct FitInitialOptions {
-        i64 n_slices_to_average;
-        bool fit_phase_shift{};
-        Path output_directory{};
-    };
-    struct FitInitialResults {
-        f64 defocus;
-        f64 phase_shift;
-        Vec<f64, 2> fitting_range;
-    };
-    auto initial_fit(
-        const Metadata& metadata,
-        const Grid& grid,
-        const Patches& patches,
-        const FitInitialOptions& options
-    ) -> FitInitialResults;
-
-    struct FitCoarseOptions {
-        Vec<f64, 2> initial_fitting_range;
-        bool exclude_bad_images{};
-        bool first_image_has_higher_exposure{};
-        bool fit_phase_shift{};
-        bool check_defocus_gradient{};
-        Path output_directory{};
-    };
-    void coarse_fit(
-        Metadata& metadata,
-        const Grid& grid,
-        const Patches& patches,
-        const FitCoarseOptions& options
-    );
-
-    struct FitSettings {
-        Device compute_device;
-        Path output_directory;
-
-        f64 patch_size_ang;
-        isize patch_size_min_pix;
-        isize nb_images_in_initial_average;
-        isize max_nb_high_resolution_recovery;
-        Vec<isize, 2> astigmatism_tilt_resolution;
-        Vec<isize, 2> phase_shift_time_resolution;
-        Vec<f64, 2> resolution_range;
-        bool fit_phase_shift;
-        bool fit_astigmatism;
-        bool fit_thickness;
-        bool check_defocus_gradient;
-
-        // Refine:
-        bool fit_rotation;
-        bool fit_tilt;
-        bool fit_pitch;
-    };
-    void fit(
-        const Path& stack_filename,
-        Metadata& metadata,
-        const FitSettings& settings
-    );
 }

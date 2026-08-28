@@ -1,6 +1,6 @@
 #include "quinoa/Logger.hpp"
 #include "quinoa/Optimizer.hpp"
-#include "quinoa/ctf/CTF.hpp"
+#include "quinoa/ctf/Run.hpp"
 #include "quinoa/ctf/Refine.hpp"
 
 namespace {
@@ -121,10 +121,12 @@ namespace {
 }
 
 namespace qn::ctf {
-    void fit(
+    void full_fit(
         const Path& stack_filename,
         Metadata& metadata,
-        const FitSettings& settings
+        Device device,
+        const Settings::CTF& settings,
+        const Path& output_directory
     ) {
         auto t0 = Logger::status_scope_time("CTF alignment");
 
@@ -134,7 +136,7 @@ namespace qn::ctf {
 
         // Open the stack file and prepare for loading.
         auto stack_loading_parameters = Patches::LOADING_STACK_PARAMETERS;
-        stack_loading_parameters.compute_device = settings.compute_device;
+        stack_loading_parameters.compute_device = device;
         stack_loading_parameters.allocator = Allocator::MANAGED;
         auto stack_loader = StackLoader(stack_filename, stack_loading_parameters);
 
@@ -174,7 +176,7 @@ namespace qn::ctf {
             metadata_initial, grid, patches, {
                 .n_slices_to_average = settings.nb_images_in_initial_average,
                 .fit_phase_shift = settings.fit_phase_shift,
-                .output_directory = settings.output_directory,
+                .output_directory = output_directory,
             });
 
         for (auto& image: metadata.stack) {
@@ -201,7 +203,7 @@ namespace qn::ctf {
             .first_image_has_higher_exposure = first_image_has_higher_exposure,
             .fit_phase_shift = settings.fit_phase_shift,
             .check_defocus_gradient = settings.check_defocus_gradient,
-            .output_directory = settings.output_directory,
+            .output_directory = output_directory,
         });
 
         // Full tilt-series alignment.
@@ -218,7 +220,7 @@ namespace qn::ctf {
             .phase_shift = settings.fit_phase_shift ? noa::deg2rad(Vec{-50., 50.}) : Vec{0., 0.},
             .defocus = Vec{-1.5, 1.5},
         });
-        fitter.plot_diagnostics(settings.output_directory);
+        fitter.plot_diagnostics(output_directory);
 
         isize iter{};
         for (; iter < settings.max_nb_high_resolution_recovery + 1; iter++) {
@@ -341,6 +343,6 @@ namespace qn::ctf {
                 noa::clamp(patch_padded_size * 2, 1024, 4096)
             );
         }
-        fitter.plot_diagnostics(settings.output_directory);
+        fitter.plot_diagnostics(output_directory);
     }
 }

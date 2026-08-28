@@ -16,9 +16,6 @@ run = false
 exclude_blank_views = true
 #exclude_stack_indices = [0,1,2]
 
-[alignment.coarse]
-run = false
-
 [alignment.ctf]
 run = true
 patch_size_min_pix = 450
@@ -35,6 +32,9 @@ fit_pitch = true
 fit_astigmatism = true
 fit_phase_shift = false
 fit_thickness = false
+
+[alignment.coarse]
+run = false
 
 [alignment.refine]
 run = false

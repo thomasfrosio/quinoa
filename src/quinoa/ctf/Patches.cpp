@@ -4,6 +4,7 @@
 #include "quinoa/Logger.hpp"
 #include "quinoa/Plot.hpp"
 #include "quinoa/ctf/CTF.hpp"
+#include "quinoa/ctf/Patches.hpp"
 
 namespace {
     struct PatchMeanVariance {
