@@ -29,16 +29,16 @@ namespace qn {
             // Fourier cropping:
             // Keep everything at low resolution, high frequencies are useless here.
             .precise_cutoff = false,
-            .rescale_target_resolution = 12,
-            .rescale_min_size = 1000,
-            .rescale_max_size = 1280,
+            .rescale_target_resolution = settings.resolution,
+            .rescale_min_size = settings.min_size_pix,
+            .rescale_max_size = settings.max_size_pix,
 
             // Signal processing after cropping:
             .bandpass{
-                .highpass_cutoff = 0.03,
-                .highpass_width = 0.03,
-                .lowpass_cutoff = 0.25,
-                .lowpass_width = 0.05,
+                .highpass_cutoff = settings.bandpass.highpass_cutoff,
+                .highpass_width = settings.bandpass.highpass_width,
+                .lowpass_cutoff = settings.bandpass.lowpass_cutoff,
+                .lowpass_width = settings.bandpass.lowpass_width,
             },
             .bandpass_mirror_padding_factor = 0.5,
             .exposure_filter_voltage = metadata.sample.voltage,// TODO 0?
@@ -206,16 +206,16 @@ namespace qn {
 
             // Fourier cropping:
             .precise_cutoff = true, // ensure isotropic spacing
-            .rescale_target_resolution = 24, // FIXME
-            .rescale_min_size = 500,
-            .rescale_max_size = 2000,
+            .rescale_target_resolution = settings.resolution,
+            .rescale_min_size = settings.min_size_pix,
+            .rescale_max_size = settings.max_size_pix,
 
             // Signal processing after cropping:
             .bandpass{
-                .highpass_cutoff = 0.03,
-                .highpass_width = 0.03,
-                .lowpass_cutoff = 0.35,
-                .lowpass_width = 0.05,
+                .highpass_cutoff = settings.bandpass.highpass_cutoff,
+                .highpass_width = settings.bandpass.highpass_width,
+                .lowpass_cutoff = settings.bandpass.lowpass_cutoff,
+                .lowpass_width = settings.bandpass.lowpass_width,
             },
             .bandpass_mirror_padding_factor = 0.5,
             .exposure_filter_voltage = metadata.sample.voltage,

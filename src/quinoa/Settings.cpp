@@ -43,6 +43,10 @@ namespace {
             "preprocessing.exclude_stack_indices"sv,
 
             "alignment.coarse.run"sv,
+            "alignment.coarse.resolution"sv,
+            "alignment.coarse.min_pix_size"sv,
+            "alignment.coarse.max_pix_size"sv,
+            "alignment.coarse.bandpass"sv,
             "alignment.coarse.check_rotation"sv,
             "alignment.coarse.allow_90_and_flip_rotation_from_mdoc"sv,
             "alignment.coarse.fit_rotation"sv,
@@ -50,6 +54,10 @@ namespace {
             "alignment.coarse.fit_pitch"sv,
 
             "alignment.refine.run"sv,
+            "alignment.refine.resolution"sv,
+            "alignment.refine.min_pix_size"sv,
+            "alignment.refine.max_pix_size"sv,
+            "alignment.refine.bandpass"sv,
             "alignment.refine.correct_ctf"sv,
             "alignment.refine.ctf_phase_flip_strength"sv,
             "alignment.refine.fit_rotation"sv,
@@ -76,6 +84,8 @@ namespace {
             "postprocessing.run"sv,
             "postprocessing.resolution"sv,
             "postprocessing.min_size_pix"sv,
+            "postprocessing.max_size_pix"sv,
+            "postprocessing.bandpass"sv,
 
             "postprocessing.stack.run"sv,
             "postprocessing.stack.dtype"sv,
@@ -440,6 +450,11 @@ namespace {
     auto parse_alignment_(const toml::table& table, f64 tilt_axis) -> Settings::Alignment {
         Settings::Alignment alignment;
 
+        alignment.coarse.resolution = parse_value_("alignment.coarse.resolution", table, 20.);
+        alignment.coarse.min_size_pix = parse_value_("alignment.coarse.min_size_pix", table, 1000);
+        alignment.coarse.max_size_pix = parse_value_("alignment.coarse.max_size_pix", table, 1300);
+
+        alignment.coarse.bandpass = Bandpass::from_vec(parse_values_("alignment.coarse.bandpass", table, Vec{0.03, 0.03, 0.25, 0.05}));
         alignment.coarse.run = parse_value_("alignment.coarse.run", table, true);
         alignment.coarse.check_rotation = parse_value_("alignment.coarse.check_rotation", table, true);
         alignment.coarse.allow_90_and_flip_rotation_from_mdoc = parse_value_("alignment.coarse.allow_90_and_flip_rotation_from_mdoc", table, false);
@@ -448,6 +463,10 @@ namespace {
         alignment.coarse.fit_tilt = parse_value_("alignment.coarse.fit_tilt", table, true);
         alignment.coarse.fit_pitch = parse_value_("alignment.coarse.fit_pitch", table, true);
 
+        alignment.refine.resolution = parse_value_("alignment.refine.resolution", table, 20.);
+        alignment.refine.min_size_pix = parse_value_("alignment.refine.min_size_pix", table, 1000);
+        alignment.refine.max_size_pix = parse_value_("alignment.refine.max_size_pix", table, 2000);
+        alignment.refine.bandpass = Bandpass::from_vec(parse_values_("alignment.refine.bandpass", table, Vec{0.03, 0.03, 0.35, 0.05}));
         alignment.refine.run = parse_value_("alignment.refine.run", table, true);
         alignment.refine.correct_ctf = parse_value_("alignment.refine.correct_ctf", table, true);
         alignment.refine.ctf_phase_flip_strength = parse_value_("alignment.refine.ctf_phase_flip_strength", table, 8.);
@@ -492,6 +511,8 @@ namespace {
         postprocessing.run = parse_value_("postprocessing.run", table, true);
         postprocessing.resolution = parse_value_("postprocessing.resolution", table, -1.);
         postprocessing.min_size_pix = parse_value_("postprocessing.min_size_pix", table, 512);
+        postprocessing.max_size_pix = parse_value_("postprocessing.max_size_pix", table, 4096);
+        postprocessing.bandpass = Bandpass::from_vec(parse_values_("postprocessing.bandpass", table, Vec{0.01, 0.01, 0.49, 0.01}));
 
         postprocessing.stack.run = parse_value_("postprocessing.stack.run", table, false);
         postprocessing.stack.dtype = parse_dtype("postprocessing.stack.dtype", table, "f32");

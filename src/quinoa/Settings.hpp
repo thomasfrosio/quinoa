@@ -66,6 +66,10 @@ namespace qn {
         struct Alignment {
             struct Coarse {
                 bool run{};
+                f64 resolution{};
+                isize min_size_pix{};
+                isize max_size_pix{};
+                Bandpass bandpass{};
                 bool check_rotation{};
                 bool allow_90_and_flip_rotation_from_mdoc{};
                 bool is_tilt_axis_from_mdoc{};
@@ -76,6 +80,10 @@ namespace qn {
 
             struct Refine {
                 bool run{};
+                f64 resolution{};
+                isize min_size_pix{};
+                isize max_size_pix{};
+                Bandpass bandpass{};
                 bool correct_ctf{};
                 f64 ctf_phase_flip_strength{};
                 bool fit_rotation{};
@@ -107,6 +115,8 @@ namespace qn {
             bool run{};
             f64 resolution{};
             isize min_size_pix{};
+            isize max_size_pix{};
+            Bandpass bandpass{};
 
             struct Stack {
                 bool run{};

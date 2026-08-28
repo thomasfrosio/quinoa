@@ -31,4 +31,20 @@ namespace qn {
 
     using CTFIsotropic64 = ns::CTFIsotropic<f64>;
     using CTFAnisotropic64 = ns::CTFAnisotropic<f64>;
+
+    struct Bandpass {
+        f64 highpass_cutoff;
+        f64 highpass_width;
+        f64 lowpass_cutoff;
+        f64 lowpass_width;
+
+        static constexpr auto from_vec(const Vec<f64, 4>& v) {
+            return Bandpass{
+                .highpass_cutoff = v[0],
+                .highpass_width = v[1],
+                .lowpass_cutoff = v[2],
+                .lowpass_width = v[3]
+            };
+        }
+    };
 }

@@ -270,11 +270,13 @@ namespace qn {
             .precise_cutoff = true,
             .rescale_target_resolution = settings.resolution,
             .rescale_min_size = settings.min_size_pix,
+            .rescale_max_size = settings.max_size_pix,
             .bandpass{
-                .highpass_cutoff = 0.01,
-                .highpass_width = 0.01,
-                .lowpass_cutoff = 0.49, // TODO note behavior when lowpass filtering
-                .lowpass_width = 0.05,
+                // TODO note behavior when lowpass filtering
+                .highpass_cutoff = settings.bandpass.highpass_cutoff,
+                .highpass_width = settings.bandpass.highpass_width,
+                .lowpass_cutoff = settings.bandpass.lowpass_cutoff,
+                .lowpass_width = settings.bandpass.lowpass_width,
             },
             .bandpass_mirror_padding_factor = 0.5,
             .exposure_filter_voltage = metadata.sample.voltage,
