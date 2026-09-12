@@ -91,28 +91,34 @@ run = true
 #fit_phase_shift = false
 #fit_thickness = true
 
-[alignment.coarse] # ---------------------------------------------------------------------
-# Whether to run the coarse image alignment step. Both the specimen orientation and image translations are updated.
-run = false
 
 # TODO Add doc
-#check_rotation = true
-#allow_90_and_flip_rotation_from_mdoc = false
-#fit_rotation = false
-#fit_tilt = true
-#fit_pitch = true
 
+[alignment]
+coarse.run = false
+coarse.resolution = 20
+coarse.min_size_pix = 1000
+coarse.max_size_pix = 1200
+coarse.bandpass = [0.2, 0.2, 0.35, 0.15]
+coarse.check_rotation = true
+coarse.allow_90_and_flip_rotation_from_mdoc = false
+coarse.fit_rotation = true
+coarse.fit_tilt = true
+coarse.fit_pitch = true
 
-[alignment.refine] # ---------------------------------------------------------------------
-run = false
+refine.run = false
+refine.resolution = 20
+refine.min_size_pix = 1000
+refine.max_size_pix = 1200
+refine.bandpass = [0.2, 0.2, 0.35, 0.15]
+refine.correct_ctf = true
+refine.ctf_phase_flip_strength = 8
+refine.fit_rotation = false
+refine.fit_tilt = true
+refine.fit_pitch = true
+refine.fit_thickness = true
+# TODO fake_sirt?
 
-# TODO Add doc
-correct_ctf = true
-ctf_phase_flip_strength = 8
-fit_rotation = false
-fit_tilt = true
-fit_pitch = true
-fit_thickness = true
 
 [postprocessing] # ---------------------------------------------------------------------
 run = false
@@ -120,6 +126,8 @@ run = false
 # TODO Add doc
 resolution = 20
 min_size_pix = 512
+max_size_pix = 2048
+bandpass = [0.01, 0.01, 0.47, 0.03]
 
 stack.run = false
 stack.correct_rotation = true
