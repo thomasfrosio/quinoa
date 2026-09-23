@@ -8,6 +8,8 @@ Fast CTF fitting, possibly running independently of the tilt-series alignment an
   - specimen orientation (tilt, pitch, and refine rotation).
   - specimen thickness.
 
+See this [preprint](https://www.biorxiv.org/content/10.64898/2026.07.15.738674v1) to learn more about how it works.
+
 ### `Tilt-series alignment`
 Fast tilt-series alignment, including methods for:
 - Excluding tilt images based on tilt-series image statistics.
