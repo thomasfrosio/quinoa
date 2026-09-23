@@ -13,28 +13,21 @@ namespace qn {
         f64 max_tilt_difference{21};
 
         f64 smooth_edge_percent{0.1};
-
-        nx::WindowedSinc insertion_sinc{};
-        nx::WindowedSinc extraction_sinc{};
     };
 
     class ProjectionMatcher {
     public:
         ProjectionMatcher() = default;
+        ProjectionMatcher(isize n_slices, const Shape2& shape, f64 max_tilt_difference);
 
-        ProjectionMatcher(
-            isize n_slices,
-            const Shape2& shape,
-            Device device
-        );
+        [[nodiscard]] auto shared_buffer_bytes() const -> isize;
+        void set_shared_buffer(const View<std::byte>& shared_buffer);
 
         auto update_shifts(
             const View<f32>& stack,
-            Metadata::Stack& metadata,
+            Metadata& metadata,
             const ProjectionMatchingParameters& parameters
         ) const -> f64;
-
-        [[nodiscard]] auto spectrum_size() const -> isize;
 
         ~ProjectionMatcher();
     };

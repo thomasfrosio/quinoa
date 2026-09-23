@@ -150,6 +150,9 @@ namespace {
         std::inclusive_scan(relative_shifts.rbegin() + r_pivot, relative_shifts.rend(), global_shifts.rbegin() + r_pivot);
 
         // Center the shifts.
+        // TODO Exclude high tilts in the average used for centering because if their alignment failed
+        //      (e.g. exclude blank view failed and the image is blank) then its shift might be huge and
+        //      skew the average. For logging/convergence check, still compute the mean of all shifts though.
         auto mean = Vec<f64, 2>{};
         for (const auto& shift: global_shifts)
             mean += shift;
@@ -361,43 +364,46 @@ namespace qn {
             slice.angles[0] = Metadata::Image::to_angle_range(best_rotation_offset);
     }
 
-    Tilter::Tilter(
-        const Shape4& shape,
-        Device device
-    ) {
-        const auto allocated_start = Allocator::bytes_currently_allocated(device);
-
-        // Allocate 4 times the stack.
+    Tilter::Tilter(const Shape4& shape) {
+        // Ask for 4 times the stack.
         // We only need 3 times the stack; however, the forward FFT needed for the cross-correlation is the slowest
         // step and is significantly faster when the references and stretched targets are batched into the same array.
         // This alignment is meant for low-resolution images (<=2Kx2K images), so a bigger workspace should be fine.
-        const auto n_total_images = shape[0];
-        const auto n_target_images = shape[0] - 1;
-        const auto buffer_shape = shape.set<0>(n_total_images * 4); // TODO shouldn't it be n_target_images * 4?
+        m_buffer_shape = shape.set<0>(shape[0] * 4); // TODO shouldn't it be n_target_images * 4?
+        m_n_total_images = shape[0];
+    }
 
-        // Use device-only memory (which seems faster than managed memory) for the big buffer, if possible.
-        const auto n_bytes_to_allocate = static_cast<usize>(buffer_shape.rfft().n_elements()) * sizeof(c32);
-        const bool has_enough_space = n_bytes_to_allocate < device.memory_capacity().free;
-        m_buffer_rfft = Array<c32>(buffer_shape.rfft(), {
-            .device = device,
-            .allocator = has_enough_space ? Allocator::ASYNC : Allocator::MANAGED,
-        });
-        m_buffer = nf::alias_to_real(m_buffer_rfft.view(), buffer_shape);
+    auto Tilter::shared_buffer_bytes() const -> isize {
+        return m_buffer_shape.n_elements() * static_cast<isize>(sizeof(c32));
+    }
+
+    void Tilter::set_shared_buffer(const Array<std::byte>& shared_buffer) {
+        auto shared_buffer_rfft = shared_buffer
+            .reinterpret_as<c32>()
+            .subregion(Ellipsis{}, Slice{0, m_buffer_shape.rfft().n_elements()})
+            .reshape(m_buffer_shape.rfft());
+
+        m_buffer_rfft = shared_buffer_rfft.view();
+        m_buffer = nf::alias_to_real(m_buffer_rfft, m_buffer_shape);
 
         // Use managed memory for the small buffers that need CPU access.
-        m_fov_masks = Array<ParallelogramMask>(n_target_images, {.device = device, .allocator = Allocator::MANAGED});
+        const auto device = m_buffer.device();
+        const auto options_managed = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
+        const auto n_target_images = m_n_total_images - 1;
+
+        m_fov_masks = Array<ParallelogramMask>(n_target_images, options_managed);
         m_plane_coefficients = noa::like<Vec<f32, 4>>(m_fov_masks);
         m_projection_matrices = noa::like<Mat<f32, 2, 4>>(m_fov_masks);
-        m_shift_matrices = Array<Mat<f32, 2, 3>>(n_total_images, m_fov_masks.options());
+        m_shift_matrices = Array<Mat<f32, 2, 3>>(m_n_total_images, options_managed);
 
-        m_xmap_centered = Array<f32>({n_target_images, 1, 64, 64}, m_fov_masks.options());
+        m_xmap_centered = Array<f32>({n_target_images, 1, 64, 64}, options_managed);
         m_peak_shifts = noa::like<Vec<f32, 2>>(m_fov_masks);
         m_peak_values = noa::like<f32>(m_fov_masks);
         m_peak_stats = noa::like<Vec<f32, 5>>(m_fov_masks);
 
         // Prepare the shifts.
-        m_relative_shifts.resize(static_cast<usize>(n_total_images));
-        m_global_shifts.resize(static_cast<usize>(n_total_images));
+        m_relative_shifts.resize(static_cast<usize>(m_n_total_images));
+        m_global_shifts.resize(static_cast<usize>(m_n_total_images));
 
         // Prepare FFT plans and set the workspace.
         if (device.is_gpu()) {
@@ -407,23 +413,23 @@ namespace qn {
 
             // find_image_rotation
             nf::r2c(
-                m_buffer.subregion(Slice{0, n_total_images}),
-                m_buffer_rfft.view().subregion(Slice{0, n_total_images}),
+                m_buffer.subregion(Slice{0, m_n_total_images}),
+                m_buffer_rfft.view().subregion(Slice{0, m_n_total_images}),
                 {.record_and_share_workspace = true}
             );
 
-            const auto workspace = m_buffer_rfft.subregion(Offset{2 * n_target_images});
-            const auto n_plans_set = nf::set_workspace(device, workspace);
-            if (auto left = nf::workspace_left_to_allocate(device); n_plans_set == 0 or left > 0) {
-                Logger::warn(
-                    "Failed to set the FFT workspace. A new workspace will have to be allocated, likely increasing the memory requirements substantially. Please report this. shape={}, workspace_left_to_allocate={}bytes, n_plans_set={}",
-                    shape, left, n_plans_set);
+            if (nf::workspace_left_to_allocate(device)) {
+                // TODO Use the original shared_buffer which may be larger than the reshaped shared_buffer_rfft.
+                const auto n_plans_set = nf::set_workspace(
+                    device, std::move(shared_buffer_rfft).subregion(Offset{2 * n_target_images}));
+                const auto left = nf::workspace_left_to_allocate(device);
+                if (n_plans_set == 0 or left > 0) {
+                    Logger::warn(
+                        "Failed to set the FFT workspace. A new workspace will have to be allocated, likely increasing the memory requirements substantially. shape={}, workspace_left_to_allocate={}bytes, n_plans_set={}",
+                        m_buffer_shape.set<0>(m_n_total_images), left, n_plans_set);
+                }
             }
         }
-
-        const auto allocated = Allocator::bytes_currently_allocated(device) - allocated_start;
-        Logger::trace("Tilter() allocated {:.2f}GB on {} ({})",
-                      static_cast<f64>(allocated) * 1e-9, m_buffer.device(), m_buffer.allocator());
     }
 
     void Tilter::find_image_rotation(
@@ -431,7 +437,7 @@ namespace qn {
         Metadata::Stack& metadata,
         Vec<f64, 3>& angle_offsets,
         const FindImageRotationOptions& options
-    ) {
+    ) const {
         if (options.accurate_fov) {
             return find_accurate_image_rotation(stack, metadata, angle_offsets, {
                 .angle_range = options.angle_range,

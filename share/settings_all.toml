@@ -44,7 +44,7 @@
 #phase_shift = 0
 
 # Estimate of the specimen thickness, in nm.
-# If specified, it can improve robustness and accuracy of the fit.
+# If specified, it can improve the robustness and accuracy of the fit.
 #thickness = 0
 
 # Add a fixed offset to the specimen inclination, in degrees.
@@ -99,7 +99,8 @@ coarse.run = false
 coarse.resolution = 20
 coarse.min_size_pix = 1000
 coarse.max_size_pix = 1200
-coarse.bandpass = [0.2, 0.2, 0.35, 0.15]
+coarse.bandpass = [0.02, 0.02, 0.35, 0.15]
+coarse.fake_sirt_iterations = 0
 coarse.check_rotation = true
 coarse.allow_90_and_flip_rotation_from_mdoc = false
 coarse.fit_rotation = true
@@ -110,14 +111,16 @@ refine.run = false
 refine.resolution = 20
 refine.min_size_pix = 1000
 refine.max_size_pix = 1200
-refine.bandpass = [0.2, 0.2, 0.35, 0.15]
+refine.bandpass = [0.02, 0.02, 0.35, 0.15]
+refine.fake_sirt_iterations = 0
 refine.correct_ctf = true
 refine.ctf_phase_flip_strength = 8
 refine.fit_rotation = false
 refine.fit_tilt = true
 refine.fit_pitch = true
 refine.fit_thickness = true
-# TODO fake_sirt?
+refine.max_tilt_difference = 20
+refine.nb_iterations = 2
 
 
 [postprocessing] # ---------------------------------------------------------------------

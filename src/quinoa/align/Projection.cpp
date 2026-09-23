@@ -275,7 +275,11 @@ namespace {
     };
 
     struct Projector {
-        Array<c32> m_buffer_padded_rfft; // [references, ..., reference, target, projected]
+        Shape3 m_shape{};
+        isize m_spectrum_size{};
+        nx::WindowedSinc m_insertion_sinc{};
+
+        View<c32> m_buffer_padded_rfft; // [references, ..., reference, target, projected]
         Array<f32> m_buffer_padded; // 2 padded images
         Array<f32> m_buffer; // 2 images
         Array<c32> m_buffer_rfft; // 2 slices
@@ -298,65 +302,81 @@ namespace {
     public:
         Projector() = default;
 
-        explicit Projector(isize n_slices, const Shape2& shape_2d, Device device) {
-            const auto n0 = Allocator::bytes_currently_allocated(device);
-
+        explicit Projector(isize n_slices, const Shape2& shape_2d, f64 max_tilt_difference) {
             // TODO try higher interpolation with reduced padding?
-            const auto size_padded = nf::next_fast_size(noa::max(shape_2d) * 2);
-            const auto shape = Shape4{1, 1, shape_2d[0], shape_2d[1]};
-            const auto padded_shape = Shape4{1, 1, size_padded, size_padded};
+            m_shape = Shape3{n_slices, shape_2d[0], shape_2d[1]};
+            m_spectrum_size = nf::next_fast_size(noa::max(shape_2d) * 2);
 
-            // If there's enough memory use device-only as it seems more performant on some systems.
-            const bool has_enough_space = [&] {
-                const auto available = device.memory_capacity().free;
-                const auto n = size_padded * size_padded * (n_slices + 5);
-                const auto rough_estimate = static_cast<usize>(n) * sizeof(f32) * 2;
-                return available >= rough_estimate;
-            }();
-            const auto options = ArrayOption{
-                .device = device,
-                .allocator = has_enough_space ? Allocator::ASYNC : Allocator::MANAGED,
-            };
+            Logger::trace(
+                "Projection matching:\n"
+                "  stack_shape={}\n"
+                "  spectrum_size={}\n"
+                "  max_tilt_difference={:.1f}deg",
+                m_shape, m_spectrum_size, max_tilt_difference
+            );
 
-            m_buffer_padded_rfft = Array<c32>(padded_shape.rfft().set<0>(n_slices + 3), options); // +target, +projected x2
+            // Set up the central-slice insertion.
+            constexpr auto INSERT_SINC_OSCILLATIONS = 8;
+            const f64 virtual_volume_size = static_cast<f64>(m_spectrum_size); // TODO -10%?
+            m_insertion_sinc.fftfreq_sinc = 1 / virtual_volume_size;
+            m_insertion_sinc.fftfreq_blackman = INSERT_SINC_OSCILLATIONS * m_insertion_sinc.fftfreq_sinc;
+            Logger::trace(
+                "  central-slice insertion bounds:\n"
+                "    fftfreq_sinc={:.4f}cpp|{:.1f}pix (virtual_volume_size={})\n"
+                "    fftfreq_blackman={:.4f}cpp",
+                m_insertion_sinc.fftfreq_sinc, m_insertion_sinc.fftfreq_sinc * virtual_volume_size,
+                virtual_volume_size, m_insertion_sinc.fftfreq_blackman
+            );
+        }
+
+        [[nodiscard]] auto shared_buffer_bytes() const -> isize {
+            return Shape3{
+                m_shape[0] + 3, m_spectrum_size, m_spectrum_size // +target, +projected x2
+            }.rfft().n_elements() *
+                static_cast<isize>(sizeof(c32));
+        }
+
+        void set_shared_buffer(const View<std::byte>& shared_buffer) {
+            const auto shape = Shape4{1, 1, m_shape[1], m_shape[2]};
+            const auto padded_shape = Shape4{m_shape[0] + 3, 1, m_spectrum_size, m_spectrum_size};
+            const auto padded_shape_rfft = padded_shape.rfft();
+
+            m_buffer_padded_rfft = shared_buffer
+                .reinterpret_as<c32>()
+                .subregion(Ellipsis{}, Slice{0, padded_shape_rfft.n_elements()})
+                .reshape(padded_shape_rfft);
+            const auto device = m_buffer_padded_rfft.device();
+            const auto options = m_buffer_padded_rfft.options();
+
             m_buffer_padded = Array<f32>(padded_shape.set<0>(2), options);
             m_buffer = Array<f32>(shape.set<0>(2), options);
             m_buffer_rfft = Array<c32>(shape.rfft().set<0>(2), options);
 
             // Small xmap centered on the peak, needs to be dereferenceable.
-            m_xmap_centered = Array<f32>({1, 1, 64, 64}, {device, Allocator::MANAGED});
+            m_xmap_centered = Array<f32>({1, 1, 64, 64}, {.device = device, .allocator = Allocator::MANAGED});
 
-            // TODO Try in-place FFTs?
             if (device.is_gpu()) {
                 // All the FFTs.
-                const auto fft_options = nf::FFTOptions{.record_and_share_workspace = true};
-                nf::r2c(m_buffer_padded.view(), m_buffer_padded_rfft.view().subregion(Slice{0, 2}), fft_options);
-                nf::c2r(m_buffer_padded_rfft.view().subregion(Slice{0, 2}), m_buffer_padded.view(), fft_options);
-                nf::r2c(m_buffer.view(), m_buffer_rfft.view(), fft_options);
-                nf::c2r(m_buffer_rfft.view().subregion(0), m_buffer.view().subregion(0), fft_options);
+                constexpr auto FFT_OPTIONS = nf::FFTOptions{.record_and_share_workspace = true};
+                nf::r2c(m_buffer_padded.view(), m_buffer_padded_rfft.subregion(Slice{0, 2}), FFT_OPTIONS);
+                nf::c2r(m_buffer_padded_rfft.subregion(Slice{0, 2}), m_buffer_padded.view(), FFT_OPTIONS);
+                nf::r2c(m_buffer.view(), m_buffer_rfft.view(), FFT_OPTIONS);
+                nf::c2r(m_buffer_rfft.view().subregion(0), m_buffer.view().subregion(0), FFT_OPTIONS);
 
-                const auto workspace = Array<std::byte>(nf::workspace_left_to_allocate(device), options);
-                const auto n_plans_set = nf::set_workspace(device, std::move(workspace));
-                if (auto left = nf::workspace_left_to_allocate(device); n_plans_set == 0 or left > 0) {
-                    Logger::warn(
-                        "Failed to set the FFT workspace. A new workspace will have to be allocated, possibly increasing the memory requirements significantly. Please report this. shape={}, workspace_left_to_allocate={}bytes, n_plans_set={}",
-                        shape, left, n_plans_set);
+                if (const isize n_bytes = nf::workspace_left_to_allocate(device)) {
+                    auto workspace = Array<std::byte>(n_bytes, options);
+                    const auto n_plans_set = nf::set_workspace(device, std::move(workspace));
+                    const auto left = nf::workspace_left_to_allocate(device);
+                    if (n_plans_set == 0 or left > 0) {
+                        Logger::warn(
+                            "Failed to set the FFT workspace. A new workspace will have to be allocated, possibly increasing the memory requirements significantly. shape={}, workspace_left_to_allocate={}bytes, n_plans_set={}",
+                            shape, left, n_plans_set);
+                    }
                 }
             }
-
-            const auto n1 = Allocator::bytes_currently_allocated(device);
-
-            Logger::trace(
-                "Projection matching:\n"
-                "  image_shape={}\n"
-                "  spectrum_size={}\n"
-                "  n_bytes_allocated={:.2f}GB (device={}, allocator={})",
-                shape, size_padded, static_cast<f64>(n1 - n0) * 1e-9,
-                device, options.allocator
-            );
         }
 
-        void initialize(const View<const f32>& stack, const ProjectionMatchingParameters& parameters) {
+        void initialize(const View<const f32>& stack, f64 spacing_nm, f64 specimen_thickness_nm) {
             // Reset.
             m_references_metadata.clear();
             m_references_metadata_rotations.clear();
@@ -377,16 +397,33 @@ namespace {
             }
 
             // Prepare the w-windowed-sinc convolution filter.
+            auto extraction_sinc = [&] {
+                // Set up the central-slice extraction.
+                constexpr auto EXTRACT_SINC_OSCILLATIONS = 4;
+                const f64 virtual_volume_size = static_cast<f64>(m_buffer_padded.shape().height()); // TODO -10%?
+                const f64 thickness_estimate_pixels = specimen_thickness_nm / spacing_nm;
+                const f64 fftfreq_z_sinc = 1 / thickness_estimate_pixels;
+                const f64 fftfreq_z_blackman = EXTRACT_SINC_OSCILLATIONS * fftfreq_z_sinc;
+                Logger::trace(
+                    "  central-slice extraction bounds:\n"
+                    "    fftfreq_sinc={:.4f}cpp (sample_thickness={}pix|{:.2f}nm)\n"
+                    "    fftfreq_blackman={:.4f}cpp (w_window_size=~{}pix)",
+                    fftfreq_z_sinc, std::round(thickness_estimate_pixels), specimen_thickness_nm,
+                    fftfreq_z_blackman, std::round(fftfreq_z_blackman * virtual_volume_size * 2 + 1)
+                );
+                return nx::WindowedSinc{fftfreq_z_sinc, fftfreq_z_blackman};
+            }();
+
             const auto shape_padded = m_buffer_padded.shape().pop_front<2>();
             const auto volume_z = static_cast<f64>(shape_padded[0]);
-            const auto& esinc = parameters.extraction_sinc;
             const auto [extract_blackman_size, extract_window_total_weight] = w_window_spec<i32>(
-                esinc.fftfreq_sinc, esinc.fftfreq_blackman, volume_z);
+                extraction_sinc.fftfreq_sinc, extraction_sinc.fftfreq_blackman, volume_z);
 
             m_windowed_sinc = Array<f32>(extract_blackman_size);
             for (i32 i{}; auto& e: m_windowed_sinc.span_1d()) {
                 const auto fftfreq_z_offset = w_index_to_fftfreq_offset(i++, extract_blackman_size, volume_z);
-                const auto convolution_weight = windowed_sinc_at(fftfreq_z_offset, esinc.fftfreq_sinc, esinc.fftfreq_blackman);
+                const auto convolution_weight = windowed_sinc_at(
+                    fftfreq_z_offset, extraction_sinc.fftfreq_sinc, extraction_sinc.fftfreq_blackman);
                 e = static_cast<f32>(convolution_weight);
             }
             m_windowed_sinc = std::move(m_windowed_sinc).to(options);
@@ -404,8 +441,8 @@ namespace {
                 .w_windowed_sinc = m_windowed_sinc.span_1d<const f32, i32>(),
                 .f_shape = shape_padded.vec.as<f32>(),
                 .volume_z = static_cast<f32>(volume_z),
-                .insert_fftfreq_sinc = static_cast<f32>(parameters.insertion_sinc.fftfreq_sinc),
-                .insert_fftfreq_blackman = static_cast<f32>(parameters.insertion_sinc.fftfreq_blackman),
+                .insert_fftfreq_sinc = static_cast<f32>(m_insertion_sinc.fftfreq_sinc),
+                .insert_fftfreq_blackman = static_cast<f32>(m_insertion_sinc.fftfreq_blackman),
                 .extract_blackman_size = extract_blackman_size,
             };
         }
@@ -499,7 +536,7 @@ namespace {
 
             // Sample the central-slice from the virtual volume.
             // This is the most expensive step of this function, especially for thin samples.
-            auto target_and_projected_padded_rfft = m_buffer_padded_rfft.view().subregion(Slice{n_references, n_references + 2});
+            auto target_and_projected_padded_rfft = m_buffer_padded_rfft.subregion(Slice{n_references, n_references + 2});
             auto projected_padded_rfft = target_and_projected_padded_rfft.subregion(1);
             const auto extraction_angles = noa::deg2rad(target_metadata.angles);
             m_sampler.projected_slice = projected_padded_rfft.span_contiguous<c32, 2, i32>();
@@ -511,7 +548,7 @@ namespace {
             noa::iwise(shape_padded_2d.rfft(), device, m_sampler);
 
             // Keep a copy of the projected central-slice for the ZNCC.
-            auto projected_padded_rfft_copy = m_buffer_padded_rfft.view().subregion(n_references + 2);
+            auto projected_padded_rfft_copy = m_buffer_padded_rfft.subregion(n_references + 2);
             if (compute_score)
                 projected_padded_rfft.to(projected_padded_rfft_copy);
 
@@ -612,33 +649,43 @@ namespace {
 }
 
 namespace qn {
-    ProjectionMatcher::ProjectionMatcher(isize n_slices, const Shape2& shape_2d, Device device) {
-        projector = Projector(n_slices, shape_2d, device);
+    ProjectionMatcher::ProjectionMatcher(isize n_slices, const Shape2& shape_2d, f64 max_tilt_difference) {
+        projector = Projector(n_slices, shape_2d, max_tilt_difference);
     }
 
     ProjectionMatcher::~ProjectionMatcher() {
         projector = Projector{};
     }
 
-    [[nodiscard]] auto ProjectionMatcher::spectrum_size() const -> isize {
-        return projector.m_buffer_padded.shape().height();
+    [[nodiscard]] auto ProjectionMatcher::shared_buffer_bytes() const -> isize {
+        return projector.shared_buffer_bytes();
+    }
+
+    void ProjectionMatcher::set_shared_buffer(const View<std::byte>& shared_buffer) {
+        projector.set_shared_buffer(shared_buffer);
     }
 
     auto ProjectionMatcher::update_shifts(
         const View<f32>& stack,
-        Metadata::Stack& metadata,
+        Metadata& metadata,
         const ProjectionMatchingParameters& settings
     ) const -> f64 {
-        auto t = Logger::trace_scope_time("ProjectionMatcher::update_shifts");
+        auto t = Logger::info_scope_time("ProjectionMatcher::update_shifts");
         // Logger::s_debug_path = "/dls/ebic/data/staff-scratch/thomas2/datasets/kyprianos/quinoa"; // FIXME
 
-        projector.initialize(stack, settings);
+        const f64 spacing_nm = mean(metadata.spacing) * 1e-1;
+        const f64 specimen_thickness_nm = metadata.sample.thickness;
+        projector.initialize(stack, spacing_nm, specimen_thickness_nm);
 
         // Projection matching, using the lowest tilt as the initial reference,
         // aligning from low-to-high tilts. When a tilt is aligned, it is added
         // to the set of reference images used to compute the projected reference.
-        auto projection_metadata = metadata;
-        projection_metadata.sort("time"); // TODO
+
+        // TODO Ideally, the lowest tilt should be the first collected image,
+        // but with a big tilt offset, this is not true. We could use the time
+        // to sort, but that would only work for dose-symmetric schemes.
+        auto projection_metadata = metadata.stack;
+        projection_metadata.sort("absolute_tilt");
 
         f64 zncc{};
         const auto common_fov = CommonFOV(stack.shape().filter(2, 3), projection_metadata);
@@ -656,7 +703,7 @@ namespace qn {
         zncc /= static_cast<f64>(projection_metadata.ssize() - 1);
 
         if (settings.update_metadata)
-            metadata.update_from(projection_metadata, {.update_shifts = true});
+            metadata.stack.update_from(projection_metadata, {.update_shifts = true});
         return zncc;
     }
 }

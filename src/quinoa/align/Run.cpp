@@ -9,6 +9,21 @@
 #include "quinoa/align/Thickness.hpp"
 #include "quinoa/postprocessing/FilterStack.hpp"
 
+namespace {
+    auto allocate_shared_buffer(Device device, isize n_bytes) {
+        // If there's enough memory use device-only as it seems more performant on some systems.
+        const bool has_enough_space = [&] {
+            const auto available = device.memory_capacity().free;
+            const auto rough_estimate = static_cast<usize>(n_bytes) + static_cast<usize>(n_bytes / 10);
+            return available >= rough_estimate;
+        }();
+        return Array<std::byte>(noa::next_multiple_of(n_bytes, 16), {
+            .device = device,
+            .allocator = has_enough_space ? Allocator::ASYNC : Allocator::MANAGED,
+        });
+    }
+}
+
 namespace qn {
     void coarse_alignment(
         const Path& stack_path,
@@ -41,6 +56,7 @@ namespace qn {
                 .lowpass_width = settings.bandpass.lowpass_width,
             },
             .bandpass_mirror_padding_factor = 0.5,
+            .fake_sirt_iterations = settings.fake_sirt_iterations,
             .exposure_filter_voltage = metadata.sample.voltage,// TODO 0?
 
             // Image processing after cropping:
@@ -56,7 +72,15 @@ namespace qn {
             nf::set_cache_limit(12, device);
         }
 
-        auto tilter = Tilter(tilt_series.shape(), tilt_series.device());
+        // Prepare the tilter.
+        const auto b0 = Allocator::bytes_currently_allocated(device);
+        auto tilter = Tilter(tilt_series.shape());
+        const auto shared_buffer = allocate_shared_buffer(tilt_series.device(), tilter.shared_buffer_bytes());
+        tilter.set_shared_buffer(shared_buffer);
+        const auto allocated = Allocator::bytes_currently_allocated(device) - b0;
+        Logger::trace("Allocated {:.2f}GB on {} ({})",
+                      static_cast<f64>(allocated) * 1e-9, device, shared_buffer.allocator());
+
         auto angle_offsets = Vec{0., 0., 0.};
 
         // We require the rotation angle from the mdoc, but we can check that this rotation matches the images.
@@ -179,7 +203,7 @@ namespace qn {
 
             // TODO Detect for view with huge shifts and remove them?
             //      Maybe only for higher tilts, e.g. >20deg, since low tilts
-            //      are likely to blame and are very valuable.
+            //      are unlikely to blame and are very valuable.
         }
 
         tilter.find_image_shifts(tilt_series.view(), metadata.stack, {
@@ -218,6 +242,7 @@ namespace qn {
                 .lowpass_width = settings.bandpass.lowpass_width,
             },
             .bandpass_mirror_padding_factor = 0.5,
+            .fake_sirt_iterations = settings.fake_sirt_iterations,
             .exposure_filter_voltage = metadata.sample.voltage,
 
             // Image processing after cropping:
@@ -227,32 +252,30 @@ namespace qn {
             .zero_pad_to_square_shape = false,
         });
 
-        metadata.sample.thickness = 250; // FIXME
-
-        // Load and filter the tilt-series.
-        // This corrects for the CTF at the "center of the sample", where most of the signal comes from.
-        // It is up to the thickness estimation and tomogram centering to place that "center of the sample"
-        // at the center of the tomogram. On the other hand, this is quite low resolution and the CTF correction
-        // has little to no effect; it's mostly about the B-factor filtering.
         const auto stack_spacing = mean(loader.stack_spacing());
         metadata.set_spacing(stack_spacing);
-        metadata.stack.sort("tilt").reset_indices();
+        metadata.stack.sort("tilt").reset_indices(); // load ascending tilt order
 
-        Logger::s_debug_path = "/dls/ebic/data/staff-scratch/thomas2/datasets/kyprianos/quinoa/quinoa-diagnostics/Position_1_2/filter";
+        // Load and filter the tilt-series.
+        // If the CTF is off, this simply loads the tilt-series by pulling images from the loader.
+        // If the CTF is on, it corrects for the CTF at the "center of the sample", where most of the signal comes from.
+        // It is up to the thickness estimation and tomogram centering to place that "center of the sample"
+        // at the center of the tomogram. On the other hand, this is quite low resolution and the CTF correction
+        // has little to no effect; it's mostly about the B-factor filtering, and even that can be replaced using
+        // filtering from the stack loader.
         const auto tilt_series = filter_stack(std::move(loader), metadata, {
-            .prealign_stack = false,
-            .ramp_filter = false,
-            .fake_sirt_iterations = 15,
             .correct_ctf = settings.correct_ctf,
             .ctf_phase_flip_strength = settings.ctf_phase_flip_strength,
             .ctf_defocus_step_nm = 15, // TODO probably not worth it, decrease it
             .ctf_bfactor = 0,
         });
-        noa::write_image(tilt_series, Logger::s_debug_path / "filtered.mrc"); // check with no highpass filter and bfactor to compare with input.
 
-        // metadata.sample.thickness = estimate_sample_thickness(tilt_series.view(), metadata, {
-        //     .output_directory = settings.output_directory / "thickness",
-        // });
+        // Prepare for the specimen thickness.
+        // Loads a low-resolution tilt-series and allocate the full tomogram.
+        // Most of the memory requirement comes from this tomogram.
+        auto specimen_thickness = SpecimenThickness{};
+        if (settings.fit_thickness)
+            specimen_thickness = SpecimenThickness(stack_filename, metadata, device);
 
         // Clean up FFT state.
         if (device.is_gpu()) {
@@ -260,183 +283,95 @@ namespace qn {
             nf::set_cache_limit(12, device);
         }
 
+        // Prepare for the specimen leveling.
+        auto tilter = Tilter{};
+        if (settings.fit_tilt or settings.fit_pitch)
+            tilter = Tilter(tilt_series.shape());
+
         // Prepare for the projection matching.
         const auto n_images = metadata.stack.ssize();
         const auto image_shape = tilt_series.shape().filter(2, 3);
-        auto projection_matcher = ProjectionMatcher(n_images, image_shape, tilt_series.device());
+        auto projection_matcher = ProjectionMatcher(n_images, image_shape, settings.max_tilt_difference);
 
-        // Set up the central-slice insertion.
-        constexpr auto INSERT_SINC_OSCILLATIONS = 8;
-        const f64 virtual_volume_size = static_cast<f64>(projection_matcher.spectrum_size()); // TODO -10%?
-        const f64 fftfreq_sinc = 1 / virtual_volume_size;
-        const f64 fftfreq_blackman = INSERT_SINC_OSCILLATIONS * fftfreq_sinc;
+        // Reduce memory usage by sharing a write buffer between the different steps.
+        const auto specimen_thickness_bytes = specimen_thickness.shared_buffer_bytes();
+        const auto tilter_bytes = tilter.shared_buffer_bytes();
+        const auto projection_matcher_bytes = projection_matcher.shared_buffer_bytes();
+        const auto n_bytes_shared_buffer = std::max({
+            specimen_thickness.shared_buffer_bytes(),
+            tilter.shared_buffer_bytes(),
+            projection_matcher.shared_buffer_bytes()
+        });
+
+        const auto b0 = Allocator::bytes_currently_allocated(device);
+
+        auto shared_buffer = allocate_shared_buffer(device, n_bytes_shared_buffer);
+        specimen_thickness.set_shared_buffer(shared_buffer.view());
+        tilter.set_shared_buffer(shared_buffer);
+        projection_matcher.set_shared_buffer(shared_buffer.view());
+
+        const auto allocated = Allocator::bytes_currently_allocated(device) - b0;
         Logger::trace(
-            "Central-slice insertion bounds:\n"
-            "  fftfreq_sinc={:.4f}cpp|{:.1f}pix (virtual_volume_size={})\n"
-            "  fftfreq_blackman={:.4f}cpp",
-            fftfreq_sinc, fftfreq_sinc * virtual_volume_size,
-            virtual_volume_size, fftfreq_blackman
+            "\nSharing buffer: (device={}, {}):\n"
+            "  specimen_thickness={:.3f}GB\n"
+            "  specimen_leveling={:.3f}GB\n"
+            "  projection_matching={:.3f}GB",
+             device, shared_buffer.allocator(),
+            static_cast<f64>(specimen_thickness_bytes) * 1e-9,
+            static_cast<f64>(tilter_bytes) * 1e-9,
+            static_cast<f64>(projection_matcher_bytes) * 1e-9
+        );
+        Logger::trace(
+            "Allocated {:.3f}GB (device={}, {})\n",
+            static_cast<f64>(allocated) * 1e-9, device, shared_buffer.allocator()
         );
 
-        auto extraction_sinc = [&] {
-            // Set up the central-slice extraction.
-            constexpr auto EXTRACT_SINC_OSCILLATIONS = 4;
-            const f64 thickness_estimate_pixels = metadata.sample.thickness / (stack_spacing * 1e-1);
-            const f64 fftfreq_z_sinc = 1 / thickness_estimate_pixels;
-            const f64 fftfreq_z_blackman = EXTRACT_SINC_OSCILLATIONS * fftfreq_z_sinc;
-            Logger::trace(
-                "Central-slice extraction bounds:\n"
-                "  fftfreq_sinc={:.4f}cpp (sample_thickness={}pix|{:.2f}nm)\n"
-                "  fftfreq_blackman={:.4f}cpp (w_window_size=~{}pix)",
-                fftfreq_z_sinc, std::round(thickness_estimate_pixels), metadata.sample.thickness,
-                fftfreq_z_blackman, std::round(fftfreq_z_blackman * virtual_volume_size * 2 + 1)
-            );
-            return nx::WindowedSinc{fftfreq_z_sinc, fftfreq_z_blackman};
-        };
-
-        constexpr f64 MAX_TILT_DIFFERENCE = 20;
-        constexpr f64 SMOOTH_EDGE_PERCENT = 0.1;
-
+        // Run.
         auto angle_offsets = Vec{0., 0., 0.};
+        constexpr f64 SMOOTH_EDGE_PERCENT = 0.1;
+        const usize n_iterations = settings.fit_rotation or settings.fit_tilt or settings.fit_pitch ?
+            noa::clamp_cast<usize>(settings.nb_iterations) : 1;
 
-        const i32 N_ITERATIONS = settings.fit_rotation ? 2 : 1;
-        for (auto _: noa::irange(N_ITERATIONS)) {
-            // TODO Fourier crop stack to lower resolution and estimate thickness
-            // metadata.sample.thickness = estimate_sample_thickness(stack_filename, metadata, {
-            //     .device = device,
-            //     .allocator = Allocator::ASYNC,
-            //     .resolution = 24.,
-            //     .output_directory = settings.output_directory / "thickness",
-            // });
+        if (settings.fit_thickness)
+            metadata.sample.thickness = specimen_thickness.estimate(metadata, output_directory);
 
-            projection_matcher.update_shifts(tilt_series.view(), metadata.stack, {
-                .max_tilt_difference = MAX_TILT_DIFFERENCE,
+        for (auto i: noa::irange(n_iterations)) {
+            projection_matcher.update_shifts(tilt_series.view(), metadata, {
+                .max_tilt_difference = settings.max_tilt_difference,
                 .smooth_edge_percent = SMOOTH_EDGE_PERCENT,
-                .insertion_sinc = {fftfreq_sinc, fftfreq_blackman},
-                .extraction_sinc = extraction_sinc(),
             });
 
             if (settings.fit_rotation) {
                 Tilter::find_accurate_image_rotation(tilt_series.view(), metadata.stack, angle_offsets, {
-                    .angle_range = 4,
+                    .angle_range = i == 0 ? 4. : 1.,
                     .output_directory = &output_directory,
                 });
             }
+
+            if (settings.fit_tilt or settings.fit_pitch) {
+                constexpr auto TILT_RANGE = std::array{5., 1.};
+                constexpr auto PITCH_RANGE = std::array{5., 1.};
+                tilter.find_specimen_level(tilt_series.view(), metadata.stack, angle_offsets, {
+                    .tilt_search_range = not settings.fit_tilt ? 0. : TILT_RANGE[i],
+                    .pitch_search_range = not settings.fit_pitch ? 0. : PITCH_RANGE[i],
+                    .n_global_search_evaluations = 0, // initial global search doesn't seem necessary
+                    .fov_mask = true,
+                    .smooth_edge_percent = 0.3,
+                    .max_shift_percent = 0.1,
+                });
+            }
+
+            if (settings.fit_thickness)
+                metadata.sample.thickness = specimen_thickness.estimate(metadata, output_directory);
 
             // Note that we don't recompute the CTF correction despite the possible change of tilt-axis.
             // Usually the axis barely changes, and while we could check and recompute it if the change is significant,
             // the CTF correction has little effect and is already an approximation anyway.
         }
 
-        projection_matcher.update_shifts(tilt_series.view(), metadata.stack, {
-            .max_tilt_difference = MAX_TILT_DIFFERENCE,
+        projection_matcher.update_shifts(tilt_series.view(), metadata, {
+            .max_tilt_difference = settings.max_tilt_difference,
             .smooth_edge_percent = SMOOTH_EDGE_PERCENT,
-            .insertion_sinc = {fftfreq_sinc, fftfreq_blackman},
-            .extraction_sinc = extraction_sinc(),
         });
-
-        // if (settings.fit_rotation) {
-        //     const auto esinc = extraction_sinc();
-        //     const auto projection_matching_options = ProjectionMatchingParameters{
-        //         .max_tilt_difference = MAX_TILT_DIFFERENCE,
-        //         .smooth_edge_percent = SMOOTH_EDGE_PERCENT,
-        //         .insertion_sinc = {fftfreq_sinc, fftfreq_blackman},
-        //         .extraction_sinc = esinc,
-        //         .debug_directory = settings.output_directory / "projection_matching",
-        //     };
-        //
-        //     // TODO store shifts for each
-        //     // Optimizer optimizer(NLOPT_GN_DIRECT, std::ssize(buffer));
-        //     // optimizer.set_max_number_of_evaluations(75);
-        //
-        //     auto grid = GridSearch(Vec{-1., 1., 0.05}); // 0.1 then local opt?
-        //     std::vector<f64> rotations;
-        //     std::vector<f64> ccs;
-        //     grid.for_each([&](const f64& offset) {
-        //         auto tmp = metadata;
-        //         tmp.stack.add_image_angles({offset, 0., 0.});
-        //         auto score = projection_matcher.update_shifts(tilt_series.view(), tmp.stack, projection_matching_options);
-        //
-        //         rotations.emplace_back(tmp.stack[0].angles[0]);
-        //         ccs.emplace_back(score);
-        //         fmt::println("rot={:.2f}, cc={}", tmp.stack[0].angles[0], score);
-        //
-        //         // TODO try common-line with this alignment?
-        //     });
-        //     save_plot_xy(rotations, ccs, settings.output_directory / "projection_matching" / "pm_scores.txt");
-        //
-        //     // TODO set shifts from best
-        // }
-
-        // projection_matcher = ProjectionMatcher{};
-
-        // TODO stage level
-
-        // TODO thickness center the sample ?
-        // metadata.sample.thickness = estimate_sample_thickness(stack_filename, metadata, {
-        //     .device = device,
-        //     .allocator = Allocator::ASYNC,
-        //     .resolution = 24.,
-        //     .output_directory = settings.output_directory / "thickness",
-        // });
     }
 }
-
-
-// auto rotations = std::array{
-        //     174.9, 175.0, 175.0, 175.1, 175.1, 175.1, 175.1, 175.2, 175.2, 175.2, 175.2, 175.2, 175.2, 175.2, 175.2,
-        //     175.2, 175.3, 175.3, 175.3, 175.3, 175.3, 175.3, 175.3, 175.3, 175.3, 175.3, 175.3, 175.3, 175.3, 175.3,
-        //     175.3, 175.3, 175.3, 175.4, 175.4, 175.4, 175.4, 175.4, 175.4, 175.4
-        // };
-        //
-        // auto rotations2 = std::array{
-        //     175.012, 175.023, 175.032, 175.042, 175.052, 175.061, 175.070, 175.079, 175.089, 175.098, 175.108, 175.118,
-        //     175.129, 175.140, 175.152, 175.165, 175.178, 175.192, 175.207, 175.223, 175.241, 175.259, 175.278, 175.298,
-        //     175.319, 175.340, 175.362, 175.385, 175.408, 175.431, 175.455, 175.479, 175.503, 175.527, 175.551, 175.575,
-        //     175.598, 175.621, 175.644, 175.667
-        // };
-        // for (usize i{}; auto& image: metadata.stack) {
-        //     image.angles[0] = 175;//rotations2[i++];
-        // }
-        //
-        // std::array buffer{0., 0., 0.};
-        // const auto max_tilt = max(abs(metadata.stack.tilt_range()));
-        // const auto min_tilt = -max_tilt;
-        // //
-        // using spline_t = SplineGrid<const f64, 1, nx::Interp::CUBIC>;
-        // const auto spline = spline_t(SpanContiguous(buffer.data(), std::ssize(buffer)));
-        //
-        // Optimizer optimizer(NLOPT_GN_DIRECT, std::ssize(buffer));
-        // optimizer.set_max_number_of_evaluations(75);
-        // optimizer.set_x_tolerance_abs(0.05);
-        // optimizer.set_bounds(-1., 1.);
-        // optimizer.set_max_objective([&](u32 n, const f64* p, f64* g) -> f64 {
-        //     check(g == nullptr);
-        //     const auto spline = spline_t(SpanContiguous(p, std::ssize(buffer)));
-        //     auto tmp = metadata.stack;
-        //     for (auto& image: tmp) {
-        //         const auto coordinate = (image.angles[1] - min_tilt) / (max_tilt - min_tilt);
-        //         const auto rotation_offset = spline.interpolate_at(coordinate);
-        //         image.angles[0] += rotation_offset;
-        //     }
-        //     // Logger::trace("rot={::.1f}", tmp | stdv::transform([](auto&i) { return i.angles[0]; }));
-        //
-        //     auto score = projection_matcher.update_shifts(tilt_series.view(), tmp, {
-        //         .max_tilt_difference = MAX_TILT_DIFFERENCE,
-        //         .smooth_edge_percent = SMOOTH_EDGE_PERCENT,
-        //         .insertion_sinc = {fftfreq_sinc, fftfreq_blackman},
-        //         .extraction_sinc = e_sinc,
-        //         // .debug_directory = settings.output_directory / "projection_matching",
-        //     });
-        //     Logger::trace("rot={::.4f}, cc={:.6f}", spline.span, score);
-        //     return score;
-        // });
-        // auto s = optimizer.optimize(buffer.data());
-        // Logger::trace("n={}, s={}", optimizer.n_evaluations(), s);
-        //
-        // for (auto& image: metadata.stack) {
-        //     const auto coordinate = (image.angles[1] - min_tilt) / (max_tilt - min_tilt);
-        //     const auto rotation_offset = spline.interpolate_at(coordinate);
-        //     image.angles[0] += rotation_offset;
-        // }
-        // Logger::trace("rot={::.3f}", metadata.stack | stdv::transform([](auto&i) { return i.angles[0]; }));

@@ -9,8 +9,6 @@
 // their code, but in this case having an option to turn off the CUDA section of the headers would be nice.
 // For now though, this works fine.
 
-// #undef QN_INCLUDE_CPU_ONLY
-
 #ifndef QN_INCLUDE_CPU_ONLY
 #include <noa/Xform.hpp>
 #include <noa/Signal.hpp>
@@ -340,4 +338,23 @@ namespace qn {
         return output;
     }
 #endif
+
+    NOA_HD constexpr auto fake_sirt_exponent(i32 fake_sirt_iterations) {
+        constexpr f32 MATCH_ADD = 0.3f;
+
+        // Fake SIRT lowpass.
+        auto iter = static_cast<f32>(fake_sirt_iterations);
+        if (fake_sirt_iterations > 15)
+            iter = 15.f + 0.8f * static_cast<f32>(fake_sirt_iterations - 15);
+        if (fake_sirt_iterations > 30)
+            iter = 27.f + 0.6f * static_cast<f32>(fake_sirt_iterations - 30);
+        return fake_sirt_iterations == 0 ? 0.f : iter + MATCH_ADD;
+    }
+
+    NOA_HD constexpr auto fake_sirt_filter(f32 fftfreq, f32 exponent) -> f32 {
+        constexpr f32 ALPHA = 0.00195f;
+        if (fftfreq <= ALPHA)
+            return 1.0;
+        return 1.f - noa::pow(1.f - ALPHA / fftfreq, exponent);
+    }
 }

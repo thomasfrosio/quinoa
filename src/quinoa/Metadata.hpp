@@ -289,8 +289,6 @@ namespace qn {
     public: // Save
         void save_star(const Path& filename) const;
         void save_imod(const Path& input_stack, const Path& output_directory, const Path& basename, const Shape2& export_image_shape, const Vec<f64, 2>& export_spacing) const;
-        // void save_relion(const Path& filename, Shape<i64, 2> shape, Vec<f64, 2> spacing) const;
-        // void save_warp(const Path& filename, Shape<i64, 2> shape, Vec<f64, 2> spacing) const;
 
     public:
         auto set_spacing(const Vec<f64, 2>& new_spacing) -> Metadata& {

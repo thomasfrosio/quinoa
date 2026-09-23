@@ -1560,7 +1560,7 @@ namespace qn::ctf {
             relative_bounds
         );
 
-        const auto n = m_fitting_ranges.span_1d().size();
+        const auto n_images = m_fitting_ranges.span_1d().size();
         auto fitting_range_mean = Vec{0., 0.};
         auto fitting_range_min = 0.5;
         auto fitting_range_max = 0.;
@@ -1569,7 +1569,7 @@ namespace qn::ctf {
             fitting_range_min = std::min(fitting_range_min, e[0]);
             fitting_range_max = std::max(fitting_range_max, e[1]);
         }
-        fitting_range_mean /= static_cast<f64>(n);
+        fitting_range_mean /= static_cast<f64>(n_images);
 
         Logger::trace(
             "Optimization:\n"
@@ -1596,7 +1596,7 @@ namespace qn::ctf {
         fitter.update_metadata_and_state(
             m_metadata, phase_shift_spline, astigmatism_value_spline, astigmatism_angle_spline, m_angle_offsets);
 
-        auto stats = [c = static_cast<f64>(n)](auto r) {
+        auto stats = [c = static_cast<f64>(n_images)](auto r) {
             auto o = Vec<f64, 4>{0, 0, 1000, -1000};
             for (auto e: r) {
                 o[0] += e;

@@ -44,9 +44,10 @@ namespace {
 
             "alignment.coarse.run"sv,
             "alignment.coarse.resolution"sv,
-            "alignment.coarse.min_pix_size"sv,
-            "alignment.coarse.max_pix_size"sv,
+            "alignment.coarse.min_size_pix"sv,
+            "alignment.coarse.max_size_pix"sv,
             "alignment.coarse.bandpass"sv,
+            "alignment.coarse.fake_sirt_iterations"sv,
             "alignment.coarse.check_rotation"sv,
             "alignment.coarse.allow_90_and_flip_rotation_from_mdoc"sv,
             "alignment.coarse.fit_rotation"sv,
@@ -55,15 +56,18 @@ namespace {
 
             "alignment.refine.run"sv,
             "alignment.refine.resolution"sv,
-            "alignment.refine.min_pix_size"sv,
-            "alignment.refine.max_pix_size"sv,
+            "alignment.refine.min_size_pix"sv,
+            "alignment.refine.max_size_pix"sv,
             "alignment.refine.bandpass"sv,
+            "alignment.refine.fake_sirt_iterations"sv,
             "alignment.refine.correct_ctf"sv,
             "alignment.refine.ctf_phase_flip_strength"sv,
             "alignment.refine.fit_rotation"sv,
             "alignment.refine.fit_tilt"sv,
             "alignment.refine.fit_pitch"sv,
             "alignment.refine.fit_thickness"sv,
+            "alignment.refine.max_tilt_difference"sv,
+            "alignment.refine.nb_iterations"sv,
 
             "ctf.run"sv,
             "ctf.check_defocus_gradient"sv,
@@ -453,8 +457,8 @@ namespace {
         alignment.coarse.resolution = parse_value_("alignment.coarse.resolution", table, 20.);
         alignment.coarse.min_size_pix = parse_value_("alignment.coarse.min_size_pix", table, 1000);
         alignment.coarse.max_size_pix = parse_value_("alignment.coarse.max_size_pix", table, 1300);
-
         alignment.coarse.bandpass = Bandpass::from_vec(parse_values_("alignment.coarse.bandpass", table, Vec{0.03, 0.03, 0.25, 0.05}));
+        alignment.coarse.fake_sirt_iterations = parse_value_("alignment.coarse.fake_sirt_iterations", table, 0);
         alignment.coarse.run = parse_value_("alignment.coarse.run", table, true);
         alignment.coarse.check_rotation = parse_value_("alignment.coarse.check_rotation", table, true);
         alignment.coarse.allow_90_and_flip_rotation_from_mdoc = parse_value_("alignment.coarse.allow_90_and_flip_rotation_from_mdoc", table, false);
@@ -467,6 +471,7 @@ namespace {
         alignment.refine.min_size_pix = parse_value_("alignment.refine.min_size_pix", table, 1000);
         alignment.refine.max_size_pix = parse_value_("alignment.refine.max_size_pix", table, 2000);
         alignment.refine.bandpass = Bandpass::from_vec(parse_values_("alignment.refine.bandpass", table, Vec{0.03, 0.03, 0.35, 0.05}));
+        alignment.refine.fake_sirt_iterations = parse_value_("alignment.refine.fake_sirt_iterations", table, 0);
         alignment.refine.run = parse_value_("alignment.refine.run", table, true);
         alignment.refine.correct_ctf = parse_value_("alignment.refine.correct_ctf", table, true);
         alignment.refine.ctf_phase_flip_strength = parse_value_("alignment.refine.ctf_phase_flip_strength", table, 8.);
@@ -474,6 +479,8 @@ namespace {
         alignment.refine.fit_tilt = parse_value_("alignment.refine.fit_tilt", table, true);
         alignment.refine.fit_pitch = parse_value_("alignment.refine.fit_pitch", table, true);
         alignment.refine.fit_thickness = parse_value_("alignment.refine.fit_thickness", table, true);
+        alignment.refine.max_tilt_difference = parse_value_("alignment.refine.max_tilt_difference", table, 20.);
+        alignment.refine.nb_iterations = parse_value_("alignment.refine.nb_iterations", table, 2);
 
         check(alignment.refine.ctf_phase_flip_strength >= 0 and alignment.refine.ctf_phase_flip_strength <= 10,
               "alignment.refine.ctf_phase_flip_strength should be between 0 and 10, but got {}",
@@ -666,7 +673,9 @@ namespace qn {
         try {
             auto settings = toml::table{};
             if (cl.contains("settings")) {
-                settings = toml::parse_file(cl["settings"].as<Path>().native());
+                auto settings_path = cl["settings"].as<Path>();
+                noa::io::expand_user(settings_path);
+                settings = toml::parse_file(settings_path.native());
                 sanitize_table_(settings);
             }
             series = parse_data_(settings, cl);

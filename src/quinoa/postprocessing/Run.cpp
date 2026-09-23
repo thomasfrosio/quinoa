@@ -7,25 +7,11 @@
 
 namespace {
     struct FakeSIRT {
-        static constexpr f32 ALPHA = 0.00195f;
-        static constexpr f32 MATCH_ADD = 0.3f;
-        f32 iter_use;
         f32 exponent;
-
-        explicit FakeSIRT(i32 n_iterations) {
-            iter_use = static_cast<f32>(n_iterations);
-            if (n_iterations > 15)
-                iter_use = 15.f + 0.8f * static_cast<f32>(n_iterations - 15);
-            if (n_iterations > 30)
-                iter_use = 27.f + 0.6f * static_cast<f32>(n_iterations - 30);
-            exponent = iter_use + MATCH_ADD;
-        }
 
         NOA_HD auto operator()(const Vec<f32, 2>& fftfreq_2d, isize) const -> f32 {
             const auto fftfreq = noa::sqrt(noa::dot(fftfreq_2d, fftfreq_2d));
-            if (fftfreq <= ALPHA)
-                return 1.0;
-            return 1.f - noa::pow(1.f - ALPHA / fftfreq, exponent);
+            return fake_sirt_filter(fftfreq, exponent);
         }
     };
 
@@ -119,7 +105,7 @@ namespace qn {
                 nf::r2c(buffer_xform, buffer_rfft);
                 ns::filter_spectrum_2d<"h">(
                     buffer_rfft, buffer_rfft, buffer_xform.shape(),
-                    FakeSIRT(settings.fake_sirt_iterations)
+                    FakeSIRT{.exponent = fake_sirt_exponent(settings.fake_sirt_iterations)}
                 );
                 nf::c2r(buffer_rfft, buffer_xform);
             }
@@ -264,6 +250,9 @@ namespace qn {
         const Settings::PostProcessing& settings,
         const Path& output_directory
     ) {
+        if (not settings.stack.run and not settings.tomogram.run)
+            return;
+
         auto loader = StackLoader(input_stack, {
             .compute_device = device,
             .allocator = Allocator::DEFAULT_ASYNC,
@@ -272,7 +261,7 @@ namespace qn {
             .rescale_min_size = settings.min_size_pix,
             .rescale_max_size = settings.max_size_pix,
             .bandpass{
-                // TODO note behavior when lowpass filtering
+                // TODO note behavior when lowpass filtering, artefacts at the edge when rotating in real-space
                 .highpass_cutoff = settings.bandpass.highpass_cutoff,
                 .highpass_width = settings.bandpass.highpass_width,
                 .lowpass_cutoff = settings.bandpass.lowpass_cutoff,

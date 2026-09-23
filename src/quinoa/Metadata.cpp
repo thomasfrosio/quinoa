@@ -84,7 +84,9 @@ namespace {
         // Prevent division by 0.
         metadata.sample.cs = std::max(metadata.sample.cs, 1e-5);
 
-        // TODO
+        // TODO single axis?
+        //
+        // TODO for alignment.refine and postprocessing.tomogram, thickness should be specified or fitted
     }
 }
 
@@ -845,8 +847,8 @@ namespace qn {
     }
 
     auto Metadata::Stack::has_single_rotation(f64 tolerance) const -> bool {
-        for (auto& image: images)
-            if (not noa::allclose(image.angles[0], tolerance))
+        for (auto& image: images | stdv::drop(1))
+            if (not noa::allclose(images[0].angles[0], image.angles[0], tolerance))
                 return false;
         return true;
     }

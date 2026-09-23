@@ -25,6 +25,7 @@ namespace qn {
             .lowpass_width = 0.05,
         };
         f64 bandpass_mirror_padding_factor{0};
+        i32 fake_sirt_iterations{0};
         f64 exposure_filter_voltage{0}; // kV, 0 turns off the exposure filter
 
         // Image processing after cropping:
@@ -132,7 +133,7 @@ namespace qn {
         const Path& tilt_series_path,
         Metadata& tilt_series_metadata,
         const LoadStackParameters& parameters
-    ) ->  Array<f32> {
+    ) -> Array<f32> {
         auto stack_loader = StackLoader(tilt_series_path, parameters);
         auto stack = stack_loader.read_stack(tilt_series_metadata.stack);
         tilt_series_metadata.set_spacing(stack_loader.stack_spacing());

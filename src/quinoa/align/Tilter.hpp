@@ -50,14 +50,17 @@ namespace qn {
 
     public:
         Tilter() = default;
-        Tilter(const Shape4& shape, Device device);
+        Tilter(const Shape4& shape);
+
+        [[nodiscard]] auto shared_buffer_bytes() const -> isize;
+        void set_shared_buffer(const Array<std::byte>& shared_buffer);
 
         void find_image_rotation(
             const View<f32>& stack,
             Metadata::Stack& metadata,
             Vec<f64, 3>& angle_offsets,
             const FindImageRotationOptions& options
-        );
+        ) const;
 
         void find_image_shifts(
             const View<f32>& stack,
@@ -92,14 +95,17 @@ namespace qn {
         }
         [[nodiscard]] auto buffer_rfft(nt::integer auto start, nt::integer auto end) const {
             auto n_targets = m_xmap_centered.shape()[0];
-            return m_buffer_rfft.view().subregion(Slice{start * n_targets, end * n_targets});
+            return m_buffer_rfft.subregion(Slice{start * n_targets, end * n_targets});
         }
         [[nodiscard]] auto buffer_rfft(nt::integer auto i) const {
             return buffer_rfft(i, i + 1);
         }
 
     private:
-        Array<c32> m_buffer_rfft;
+        Shape4 m_buffer_shape;
+        isize m_n_total_images;
+
+        View<c32> m_buffer_rfft;
         View<f32> m_buffer;
 
         Array<Vec<f32, 4>> m_plane_coefficients;

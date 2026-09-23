@@ -1,33 +1,32 @@
 #pragma once
 
-#include <noa/Runtime.hpp>
-
 #include "quinoa/Types.hpp"
 #include "quinoa/Metadata.hpp"
 
 namespace qn {
-    struct EstimateSampleThicknessOptions {
-        bool apply_fov{};
-        Path output_directory;
+    class SpecimenThickness {
+    public:
+        SpecimenThickness() = default;
+
+        SpecimenThickness(
+            const Path& stack_filename,
+            Metadata& metadata, // updated: .shifts
+            Device device
+        );
+
+        [[nodiscard]] auto shared_buffer_bytes() const -> isize;
+        void set_shared_buffer(const View<std::byte>& shared_buffer);
+
+        auto estimate(
+            Metadata& metadata, // updated: stack.shifts, sample.thickness
+            const Path& output_directory
+        ) const -> f64;
+
+    private:
+        using value_type = f16;
+        Array<f32> m_tilt_series{};
+        View<value_type> m_tomogram{};
+        isize m_volume_depth{};
+        f64 m_spacing_nm{};
     };
-
-    auto estimate_sample_thickness(
-        const View<f32>& stack,
-        Metadata& metadata, // updated: stack.shifts, sample.thickness
-        const EstimateSampleThicknessOptions& options
-    ) -> f64; // nm
-
-    struct EstimateSampleThicknessFromFileOptions {
-        bool apply_fov{};
-        Device device;
-        Allocator allocator;
-        f64 resolution; // A
-        Path output_directory;
-    };
-
-    auto estimate_sample_thickness(
-        const Path& stack_filename,
-        Metadata& metadata, // updated: .shifts
-        const EstimateSampleThicknessFromFileOptions& options
-    ) -> f64; // nm
 }

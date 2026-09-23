@@ -26,28 +26,19 @@ namespace {
             i32 fake_sirt_iterations
         ) :
             m_normal_to_tilt_axis(normal_to_tilt_axis),
-            m_ramp_filter(ramp_filter)
-        {
-            // Fake SIRT lowpass.
-            auto iter = static_cast<f32>(fake_sirt_iterations);
-            if (fake_sirt_iterations > 15)
-                iter = 15.f + 0.8f * static_cast<f32>(fake_sirt_iterations - 15);
-            if (fake_sirt_iterations > 30)
-                iter = 27.f + 0.6f * static_cast<f32>(fake_sirt_iterations - 30);
-            m_exponent = fake_sirt_iterations == 0 ? 0.f : iter + MATCH_ADD;
-        }
+            m_ramp_filter(ramp_filter),
+            m_exponent(fake_sirt_exponent(fake_sirt_iterations))
+        {}
 
         [[nodiscard]] NOA_HD auto fake_sirt_(const Vec<f32, 2>& fftfreq_2d) const -> f32 {
             const auto fftfreq = noa::sqrt(noa::dot(fftfreq_2d, fftfreq_2d));
-            if (fftfreq <= ALPHA)
-                return 1.0;
-            return 1.f - noa::pow(1.f - ALPHA / fftfreq, m_exponent);
+            return fake_sirt_filter(fftfreq, m_exponent);
         }
 
         [[nodiscard]] NOA_HD auto ramp_filter_(const Vec<f32, 2>& fftfreq_2d) const -> f32 {
             const f32 fftfreq_x = noa::abs(noa::dot(m_normal_to_tilt_axis, fftfreq_2d));
             // return 2.f * fftfreq_x * (0.55f + 0.45f * noa::cos(6.2831852f * fftfreq_x)); // aretomo
-            // return 2.f * fftfreq_x * (1.92f + 1.57f * noa::cos(6.15f * fftfreq_x)); // aretomo-like rescaled
+            // return 2.f * fftfreq_x * (1.92f + 1.57f * noa::cos(6.15f * fftfreq_x)); // aretomo-like rescaled to [0,1]
             return fftfreq_x; // simple linear ramp
         }
 
@@ -403,7 +394,7 @@ namespace qn {
             if (ramp_filter) {
                 check(metadata.has_single_rotation(), "TODO Varying rotation. Add per-image ramp filter.");
                 const auto normal_to_tilt_axis = nx::rotate(noa::deg2rad(-metadata[0].angles[0]))[1].as<f32>();
-                ns::filter_spectrum_2d<"h">(resize_buffer_rfft, resize_buffer_rfft, resize_buffer.shape(),
+                ns::filter_spectrum_2d<"h">(m_images_padded_rfft, m_images_padded_rfft, m_images_padded.shape(),
                     RampFilter(ramp_filter, normal_to_tilt_axis, fake_sirt_iterations)
                 );
             }

@@ -70,6 +70,7 @@ namespace qn {
                 isize min_size_pix{};
                 isize max_size_pix{};
                 Bandpass bandpass{};
+                i32 fake_sirt_iterations{};
                 bool check_rotation{};
                 bool allow_90_and_flip_rotation_from_mdoc{};
                 bool is_tilt_axis_from_mdoc{};
@@ -84,12 +85,15 @@ namespace qn {
                 isize min_size_pix{};
                 isize max_size_pix{};
                 Bandpass bandpass{};
+                i32 fake_sirt_iterations{};
                 bool correct_ctf{};
                 f64 ctf_phase_flip_strength{};
                 bool fit_rotation{};
                 bool fit_tilt{};
                 bool fit_pitch{};
                 bool fit_thickness{};
+                f64 max_tilt_difference{};
+                i32 nb_iterations{};
             } refine;
         } alignment;
 

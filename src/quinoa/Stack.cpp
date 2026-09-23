@@ -154,6 +154,8 @@ namespace {
         f32 lowpass_cutoff;
         f32 lowpass_width;
 
+        f32 fake_sirt_exponent;
+
         f32 exposure;
         f32 spacing;
         f32 k;
@@ -175,6 +177,10 @@ namespace {
                 highpass_cutoff <= fftfreq ? 1 :
                 fftfreq <= highpass_cutoff - highpass_width ? 0 :
                 (1.f + noa::cos(PI * (fftfreq - highpass_cutoff) / highpass_width)) * 0.5f;
+
+            // Fake-sirt low-pass filter.
+            if (fake_sirt_exponent > 0)
+                filter *= fake_sirt_filter(fftfreq, fake_sirt_exponent);
 
             // Exposure filter.
             if (exposure > 0) {
@@ -304,6 +310,7 @@ namespace qn {
             .highpass_width = static_cast<f32>(m_parameters.bandpass.highpass_width),
             .lowpass_cutoff = static_cast<f32>(m_parameters.bandpass.lowpass_cutoff),
             .lowpass_width = static_cast<f32>(m_parameters.bandpass.lowpass_width),
+            .fake_sirt_exponent = fake_sirt_exponent(m_parameters.fake_sirt_iterations),
             .exposure = static_cast<f32>(exposure),
             .spacing = static_cast<f32>(mean(m_output_spacing)), // isotropic, small deviations would have any significance
             .k =
@@ -468,6 +475,7 @@ namespace qn {
         m_has_cropping = m_padded_slice_shape != m_cropped_slice_shape;
         m_has_filter =
             m_parameters.exposure_filter_voltage > 0 or
+            m_parameters.fake_sirt_iterations > 0 or
             m_parameters.bandpass.highpass_cutoff > 0 or
             m_parameters.bandpass.lowpass_cutoff > 0;
 
@@ -514,7 +522,7 @@ namespace qn {
         Logger::trace(
             "Stack loader:\n"
             "  device={} (allocated={:.1f}MB, {})\n"
-            "  exposure_filter={}\n"
+            "  filter=[exposure={}, fake_sirt_iter={}]\n"
             "  normalize={} (mean=0, stddev=1)\n"
             "  zero_taper={:.1f}%\n"
             "  n_slices={}\n"
@@ -524,7 +532,7 @@ namespace qn {
             "  bandpass_shape={} (mirror_padding_factor={:.2f})\n"
             "  output_shape={}  (spacing={::.3f}, fast_shape={})",
             m_parameters.compute_device, bytes_allocated, options.allocator,
-            m_parameters.exposure_filter_voltage > 0,
+            m_parameters.exposure_filter_voltage > 0, m_parameters.fake_sirt_iterations,
             m_parameters.normalize_and_standardize,
             m_parameters.smooth_edge_percent * 100.,
             file_shape[0],
