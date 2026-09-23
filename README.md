@@ -1,12 +1,7 @@
-## `Work In Progress`
-
-This repository is a work in progress. The CTF estimation is the only completed part (and the only part built by default). The tilt-series alignment and tomogram reconstruction are mostly done, but the code in this repository is incomplete and not ready for use. The full version should be available by the end of August 2026.
-
-
 ## `Quinoa`
 
 ### `CTF estimate`
-Fast CTF fitting, running independently of the tilt-series alignment and including fit of:
+Fast CTF fitting, possibly running independently of the tilt-series alignment and including fit of:
   - per-image defoci.
   - tilt-dependent astigmatisms (up to per-image).
   - time-dependent phase-shifts (up to per-image).
@@ -18,9 +13,11 @@ Fast tilt-series alignment, including methods for:
 - Excluding tilt images based on tilt-series image statistics.
 - Finding the specimen orientation (rotation, tilt, pitch) using image cross-correlation and common-lines.
 - Aligning images (XY translation) using projection matching.
-- Refining tilt-axis angle using projection matching.
 - Finding the specimen thickness by analyzing the signal in the tomogram.
 
+These methods work together to optimize for a (rigid-body) tomogram containing at its center the leveled specimen.
+
+This project was focused on implementing fast methods to project tomograms from its central slices. These projections are used to align the tilt images using a projection matching algorithm similar to [AreTomo](https://github.com/czimaginginstitute/AreTomo3). However, using projection matching as an optimization metric to align tilt-series is [inherently limited](https://www.biorxiv.org/content/10.64898/2026.04.29.721716v1) and may produce mediocre results. As such, and similar to AreTomo, it should only be used for initial alignment and should be refined with other methods down the line. The advantage of our method is speed, as we can easily align a tilt-series in a few seconds if a GPU is available.
 
 ## `Dependencies`
 
@@ -64,6 +61,6 @@ When compiling a single binary to run on GPU with different architectures, use `
 # Examples:
 quinoa --help
 quinoa --settings=share/settings_ctf.toml
-quinoa --mdocs=*.mdoc --stacks=*.mrc --tilt-axis=175
+# (WIP): quinoa --mdocs=*.mdoc --stacks=*.mrc --tilt-axis=175
 ```
 See setting files in the installation directory (or in [share](share/)) for more information.
