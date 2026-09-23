@@ -18,5 +18,3 @@
 
 
 ### `Tilt alignment`
-
-- `Feature`: For faster common-line alignment, rotational binning (or spectrum2polar) and sum power spectra to get the best line. This ignores the FOV changes, which is fine for coarse search.
