@@ -4,29 +4,24 @@
 #include "quinoa/Plot.hpp"
 #include "quinoa/Stack.hpp"
 #include "quinoa/align/Thickness.hpp"
-#include "quinoa/postprocessing/FilterStack.hpp"
 
 namespace {
     using namespace qn;
 
     template<typename T>
     struct BackwardProjection {
-    public:
-        using input_span_t = SpanContiguous<const f32, 3, i32>;
-        using interpolator_t = nx::Interpolator<2, nx::Interp::NEAREST, noa::Border::ZERO, input_span_t>;
+        using interpolator_t = nx::Interpolator<nx::Interp::NEAREST, noa::Border::ZERO, 2, i32, Empty, true>;
 
-    public:
-        interpolator_t images{};
+        SpanContiguous<const f32, 3, i32> images{};
         SpanContiguous<const Mat<f32, 2, 4>, 1, i32> projection_matrices{};
         SpanContiguous<T, 3, i32> tomogram{};
 
-    public:
         NOA_HD void operator()(const Vec<i32, 3>& indices) const {
             const auto volume_coordinates = indices.as<f32>().push_back(1);
             f32 value{};
             for (i64 i{}; i < projection_matrices.ssize(); ++i) {
                 const auto image_coordinates = projection_matrices[i] * volume_coordinates;
-                value += images.interpolate_at(image_coordinates, i);
+                value += interpolator_t{}.get(images[i], image_coordinates);
             }
             tomogram(indices) = static_cast<T>(value);
         }
@@ -78,18 +73,18 @@ namespace {
         }
     };
 
-    template<typename T>
+    template<nt::any_of<f16, f32> T>
     auto compute_mad_profile(
-        const View<const f32>& images,
+        const ArrayView<const f32, 3>& images,
         const Metadata::Stack& metadata,
-        const View<T>& tomogram,
+        const ArrayView<T, 3>& tomogram,
         const Path& output_directory
-    ) -> Array<f64> {
+    ) -> Array<f64, 1> {
         auto _ = Logger::trace_scope_time<false>("Tomogram thickness profile");
 
         const auto n_images = images.shape()[0];
-        const auto image_shape = images.shape().filter(2, 3);
-        const isize volume_depth = tomogram.shape()[1];
+        const auto image_shape = images.shape().pop_front();
+        const isize volume_depth = tomogram.shape()[0];
         const auto device = tomogram.device();
 
         const auto volume_shape = Shape3{volume_depth, image_shape[0], image_shape[1]};
@@ -97,7 +92,7 @@ namespace {
         const auto volume_center = (volume_shape.vec / 2).as<f64>();
 
         // Compute the projection matrices.
-        auto matrices = Array<Mat<f32, 2, 4>>(n_images);
+        auto matrices = Array<Mat<f32, 2, 4>, 1>(n_images);
         for (auto&& [image, matrix]: noa::zip(metadata, matrices.span_1d())) {
             const auto angles = noa::deg2rad(image.angles);
             matrix = ( // (image->volume).inverse()
@@ -116,34 +111,33 @@ namespace {
         // Despite being low-resolution, the tomogram can be multiple GB. Note that if we were to compute the
         // per-slice variance, we wouldn't need to store the tomogram at all and could compute the variance
         // on-the-fly. For the MAD, it's not possible, but it seems worth it.
-        using interp_t = BackwardProjection<T>::interpolator_t;
         noa::iwise(volume_shape.as<i32>(), device, BackwardProjection{
-            .images = interp_t(images.span_contiguous<const f32, 3, i32>(), image_shape.as<i32>()),
+            .images = images.span_contiguous<const f32, 3, i32>(),
             .projection_matrices = matrices.span_contiguous<const Mat<f32, 2, 4>, 1, i32>(),
             .tomogram = tomogram.template span_contiguous<T, 3, i32>(),
         });
 
         // Compute the MAD.
-        constexpr isize N_BINS = 1024;
-        const auto tomogram_1d = tomogram.reshape({volume_depth, 1, 1, -1});
-        const auto shape_dw = Shape2{volume_depth, tomogram_1d.shape()[3]}.as<i32>();
+        constexpr i32 N_BINS = 1024;
+        const auto tomogram_1d = tomogram.reshape(Shape2{volume_depth, -1});
+        const auto shape_dw = tomogram_1d.shape().template as<i32>();
         const auto options_unified = ArrayOption{.device = device, .allocator = Allocator::UNIFIED};
-        const auto histograms = Array<i32>({volume_depth, 1, 1, N_BINS}, options_unified);
-        auto medians = Array<f32>(volume_depth, options_unified);
+        const auto histograms = Array<i32, 2>({volume_depth, N_BINS}, options_unified);
+        auto medians = Array<f32, 1>(volume_depth, options_unified);
         auto get_medians_from_histograms = [&] {
-            auto histogram_2d = histograms.reinterpret_as_cpu().eval().span_contiguous<i32, 2>();
+            auto histogram_2d = histograms.reinterpret_as_cpu().eval().span_contiguous();
             auto medians_1d = medians.span_1d();
             const auto half = shape_dw[1] / 2;
             const auto bin_step = 1.f / static_cast<f32>(N_BINS - 1); // linspace(0, 1, N_BINS, endpoint=true)
-            for (isize i{}; i < shape_dw[0]; ++i) {
+            for (i32 i{}; i < shape_dw[0]; ++i) {
                 i32 count{};
                 i32 previous_count{};
-                for (isize j{}; j < N_BINS; ++j) {
+                for (i32 j{}; j < N_BINS; ++j) {
                     if (count >= half) {
                         const auto distance = count - previous_count;
                         const auto offset = half - previous_count;
                         const auto ratio = static_cast<f32>(offset) / static_cast<f32>(distance);
-                        const auto previous_bin = bin_step * static_cast<f32>(std::max(j - 1, isize{}));
+                        const auto previous_bin = bin_step * static_cast<f32>(std::max(j - 1, i32{}));
                         const auto current_bin = bin_step * static_cast<f32>(j);
                         const auto median = std::lerp(previous_bin, current_bin, ratio);
                         medians_1d[i] = median;
@@ -165,27 +159,27 @@ namespace {
         // Compute the median for each Z slice.
         noa::normalize(tomogram, tomogram, {.mode = noa::Norm::MIN_MAX});
         noa::fill(histograms, 0);
-        noa::reduce_axes_iwise<OPTIONS>(shape_dw, device, {}, ReduceAxes{.width = true}, Histogram{
+        noa::reduce_axes_iwise<OPTIONS>(shape_dw, device, {}, ReduceAxes<2>::none_but(1), Histogram{
             .inputs = tomogram_1d.template span_contiguous<const T, 2, i32>(),
             .histograms = histograms.span_contiguous<i32, 2, i32>(),
         });
         get_medians_from_histograms();
 
         // Compute the absolute deviations from the medians.
-        noa::ewise(medians.flat(0), tomogram_1d, []NOA_HD(f32 median, T& value) {
+        noa::ewise(medians, tomogram_1d, []NOA_HD(f32 median, T& value) {
             value = static_cast<T>(noa::abs(static_cast<f32>(value) - median));
         });
 
         // Compute the MAD for each Z slice.
         noa::normalize(tomogram, tomogram, {.mode = noa::Norm::MIN_MAX});
         noa::fill(histograms, 0);
-        noa::reduce_axes_iwise<OPTIONS>(shape_dw, device, {}, ReduceAxes{.width = true}, Histogram{
+        noa::reduce_axes_iwise<OPTIONS>(shape_dw, device, {}, ReduceAxes<2>::none_but(1), Histogram{
             .inputs = tomogram_1d.template span_contiguous<const T, 2, i32>(),
             .histograms = histograms.span_contiguous<i32, 2, i32>(),
         });
         get_medians_from_histograms();
         medians = medians.reinterpret_as_cpu();
-        for (f32& median: medians.span_1d())
+        for (auto& median: medians.span_1d())
             median *= median;
         noa::normalize(medians, medians, {.mode = noa::Norm::MIN_MAX});
         save_plot_xy({}, medians.span_1d(), output_directory / "thickness_profile_rough.txt", {
@@ -196,8 +190,8 @@ namespace {
         });
 
         // Small Gaussian blur and normalize between [0, 1].
-        auto kernel = ns::window_gaussian<f64>(11, 2, {.normalize = true});
-        auto medians_smooth = noa::Array<f64>(medians.shape());
+        auto kernel = ns::window_gaussian<f32>(11, 2, {.normalize = true});
+        auto medians_smooth = noa::Array<f64, 1>(medians.shape());
         ns::convolve(medians, medians_smooth, kernel, {.border = noa::Border::REFLECT});
         noa::normalize(medians_smooth, medians_smooth, {.mode = noa::Norm::MIN_MAX});
 
@@ -212,12 +206,12 @@ namespace {
     }
 
     auto subtract_background(
-        const View<const f64>& profile,
+        const ArrayView<const f64, 1>& profile,
         const Path& output_directory
     ) {
         // Compute the baseline.
         auto x = noa::linspace<f64>(profile.n_elements(), noa::Linspace{0., 1.});
-        auto profile_bs = noa::like(profile);
+        auto profile_bs = noa::empty_like(profile);
         asymmetric_least_squares_smoothing(x.span_1d(), profile.span_1d(), profile_bs.span_1d(), {
             .smoothing = {
                 // TODO Use the current thickness estimate to increase the smoothness within the specimen window,
@@ -248,7 +242,7 @@ namespace {
         return profile_bs;
     }
 
-    auto analyse_profile(const View<const f64>& profile, f64 spacing_nm) {
+    auto analyse_profile(const ArrayView<const f64, 1>& profile, f64 spacing_nm) {
         const auto profile_1d = profile.span_1d();
         const isize center = profile_1d.ssize() / 2;
 
@@ -452,7 +446,7 @@ namespace qn {
         //    at least twice as much to include the background from the backward-projection so that it can
         //    be detected more easily (see baseline fitting below). This is also necessary in case the
         //    specimen is offset in Z.
-        const auto image_shape = m_tilt_series.shape().filter(2, 3);
+        const auto image_shape = m_tilt_series.shape().pop_front();
         const auto image_min_size = static_cast<f64>(noa::min(image_shape));
         const auto maximum_specimen_thickness = std::min(500. / m_spacing_nm, image_min_size);
         m_volume_depth = static_cast<isize>(std::round(maximum_specimen_thickness * 3));
@@ -468,16 +462,16 @@ namespace qn {
     }
 
     auto SpecimenThickness::shared_buffer_bytes() const -> isize {
-        return m_volume_depth * m_tilt_series.shape()[2] * m_tilt_series.shape()[3] * static_cast<isize>(sizeof(value_type));
+        return m_volume_depth * m_tilt_series.shape()[1] * m_tilt_series.shape()[2] * static_cast<isize>(sizeof(value_type));
     }
 
-    void SpecimenThickness::set_shared_buffer(const View<std::byte>& shared_buffer) {
+    void SpecimenThickness::set_shared_buffer(const ArrayView<std::byte, 1>& shared_buffer) {
         // Don't use managed memory, allocate and keep the tomogram close to the device.
         // We use f16 to reduce the memory requirement and since this is low-res it shouldn't be an issue.
-        const auto shape = Shape4{1, m_volume_depth, m_tilt_series.shape()[2], m_tilt_series.shape()[3]};
+        const auto shape = Shape3{m_volume_depth, m_tilt_series.shape()[1], m_tilt_series.shape()[2]};
         m_tomogram = shared_buffer
-            .reinterpret_as<value_type>()
-            .subregion(Ellipsis{}, Slice{0, shape.n_elements()})
+            .as<value_type>()
+            .subregion(Slice{0, shape.n_elements()})
             .reshape(shape);
     }
 

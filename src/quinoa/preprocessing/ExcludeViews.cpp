@@ -31,8 +31,8 @@ namespace {
         }
 
         // Quality metrics.
-        const auto median_stddev = noa::median(View(points.data(), std::ssize(points)));
-        const auto median_gradient = noa::median(View(gradients.data(), std::ssize(gradients)));
+        const auto median_stddev = noa::median(Array(points.data(), std::ssize(points)));
+        const auto median_gradient = noa::median(Array(gradients.data(), std::ssize(gradients)));
         const auto threshold_stddev_low_first = median_stddev * 0.5;
         const auto threshold_stddev_low_second = median_stddev * 0.8;
         const auto threshold_stddev_high = median_stddev * 2;
@@ -106,7 +106,7 @@ namespace qn {
         }).stack;
 
         // Compute the variance of each image.
-        auto profile = noa::variance(tilt_series, ReduceAxes::all_but(0));
+        auto profile = noa::variance(tilt_series, ReduceAxes<3>::all_but(0));
         profile = profile.is_dereferenceable() ?
             std::move(profile).reinterpret_as_cpu() :
             std::move(profile).to_cpu();

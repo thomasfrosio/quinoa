@@ -25,7 +25,7 @@ namespace qn {
         StackLoader&& stack,
         Metadata& metadata,
         const FilterStackSettings& settings
-    ) -> Array<f32>;
+    ) -> Array<f32, 3>;
 
     class StackFilterer {
     public:
@@ -86,8 +86,8 @@ namespace qn {
         void compute_irffts(isize n_strips, bool record = false, isize n_groups = 4) const;
         void prepare_irffts() const;
 
-        [[nodiscard]] auto compute_filtered_stack(isize z) const -> Array<f32>;
-        [[nodiscard]] auto compute_filtered_stack() const -> Array<f32>;
+        [[nodiscard]] auto compute_filtered_stack(isize z) const -> Array<f32, 3>;
+        [[nodiscard]] auto compute_filtered_stack() const -> Array<f32, 3>;
 
     public:
         const Metadata::Stack* m_metadata{};
@@ -96,11 +96,11 @@ namespace qn {
         f64 m_volume_z_center_nm{};
         f32 m_phase_flip_strength{};
 
-        Array<c32> m_image_padded_rfft;
-        Array<f32> m_images_padded;
-        Array<c32> m_images_padded_rfft;
-        Array<f32> m_strips_padded;
-        Array<c32> m_strips_padded_rfft;
-        Array<f32> m_images_filtered;
+        Array<c32, 2> m_image_padded_rfft;
+        Array<f32, 3> m_images_padded;
+        Array<c32, 3> m_images_padded_rfft;
+        Array<f32, 3> m_strips_padded;
+        Array<c32, 3> m_strips_padded_rfft;
+        Array<f32, 3> m_images_filtered;
     };
 }

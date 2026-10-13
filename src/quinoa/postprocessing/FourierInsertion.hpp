@@ -7,8 +7,9 @@
 #include "quinoa/postprocessing/Utilities.hpp"
 
 namespace qn {
-    template<typename Input, typename Rotation, typename Output>
+    template<typename Interpolator, typename Input, typename Rotation, typename Output>
     struct FourierInsertion {
+        Interpolator interpolator_spectrum;
         Input tiles_large_padded_rfft;
         Rotation tile_rotations;
         Output subvolume_large_padded_rfft;
@@ -38,7 +39,7 @@ namespace qn {
                 if (abs(fftfreq_z) <= fftfreq_blackman) { // the slice affects the voxel
                     const auto window = nx::details::windowed_sinc(fftfreq_z, fftfreq_sinc, fftfreq_blackman);
                     const auto frequency_2d = fftfreq_2d / fftfreq_step;
-                    value += tiles_large_padded_rfft.interpolate_spectrum_at(frequency_2d, i) * window;
+                    value += interpolator_spectrum.get(tiles_large_padded_rfft[i], frequency_2d) * window;
                     weights += window; // TODO should it be abs(window)?
                 }
             }
@@ -62,73 +63,16 @@ namespace qn {
 
         template<nx::Interp INTERP>
         [[nodiscard]] auto get() const {
-            using interpolator_t = nx::InterpolatorSpectrum<2, nf::Layout::H2H, INTERP, input_span_t>;
-            return FourierInsertion<interpolator_t, rotation_span_t, output_span_t>{
-                .tiles_large_padded_rfft = interpolator_t(tiles_large_padded_rfft, tiles_large_padded_shape_2d),
+            using interpolator_t = nx::InterpolatorSpectrum<nf::Layout::H2H, INTERP, 2, i32>;
+            return FourierInsertion<interpolator_t, input_span_t, rotation_span_t, output_span_t>{
+                .interpolator_spectrum = interpolator_t(tiles_large_padded_shape_2d),
+                .tiles_large_padded_rfft = tiles_large_padded_rfft,
                 .tile_rotations = tile_rotations,
                 .subvolume_large_padded_rfft = subvolume_large_padded_rfft,
                 .fftfreq_step = fftfreq_step,
                 .fftfreq_sinc = fftfreq_sinc,
                 .fftfreq_blackman = fftfreq_blackman,
             };
-        }
-    };
-
-    template<nx::Interp INTERP>
-    struct FourierInterpolationCorrection {
-        using volume_span_t = SpanContiguous<f32, 3, i32>;
-
-        volume_span_t subvolume;
-        Vec<f32, 3> subvolume_center;
-        f32 fftfreq_step;
-
-        NOA_HD void operator()(i32 z, i32 y, i32 x) const noexcept {
-            // Shift spatial coordinates relative to the subvolume center
-            const Vec<f32, 3> r = Vec<f32, 3>{static_cast<f32>(z), static_cast<f32>(y), static_cast<f32>(x)} - subvolume_center;
-
-            // Compute 1D kernel response along each axis in real space
-            const f32 wx = kernel_real_space(r[2]);
-            const f32 wy = kernel_real_space(r[1]);
-            const f32 wz = kernel_real_space(r[0]);
-
-            // Separable 3D weight
-            const f32 total_weight = wz * wy * wx;
-
-            // Avoid division by zero/tiny values at extreme boundaries
-            constexpr f32 min_weight = 1e-4f;
-            if (noa::abs(total_weight) > min_weight) {
-                subvolume(z, y, x) /= total_weight;
-            }
-        }
-
-    private:
-        NOA_HD static auto sinc(f32 x) noexcept -> f32 {
-            if (noa::abs(x) < 1e-5f) return 1.0f;
-            const f32 px = noa::Constant<f32>::PI * x;
-            return noa::sin(px) / px;
-        }
-
-        NOA_HD auto kernel_real_space(f32 dist) const noexcept -> f32 {
-            if constexpr (INTERP == nx::Interp::LINEAR) {
-                // Linear interpolation in Fourier space corresponds to a sinc^2(x) envelope in real space.
-                // Dist is normalized by the grid spacing step.
-                const f32 x = dist * fftfreq_step;
-                const f32 s = sinc(x);
-                return s * s;
-            }
-            else if constexpr (INTERP == nx::Interp::LANCZOS6) {
-                // Lanczos-a in Fourier space (a=6) maps to a convolution envelope in real space.
-                // Analytical FT of a windowed sinc kernel (Lanczos 6):
-                // Approximated by the main lobe response w(r) = sinc(r / a_scale)
-                // For Lanczos 6, kernel half-width in Fourier space is 6 * fftfreq_step.
-                const f32 x = dist * fftfreq_step;
-                const f32 a = 6.0f;
-
-                // Standard Fourier transform envelope of Lanczos kernel
-                const f32 s_main = sinc(x);
-                const f32 s_window = sinc(x / a);
-                return s_main * s_window;
-            }
         }
     };
 
@@ -146,13 +90,13 @@ namespace qn {
 
         Shape4 grid_shape{};
 
-        Array<Vec<i32, 2>> tile_large_origins;
-        Array<nx::Quaternion<f32>> tile_rotations;
-        Array<Vec<f32, 2>> tile_large_shifts;
+        Array<nx::Quaternion<f32>, 1> tile_rotations;
+        Array<Vec<i32, 2>, 4> tile_large_origins;
+        Array<Vec<f32, 2>, 4> tile_large_shifts;
 
-        Array<f32> subvolume_row;
-        Array<c32> tiles_large_padded_buffer;
-        Array<c32> subvolume_large_padded_buffer;
+        Array<f32, 3> subvolume_row;
+        Array<c32, 4> tiles_large_padded_buffer;
+        Array<c32, 4> subvolume_large_padded_buffer;
 
     public:
         TiledFourierInsertion() = default;
@@ -199,7 +143,7 @@ namespace qn {
             };
 
             // Compute the rotation of the central-slices.
-            tile_rotations = Array<nx::Quaternion<f32>>(grid_shape[3]);
+            tile_rotations = Array<nx::Quaternion<f32>, 1>(grid_shape[3]);
             for (auto&& [image, rotation]: noa::zip(metadata, tile_rotations.span_1d())) {
                 const auto angles = noa::deg2rad(image.angles);
                 const auto final_rotation = correct_rotation ? 0. : angles[0];
@@ -213,8 +157,8 @@ namespace qn {
 
             // Compute the shifts for every subvolume.
             tile_large_center = static_cast<f64>(tile_large_size / 2);
-            tile_large_origins = Array<Vec<i32, 2>>(grid_shape);
-            tile_large_shifts = Array<Vec<f32, 2>>(grid_shape);
+            tile_large_origins = Array<Vec<i32, 2>, 4>(grid_shape);
+            tile_large_shifts = Array<Vec<f32, 2>, 4>(grid_shape);
 
             const auto volume2image = volume2image_matrices(metadata, correct_rotation, image_shape, volume_shape);
             const auto volume2image_1d = volume2image.span_1d();
@@ -255,25 +199,25 @@ namespace qn {
             const auto tile_large_padded_shape = Shape2::from_value(tile_large_padded_size);
             const auto options = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
 
-            tiles_large_padded_buffer = Array<c32>(tile_large_padded_shape.rfft().push_front(bd), options);
-            subvolume_large_padded_buffer = Array<c32>(subvolume_large_padded_shape.rfft().push_front(n_threads), options);
+            tiles_large_padded_buffer = Array<c32, 4>(tile_large_padded_shape.rfft().push_front(bd), options);
+            subvolume_large_padded_buffer = Array<c32, 4>(subvolume_large_padded_shape.rfft().push_front(n_threads), options);
             if (device.is_gpu())
-                subvolume_row = Array<f32>(subvolume_shape.set<2>(volume_shape[2]).push_front(1), options);
+                subvolume_row = Array<f32, 3>(subvolume_shape.set<2>(volume_shape[2]), options);
         }
 
         [[nodiscard]] auto tiles_large_padded_pair(isize tid) const {
             const auto& ts = tile_large_padded_size;
-            auto pair = Pair<View<f32>, View<c32>>{};
-            pair.second = tiles_large_padded_buffer.view().subregion(tid).permute({1, 0, 2, 3});
-            pair.first = nf::alias_to_real(pair.second, Shape{grid_shape[3], isize{1}, ts, ts});
+            auto pair = Pair<ArrayView<f32, 3>, ArrayView<c32, 3>>{};
+            pair.second = tiles_large_padded_buffer.view()[tid];
+            pair.first = nf::alias_to_real(pair.second, Shape3{grid_shape[3], ts, ts});
             return pair;
         }
 
         [[nodiscard]] auto subvolume_large_padded_pair(isize tid) const {
             const auto& ts = tile_large_padded_size;
-            auto pair = Pair<View<f32>, View<c32>>{};
-            pair.second = subvolume_large_padded_buffer.view().subregion(tid);
-            pair.first = nf::alias_to_real(pair.second, Shape{isize{1}, ts, ts, ts});
+            auto pair = Pair<ArrayView<f32, 3>, ArrayView<c32, 3>>{};
+            pair.second = subvolume_large_padded_buffer.view()[tid];
+            pair.first = nf::alias_to_real(pair.second, Shape3{ts, ts, ts});
             return pair;
         }
 
@@ -281,14 +225,14 @@ namespace qn {
             auto [tiles_large_padded, tiles_large_padded_rfft] = tiles_large_padded_pair(0);
             auto [subvolume_large_padded, subvolume_large_padded_rfft] = subvolume_large_padded_pair(0);
 
-            nf::r2c(tiles_large_padded, tiles_large_padded_rfft, {.record_and_share_workspace = true});
-            nf::c2r(subvolume_large_padded_rfft, subvolume_large_padded, {.record_and_share_workspace = true});
+            nf::rfft2(tiles_large_padded, tiles_large_padded_rfft, {.record_and_share_workspace = true});
+            nf::irfft3(subvolume_large_padded_rfft, subvolume_large_padded, {.record_and_share_workspace = true});
         }
 
         NOA_NOINLINE auto reconstruct_subvolume(
-            const View<const f32>& input_stack,
+            const ArrayView<const f32, 3>& input_stack,
             isize z, isize y, isize x, isize tid = 0
-        ) const -> View<f32> {
+        ) const -> ArrayView<f32, 3> {
             const auto [tiles_large_padded, tiles_large_padded_rfft] = tiles_large_padded_pair(tid);
             const auto [subvolume_large_padded, subvolume_large_padded_rfft] = subvolume_large_padded_pair(tid);
             const auto device = tiles_large_padded.device();
@@ -296,10 +240,9 @@ namespace qn {
             // Extract and taper the padded tiles.
             // For the Fourier reconstruction, the tiles are padded by twice for the backprojection
             // and an additional zero-padding is done on the right for the interpolation in Fourier space.
-            const auto output_tiles = tiles_large_padded.span_contiguous<f32, 3>();
-            noa::iwise(output_tiles.shape(), device, ExtractPaddedTiles{
-                .images = input_stack.span_contiguous<const f32, 3>(),
-                .output_tiles = output_tiles,
+            noa::iwise(tiles_large_padded.shape(), device, ExtractPaddedTiles{
+                .images = input_stack.span_contiguous(),
+                .output_tiles = tiles_large_padded.span_contiguous(),
                 .tile_large_origins = tile_large_origins.span().subregion(z, y, x).as_1d(),
                 .tile_large_center = static_cast<isize>(tile_large_center),
                 .taper_radius = static_cast<f32>(tile_large_center * 0.95),
@@ -307,17 +250,17 @@ namespace qn {
             });
 
             // Compute the rotation-centered central-slices.
-            nf::r2c(tiles_large_padded, tiles_large_padded_rfft);
+            nf::rfft2(tiles_large_padded, tiles_large_padded_rfft);
             ns::phase_shift_2d<"h">(
                 tiles_large_padded_rfft, tiles_large_padded_rfft,
-                tiles_large_padded.shape(), tile_large_shifts.view().subregion(z, y, x)
+                tiles_large_padded.shape(), tile_large_shifts.view().subregion(z, y, x).as_1d()
             );
 
             // Insert the central-slices.
-            const auto iwise_shape = subvolume_large_padded_rfft.shape().pop_front().as<i32>();
+            const auto iwise_shape = subvolume_large_padded_rfft.shape().as<i32>();
             const auto fi = FourierInsertionMaker{
                 .tiles_large_padded_rfft = tiles_large_padded_rfft.span_contiguous<const c32, 3, i32>(),
-                .tiles_large_padded_shape_2d = tiles_large_padded.shape().filter(2, 3).as<i32>(),
+                .tiles_large_padded_shape_2d = tiles_large_padded.shape().pop_front().as<i32>(),
                 .tile_rotations = tile_rotations.span_1d().as_index<i32>(),
                 .subvolume_large_padded_rfft = subvolume_large_padded_rfft.span_contiguous<c32, 3, i32>(),
                 .fftfreq_step = 1 / static_cast<f32>(tile_large_padded_size),
@@ -337,33 +280,15 @@ namespace qn {
                 subvolume_large_padded_rfft, subvolume_large_padded_rfft,
                 subvolume_large_padded.shape(), subvolume_center.as<f32>()
             );
-            nf::c2r(subvolume_large_padded_rfft, subvolume_large_padded);
+            nf::irfft3(subvolume_large_padded_rfft, subvolume_large_padded);
 
-            // TODO interpolation correction
             // Apply real-space deconvolution correction before cropping
-            // nx::fourier_interpolation_correction(subvolume_large_padded, subvolume_large_padded, interp, true);
-            // if (interp == nx::Interp::LINEAR) {
-            //     using deconv_t = FourierInterpolationCorrection<nx::Interp::LINEAR>;
-            //     noa::iwise(subvolume_large_padded.shape().pop_front().as<i32>(), device, deconv_t{
-            //         .subvolume = subvolume_large_padded.span_contiguous<f32, 3, i32>(),
-            //         .subvolume_center = subvolume_center.as<f32>(),
-            //         .fftfreq_step = 1.0f / static_cast<f32>(tile_large_padded_size),
-            //     });
-            // } else if (interp == nx::Interp::LANCZOS6) {
-            //     using deconv_t = FourierInterpolationCorrection<nx::Interp::LANCZOS6>;
-            //     noa::iwise(subvolume_large_padded.shape().pop_front().as<i32>(), device, deconv_t{
-            //         .subvolume = subvolume_large_padded.span_contiguous<f32, 3, i32>(),
-            //         .subvolume_center = subvolume_center.as<f32>(),
-            //         .fftfreq_step = 1.0f / static_cast<f32>(tile_large_padded_size),
-            //     });
-            // }
+            // TODO Lanczos6 is not supported. With the x3 zero padding, the correction is not necessary anyway.
+            if (interp == nx::Interp::LINEAR)
+                nx::fourier_interpolation_correction(subvolume_large_padded, subvolume_large_padded, {.interp = nx::Interp::LINEAR});
 
             // Return a view of the subvolume.
-            auto subvolume = subvolume_large_padded.view().subregion(0,
-                Slice{0, subvolume_shape[0]},
-                Slice{0, subvolume_shape[1]},
-                Slice{0, subvolume_shape[2]}
-            );
+            auto subvolume = subvolume_large_padded.view().subregion(Slices{.end = subvolume_shape.vec});
             return subvolume;
         }
     };

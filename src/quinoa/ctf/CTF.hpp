@@ -181,11 +181,9 @@ namespace qn::ctf {
         }
 
         void sample(
-            const View<f32>& spectrum,
+            const ArrayView<f32, 1>& spectrum,
             const Vec<f64, 2>& fftfreq_range
         ) const {
-            auto [b, d, h, w] = spectrum.shape();
-            check(b == 1 and d == 1 and h == 1);
             sample(spectrum.reinterpret_as_cpu().span_1d(), fftfreq_range);
         }
     };

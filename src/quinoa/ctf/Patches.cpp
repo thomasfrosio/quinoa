@@ -26,7 +26,7 @@ namespace {
             joined += reduced;
         }
 
-        template<size_t N>
+        template<usize N>
         constexpr void post(const reduced_type& joined, Vec<f32, 2>& mean_stddev, const Vec<i32, N>& output_indices) const {
             const auto grid_indices = noa::offset2index(output_indices[0], grid_shape[1]);
 
@@ -141,7 +141,7 @@ namespace {
                 return;
 
             // Scale back to unnormalized frequency.
-            const auto width = polar.shape().width();
+            const auto width = polar.shape()[3];
             const auto frequency = static_cast<f32>(width - 1) * (*fftfreq - rho_start) / rho_range;
 
             // Lerp the polar array at this frequency.
@@ -178,12 +178,12 @@ namespace {
         f64 wedge_half_step{};
 
         noa::Linspace<f64> wedges_phi_range{};
-        Array<f32> patches_polar{};
-        View<f32> patches_polar_bin{};
+        Array<f32, 4> patches_polar{};
+        ArrayView<f32, 4> patches_polar_bin{};
 
         CTFAnisotropic64 ctf{};
-        Array<f32> defoci{};
-        Array<f32> defoci_device{};
+        Array<f32, 1> defoci{};
+        Array<f32, 1> defoci_device{};
         f32 phi_row_step{};
         SpanContiguous<const Vec<f64, 2>> patch_centers{};
 
@@ -226,7 +226,7 @@ namespace {
 
                 // Allocate the per-image polar patches.
                 const auto polar_shape = Shape{n_patches, isize{1}, patch_phi, polar_width};
-                patches_polar = Array<f32>(polar_shape, options);
+                patches_polar = Array<f32, 4>(polar_shape, options);
 
                 // For instance, wedge_step=3 and patch_size=120:
                 // 1. The linspace is [-1.5,0.,1.5,3.,4.5,6.,7.5,9.,10.5, 12.,13.5,15.,16.5,...,178.5] degrees.
@@ -242,13 +242,13 @@ namespace {
                 polar_reduce_strides[1] = (wedge_phi - 1) * polar_reduce_strides[2]; // -1 to overlap
                 check(noa::offset_at(patches_polar.strides(), polar_shape.vec - 1) ==
                       noa::offset_at(polar_reduce_strides, polar_reduce_shape.vec - 1));
-                patches_polar_bin = View(patches_polar.get(), polar_reduce_shape, polar_reduce_strides, options);
+                patches_polar_bin = ArrayView(patches_polar.get(), polar_reduce_shape, polar_reduce_strides, options);
             }
 
             // Prepare a few things for the (eventual) equiphase-binning.
             ctf = CTFAnisotropic64(empty_ctf);
-            defoci = Array<f32>(n_patches);
-            defoci_device = Array<f32>(n_patches, options);
+            defoci = Array<f32, 1>(n_patches);
+            defoci_device = Array<f32, 1>(n_patches, options);
             phi_row_step = static_cast<f32>(wedges_phi_range.for_size(patches_polar.shape()[2]).step);
             patch_centers = grid.patches_centers();
         }
@@ -257,28 +257,28 @@ namespace {
             const Metadata::Image& metadata,
             const ctf::Grid& grid,
             const ctf::Patches& patches,
-            const View<f32>& patches_padded_rfft_ps,
-            const Shape4& patches_padded_shape,
+            const ArrayView<f32, 3>& patches_padded_rfft_ps,
+            const Shape3& patches_padded_shape,
             const Vec<f64, 2>& fftfreq_range,
-            isize polar_width,
             nx::Interp polar_interp
         ) {
             // Transform the power-spectra to polar space. This will allow us to efficiently compute
             // (astigmatism-corrected) rotational averages by a simple reduction along the height.
             if (polar_interp == nx::Interp::CUBIC_BSPLINE)
-                nx::cubic_bspline_prefilter(patches_padded_rfft_ps, patches_padded_rfft_ps);
-            nx::spectrum2polar<"h2fc">(
-                    patches_padded_rfft_ps, patches_padded_shape, patches_polar.view(), {
-                        .spectrum_fftfreq = noa::Linspace{0., fftfreq_range[1], true},
-                        .rho_range = patches.rho(),
-                        .phi_range = wedges_phi_range,
-                        .interp = polar_interp,
-                });
+                nx::cubic_bspline_prefilter_2d(patches_padded_rfft_ps, patches_padded_rfft_ps);
+
+            nx::spectrum2polar<"h2fc", nx::CompileOptions{.interps = nx::InterpSet::none_but(nx::Interp::LINEAR)}>(
+                patches_padded_rfft_ps, patches_padded_shape, patches_polar.view().as_nd<3>(), {
+                    .spectrum_fftfreq = noa::Linspace{0., fftfreq_range[1], true},
+                    .rho_range = patches.rho(),
+                    .phi_range = wedges_phi_range,
+                    .interp = polar_interp,
+            });
 
             // Bin the wedges.
             auto output_bin =
-                patches.patches(metadata.index)
-                .reshape({-1, n_wedges, 1, polar_width}); // (p,b,1,w)
+                patches.view().subregion(metadata.index) // (1,p,b,w)
+                .permute(1, 2, 0, 3); // (p,b,1,w)
 
             if (metadata.defocus.astigmatism < 0.005) {
                 noa::reduce_axes_ewise( // (p,b,h,w)->(p,b,1,w)
@@ -317,10 +317,9 @@ namespace {
             }
 
             // Normalize to give each line equal weight.
-            noa::normalize(output_bin, output_bin, ReduceAxes{.width = true}, {.mode = noa::Norm::MEAN_L2});
+            noa::normalize(output_bin, output_bin, ReduceAxes<4>::none_but(3), {.mode = noa::Norm::MEAN_L2});
         }
     };
-
 }
 
 namespace qn::ctf {
@@ -338,15 +337,15 @@ namespace qn::ctf {
         auto timer = Logger::info_scope_time("Loading patches");
 
         const auto options = ArrayOption{stack_loader.compute_device(), Allocator::ASYNC};
-        const auto image = Array<f32>(grid.slice_shape().push_front<2>(1), options);
+        const auto image = Array<f32, 2>(grid.slice_shape(), options);
         const auto n_patches = grid.n_patches();
         check(grid.patch_size() == patch_size);
 
         const auto allocated_start = Allocator::bytes_currently_allocated(options.device);
 
         // The patches are loaded one image at a time. So allocate enough for one image.
-        const auto patches_shape = grid.patch_shape().push_front(Vec{n_patches, isize{1}});
-        const auto patches_rfft = Array<c32>(patches_shape.rfft(), options);
+        const auto patches_shape = grid.patch_shape().push_front(n_patches);
+        const auto patches_rfft = Array<c32, 3>(patches_shape.rfft(), options);
         const auto patches = nf::alias_to_real(patches_rfft.view(), patches_shape);
 
         const auto spacing = mean(stack_loader.stack_spacing()); // assume isotropic
@@ -357,26 +356,26 @@ namespace qn::ctf {
         const auto [cropped_size, fftfreq_end] = fourier_crop_to_resolution(patch_size, spacing, resolution_range[1], true);
         const bool has_cropping = patch_size > cropped_size;
         const auto downscaling_factor = static_cast<f64>(patch_size) / static_cast<f64>(cropped_size);
-        const auto patches_cropped_shape = Shape{n_patches, isize{1}, cropped_size, cropped_size};
-        const auto patches_cropped_rfft = has_cropping ? Array<c32>(patches_cropped_shape.rfft(), options) : patches_rfft;
+        const auto patches_cropped_shape = Shape{n_patches, cropped_size, cropped_size};
+        const auto patches_cropped_rfft = has_cropping ? Array<c32, 3>(patches_cropped_shape.rfft(), options) : patches_rfft;
         const auto patches_cropped = nf::alias_to_real(patches_cropped_rfft.view(), patches_cropped_shape);
 
         // Prepare to zero-pad the (possibly cropped) patches to optimize the sampling for the fitting.
         // Don't allocate if there's no padding or if we pad back to the original size, just point to corresponding patches.
         patch_padded_size = std::max(patch_padded_size, cropped_size);
-        const auto patches_padded_shape = Shape{n_patches, isize{1}, patch_padded_size, patch_padded_size};
+        const auto patches_padded_shape = Shape{n_patches, patch_padded_size, patch_padded_size};
         const auto zero_padding = (patches_padded_shape - patches_cropped_shape).vec;
         const bool has_padding = zero_padding != 0;
         const bool pad_to_original_size = patch_padded_size == patch_size;
-        auto patches_padded_rfft = Array<c32>{};
+        auto patches_padded_rfft = Array<c32, 3>{};
         if (not has_padding)
             patches_padded_rfft = patches_cropped_rfft;
         else if (pad_to_original_size)
             patches_padded_rfft = patches_rfft;
         else
-            patches_padded_rfft = Array<c32>(patches_padded_shape.rfft(), options);
+            patches_padded_rfft = Array<c32, 3>(patches_padded_shape.rfft(), options);
         const auto patches_padded = nf::alias_to_real(patches_padded_rfft.view(), patches_padded_shape);
-        const auto patches_padded_rfft_ps = noa::like<f32>(patches_padded_rfft);
+        const auto patches_padded_rfft_ps = noa::empty_like<f32>(patches_padded_rfft);
 
         // Then the (possibly oversampled) patches will be transformed to polar space.
         // The polar transformation can and should remove the low frequencies outside the resolution range.
@@ -414,7 +413,7 @@ namespace qn::ctf {
         // the ice gradient within each patch is negligible, so we can center the mean and apply the smooth edge taper
         // without a highpass. This way, the stack loader can load the images without any expensive preprocessing.
         const auto cropped_overflow = (grid.overflow().first.as<f64>() / downscaling_factor).as<f32>();
-        const auto mean_stddev = Array<Vec<f32, 2>>(n_patches, options);
+        const auto mean_stddev = Array<Vec<f32, 2>, 1>(n_patches, options);
         const auto taper_radius = static_cast<f64>(cropped_size) * (2. / 4.) * 0.5;
         const auto taper_smoothness = static_cast<f64>(cropped_size) * (2. / 4.) * 0.5;
         const auto patch_mean_variance = PatchMeanVariance{
@@ -437,9 +436,9 @@ namespace qn::ctf {
         // Optimize the FFT plans.
         nf::set_cache_limit(10, options.device);
         stack_loader.record_fft();
-        nf::r2c(patches, patches_rfft, {.record_and_share_workspace = true});
-        nf::c2r(patches_cropped_rfft, patches_cropped, {.record_and_share_workspace = true});
-        nf::r2c(patches_padded, patches_padded_rfft, {.record_and_share_workspace = true});
+        nf::rfft2(patches, patches_rfft, {.record_and_share_workspace = true});
+        nf::irfft2(patches_cropped_rfft, patches_cropped, {.record_and_share_workspace = true});
+        nf::rfft2(patches_padded, patches_padded_rfft, {.record_and_share_workspace = true});
         nf::allocate_workspace(options.device, options.allocator);
 
         const auto allocated_stop = Allocator::bytes_currently_allocated(options.device);
@@ -451,12 +450,12 @@ namespace qn::ctf {
         auto output = Patches{};
         output.m_rho_range = noa::Linspace{fftfreq_range[0], fftfreq_range[1], true};
         output.m_phi_range = noa::Linspace{0., noa::Constant<f64>::PI, false};
-        output.m_polar = Array<value_type>({metadata.stack.ssize(), n_patches, polar_transform.n_wedges, polar_width}, {
+        output.m_polar = Array<value_type, 4>({metadata.stack.ssize(), n_patches, polar_transform.n_wedges, polar_width}, {
             .device = options.device,
             .allocator = Allocator::PITCHED_MANAGED // keep lines aligned
         });
 
-        const auto n_allocated = output.m_polar.shape().set<3>(output.m_polar.strides()[2]).as<size_t>().n_elements();
+        const auto n_allocated = output.m_polar.shape().set<3>(output.m_polar.strides()[2]).as<usize>().n_elements();
         Logger::info(
             "Polar patches:\n"
             "  interp={}\n"
@@ -485,15 +484,15 @@ namespace qn::ctf {
 
             // Crop to the maximum frequency.
             if (has_cropping) {
-                nf::r2c(patches, patches_rfft);
-                nf::resize<"h">(patches_rfft, patches.shape(), patches_cropped_rfft, patches_cropped.shape(), {.correct_nyquist = true});
-                nf::c2r(patches_cropped_rfft, patches_cropped);
+                nf::rfft2(patches, patches_rfft);
+                nf::resize_2d<"h">(patches_rfft, patches.shape(), patches_cropped_rfft, patches_cropped.shape(), {.correct_nyquist = true});
+                nf::irfft2(patches_cropped_rfft, patches_cropped);
             }
 
             // Smooth edges and normalize.
-            noa::reduce_axes_iwise(
+            noa::reduce_axes_iwise( // (p,h,w) -> (p,1,1)
                 patch_mean_variance.patches.shape(), options.device,
-                Vec{0., 0.}, mean_stddev.flat(1), patch_mean_variance
+                Vec{0., 0.}, mean_stddev.reshape(Shape3{-1, 1, 1}), patch_mean_variance
             );
             noa::iwise(patch_mask.patches.shape(), options.device, patch_mask);
 
@@ -501,9 +500,9 @@ namespace qn::ctf {
             if (has_padding)
                 noa::resize(patches_cropped, patches_padded, {}, zero_padding);
 
-            // Compute the power-spectra, making sure to normalize the FFT now since we will not be calling c2r.
-            nf::r2c(patches_padded, patches_padded_rfft.view(), {.norm = nf::Norm::NONE});
-            const auto fft_scale = 1 / static_cast<f32>(patches_padded.shape().filter(2, 3).n_elements());
+            // Compute the power-spectra, making sure to normalize the FFT now since we will not be calling irfft2.
+            nf::rfft2(patches_padded, patches_padded_rfft.view(), {.norm = nf::Norm::NONE});
+            const auto fft_scale = 1 / static_cast<f32>(patches_padded.shape().pop_front().n_elements());
             noa::ewise(patches_padded_rfft.view(), patches_padded_rfft_ps, [=]NOA_HD(const c32& i, f32& o) {
                 o = noa::abs_squared(i) * fft_scale;
             });
@@ -512,7 +511,7 @@ namespace qn::ctf {
             polar_transform.run(
                 image_metadata, grid, output,
                 patches_padded_rfft_ps.view(), patches_padded_shape,
-                fftfreq_range, polar_width, polar_interp
+                fftfreq_range, polar_interp
             );
         }
         output.view().eval();

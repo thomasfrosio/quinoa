@@ -17,32 +17,32 @@ namespace qn {
 
         template<typename... Args>
         static void error(fmt::format_string<Args...>&& fmt, Args&&... args) {
-            s_logger.critical(fmt::runtime(fmt), std::forward<Args>(args)...);
+            s_logger.critical(fmt::runtime(fmt.str), std::forward<Args>(args)...);
         }
 
         template<typename... Args>
         static void warn(fmt::format_string<Args...>&& fmt, Args&&... args) {
-            s_logger.error(fmt::runtime(fmt), std::forward<Args>(args)...);
+            s_logger.error(fmt::runtime(fmt.str), std::forward<Args>(args)...);
         }
 
         template<typename... Args>
         static void status(fmt::format_string<Args...>&& fmt, Args&&... args) {
-            s_logger.warn(fmt::runtime(fmt), std::forward<Args>(args)...);
+            s_logger.warn(fmt::runtime(fmt.str), std::forward<Args>(args)...);
         }
 
         template<typename... Args>
         static void info(fmt::format_string<Args...>&& fmt, Args&&... args) {
-            s_logger.info(fmt::runtime(fmt), std::forward<Args>(args)...);
+            s_logger.info(fmt::runtime(fmt.str), std::forward<Args>(args)...);
         }
 
         template<typename... Args>
         static void trace(fmt::format_string<Args...>&& fmt, Args&&... args) {
-            s_logger.debug(fmt::runtime(fmt), std::forward<Args>(args)...);
+            s_logger.debug(fmt::runtime(fmt.str), std::forward<Args>(args)...);
         }
 
         template<typename... Args>
         static void debug(fmt::format_string<Args...>&& fmt, Args&&... args) {
-            s_logger.trace(fmt::runtime(fmt), std::forward<Args>(args)...);
+            s_logger.trace(fmt::runtime(fmt.str), std::forward<Args>(args)...);
         }
 
     public:
@@ -91,15 +91,15 @@ namespace qn {
 
         template<bool NEW_LINE = true, typename... Args>
         [[nodiscard]] static auto status_scope_time(fmt::format_string<Args...>&& fmt, Args&&... args) -> ScopeTimer {
-            return ScopeTimer(fmt::format(fmt::runtime(fmt), std::forward<Args>(args)...), spdlog::level::warn, NEW_LINE);
+            return ScopeTimer(fmt::format(fmt::runtime(fmt.str), std::forward<Args>(args)...), spdlog::level::warn, NEW_LINE);
         }
         template<bool NEW_LINE = true, typename... Args>
         [[nodiscard]] static auto info_scope_time(fmt::format_string<Args...>&& fmt, Args&&... args) -> ScopeTimer {
-            return ScopeTimer(fmt::format(fmt::runtime(fmt), std::forward<Args>(args)...), spdlog::level::info, NEW_LINE);
+            return ScopeTimer(fmt::format(fmt::runtime(fmt.str), std::forward<Args>(args)...), spdlog::level::info, NEW_LINE);
         }
         template<bool NEW_LINE = false, typename... Args>
         [[nodiscard]] static auto trace_scope_time(fmt::format_string<Args...>&& fmt, Args&&... args) -> ScopeTimer {
-            return ScopeTimer(fmt::format(fmt::runtime(fmt), std::forward<Args>(args)...), spdlog::level::debug, NEW_LINE);
+            return ScopeTimer(fmt::format(fmt::runtime(fmt.str), std::forward<Args>(args)...), spdlog::level::debug, NEW_LINE);
         }
 
     public:

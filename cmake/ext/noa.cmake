@@ -5,7 +5,7 @@ if (TARGET noa::noa)
     message(STATUS "Target already exists: noa::noa")
 else ()
     set(noa_REPOSITORY https://github.com/thomasfrosio/noa)
-    set(noa_TAG quinoa)
+    set(noa_TAG main)
 
     message(STATUS "Repository: ${noa_REPOSITORY}")
     message(STATUS "Git tag: ${noa_TAG}")

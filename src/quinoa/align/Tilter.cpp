@@ -15,10 +15,9 @@ namespace {
     using namespace qn;
 
     struct ReduceHeight {
-        using span_t = SpanContiguous<const f32, 3>;
-        using interp_t = nx::Interpolator<2, nx::Interp::LINEAR, noa::Border::ZERO, span_t>;
+        using interp_t = nx::Interpolator<nx::Interp::LINEAR, noa::Border::ZERO, 2, i32, Empty, true>;
 
-        interp_t images{};
+        SpanContiguous<const f32, 3> images{};
         SpanContiguous<const Mat<f32, 2, 3>> matrices{};
         SpanContiguous<const ParallelogramMask> fov_masks{};
 
@@ -28,7 +27,7 @@ namespace {
 
             f32 value{};
             if (mask > 1e-6f)
-                value = images.interpolate_at(image_coordinates, i);
+                value = interp_t{}.get(images[i], image_coordinates);
 
             sum += value * mask;
         }
@@ -74,11 +73,10 @@ namespace {
     }
 
     struct CreateStacks {
-        using span_type = SpanContiguous<const f32, 3, i32>;
-        using interpolator_type = nx::Interpolator<2, nx::Interp::LINEAR, noa::Border::ZERO, span_type>;
         using reduce_type = Vec<f32, 5, 8>;
 
-        interpolator_type input{}; // (n,h,w)
+        using interpolator_t = nx::Interpolator<nx::Interp::LINEAR, noa::Border::ZERO, 2, i32, Empty, true>;
+        SpanContiguous<const f32, 3, i32> input{}; // (n,h,w)
         SpanContiguous<f32, 3, i32> references{}; // (n-1,h,w)
         SpanContiguous<f32, 3, i32> stretched_targets{}; // (n-1,h,w)
 
@@ -102,7 +100,7 @@ namespace {
             const auto target_coordinates = reference2target[i] * reference_coordinates;
 
             // Save the masked and stretched target.
-            const auto stretched_target = input.interpolate_at(target_coordinates, index_target) * fov_mask;
+            const auto stretched_target = interpolator_t{}.get(input[index_target], target_coordinates) * fov_mask;
             stretched_targets(i, y, x) = stretched_target;
 
             return noa::make_tuple(reference, stretched_target, fov_mask);
@@ -174,8 +172,8 @@ namespace {
     }
 
     struct ShiftAlignAndMask {
-        using input_type = SpanContiguous<const f32, 3, i32>;
-        nx::Interpolator<2, nx::Interp::LINEAR, noa::Border::ZERO, input_type> input{};
+        using interpolator_t = nx::Interpolator<nx::Interp::LINEAR, noa::Border::ZERO, 2, i32, Empty, true>;
+        SpanContiguous<const f32, 3, i32> input{};
         SpanContiguous<f32, 3, i32> output{};
         SpanContiguous<const Mat<f32, 2, 3>, 1, i32> xforms{};
         nx::DrawEllipse<2, f32, true> ellipse{};
@@ -184,7 +182,7 @@ namespace {
             const auto output_coordinates = Vec<f32, 2>::from_values(y, x);
             const auto input_coordinates = xforms[i] * output_coordinates.push_back(1);
             const auto mask = ellipse.draw_at(output_coordinates);
-            output(i, y, x) = input.interpolate_at(input_coordinates, i) * mask;
+            output(i, y, x) = interpolator_t{}.get(input[i], input_coordinates) * mask;
         }
     };
 
@@ -200,7 +198,7 @@ namespace {
 
 namespace qn {
     void Tilter::find_accurate_image_rotation(
-        const View<const f32>& stack,
+        const ArrayView<const f32, 3>& stack,
         Metadata::Stack& metadata,
         Vec<f64, 3>& angle_offsets,
         const FindAccurateImageRotationOptions& options
@@ -229,7 +227,7 @@ namespace qn {
         // The projection kernel reduces the height dimension. To project the stack along any axis,
         // we rotate and center it so that the projection axis is perpendicular to the height.
         // To make sure the image doesn't go out-of-bound when rotating, we need to zero-pad appropriately.
-        const auto image_shape = stack.shape().filter(2, 3);
+        const auto image_shape = stack.shape().pop_front();
         const auto n_images = stack.shape()[0];
         const auto line_size = static_cast<isize>(std::sqrt(2) * static_cast<f64>(noa::max(image_shape)) + max_shift);
 
@@ -240,9 +238,9 @@ namespace qn {
         // Allocate small dereferenceable buffers.
         const auto device = stack.device();
         const auto options_managed = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
-        const auto matrices = Array<Mat<f32, 2, 3>>(n_images, options_managed);
-        const auto fov_masks = Array<ParallelogramMask>(n_images, options_managed);
-        const auto lines = Array<f32>({n_images, 1, 1, line_size}, options_managed);
+        const auto matrices = Array<Mat<f32, 2, 3>, 1>(n_images, options_managed);
+        const auto fov_masks = Array<ParallelogramMask, 1>(n_images, options_managed);
+        const auto lines = Array<f32, 2>({n_images, line_size}, options_managed);
 
         // Sort metadata in the same order as the stack.
         auto meta = metadata;
@@ -278,11 +276,10 @@ namespace qn {
             });
 
             // Compute the lines.
-            using interp_t = ReduceHeight::interp_t;
             noa::reduce_axes_iwise(
-                image_padded_shape.push_front(n_images), device, f32{0}, lines.permute({1, 0, 2, 3}),
+                image_padded_shape.push_front(n_images), device, f32{0}, lines.reshape(Shape3{n_images, 1, line_size}),
                 ReduceHeight{
-                    .images = interp_t(stack.span_contiguous<const f32, 3>(), image_shape),
+                    .images = stack.span_contiguous<const f32, 3>(),
                     .matrices = matrices.span_1d(),
                     .fov_masks = fov_masks.span_1d(),
                 });
@@ -290,7 +287,7 @@ namespace qn {
             // Cross-correlation.
             f64 zncc{};
             const auto reference = lines.eval().span().subregion(pivot).as_1d();
-            const auto targets = lines.span().filter(0, 3).as_contiguous();
+            const auto targets = lines.span_contiguous();
             for (isize i{}; i < n_images; ++i)
                 if (i != pivot)
                     zncc += zero_normalized_cross_correlation(reference, targets[i]);
@@ -364,7 +361,7 @@ namespace qn {
             slice.angles[0] = Metadata::Image::to_angle_range(best_rotation_offset);
     }
 
-    Tilter::Tilter(const Shape4& shape) {
+    Tilter::Tilter(const Shape3& shape) {
         // Ask for 4 times the stack.
         // We only need 3 times the stack; however, the forward FFT needed for the cross-correlation is the slowest
         // step and is significantly faster when the references and stretched targets are batched into the same array.
@@ -377,10 +374,10 @@ namespace qn {
         return m_buffer_shape.n_elements() * static_cast<isize>(sizeof(c32));
     }
 
-    void Tilter::set_shared_buffer(const Array<std::byte>& shared_buffer) {
+    void Tilter::set_shared_buffer(const Array<std::byte, 1>& shared_buffer) {
         auto shared_buffer_rfft = shared_buffer
-            .reinterpret_as<c32>()
-            .subregion(Ellipsis{}, Slice{0, m_buffer_shape.rfft().n_elements()})
+            .as<c32>()
+            .subregion(Slice{0, m_buffer_shape.rfft().n_elements()})
             .reshape(m_buffer_shape.rfft());
 
         m_buffer_rfft = shared_buffer_rfft.view();
@@ -391,15 +388,15 @@ namespace qn {
         const auto options_managed = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
         const auto n_target_images = m_n_total_images - 1;
 
-        m_fov_masks = Array<ParallelogramMask>(n_target_images, options_managed);
-        m_plane_coefficients = noa::like<Vec<f32, 4>>(m_fov_masks);
-        m_projection_matrices = noa::like<Mat<f32, 2, 4>>(m_fov_masks);
-        m_shift_matrices = Array<Mat<f32, 2, 3>>(m_n_total_images, options_managed);
+        m_fov_masks = Array<ParallelogramMask, 1>(n_target_images, options_managed);
+        m_plane_coefficients = noa::empty_like<Vec<f32, 4>>(m_fov_masks);
+        m_projection_matrices = noa::empty_like<Mat<f32, 2, 4>>(m_fov_masks);
+        m_shift_matrices = Array<Mat<f32, 2, 3>, 1>(m_n_total_images, options_managed);
 
-        m_xmap_centered = Array<f32>({n_target_images, 1, 64, 64}, options_managed);
-        m_peak_shifts = noa::like<Vec<f32, 2>>(m_fov_masks);
-        m_peak_values = noa::like<f32>(m_fov_masks);
-        m_peak_stats = noa::like<Vec<f32, 5>>(m_fov_masks);
+        m_xmap_centered = Array<f32, 3>({n_target_images, 64, 64}, options_managed);
+        m_peak_shifts = noa::empty_like<Vec<f32, 2>>(m_fov_masks);
+        m_peak_values = noa::empty_like<f32>(m_fov_masks);
+        m_peak_stats = noa::empty_like<Vec<f32, 5>>(m_fov_masks);
 
         // Prepare the shifts.
         m_relative_shifts.resize(static_cast<usize>(m_n_total_images));
@@ -408,11 +405,11 @@ namespace qn {
         // Prepare FFT plans and set the workspace.
         if (device.is_gpu()) {
             // eval_
-            nf::r2c(buffer(0, 2), buffer_rfft(0, 2), {.record_and_share_workspace = true});
-            nf::c2r(buffer_rfft(1), buffer(0), {.record_and_share_workspace = true});
+            nf::rfft2(buffer(0, 2), buffer_rfft(0, 2), {.record_and_share_workspace = true});
+            nf::irfft2(buffer_rfft(1), buffer(0), {.record_and_share_workspace = true});
 
             // find_image_rotation
-            nf::r2c(
+            nf::rfft2(
                 m_buffer.subregion(Slice{0, m_n_total_images}),
                 m_buffer_rfft.view().subregion(Slice{0, m_n_total_images}),
                 {.record_and_share_workspace = true}
@@ -433,7 +430,7 @@ namespace qn {
     }
 
     void Tilter::find_image_rotation(
-        const View<f32>& stack,
+        const ArrayView<f32, 3>& stack,
         Metadata::Stack& metadata,
         Vec<f64, 3>& angle_offsets,
         const FindImageRotationOptions& options
@@ -479,7 +476,7 @@ namespace qn {
             "  line_size={}\n"
             "  n_lines={} (range={:.2f}deg, step={:.2f}deg)\n"
             "  initial_rotation_offset={:.2f}",
-            stack.device(), stack.shape()[3] / 2 + 1,
+            stack.device(), stack.shape()[2] / 2 + 1,
             n_lines, options.angle_range, options.angle_step,
             initial_rotation_offset
         );
@@ -503,44 +500,43 @@ namespace qn {
             inverse_matrix = nx::translate(image.shifts).pop_back().as<f32>();
 
         const auto center = (shape_2d.vec / 2).as<f64>();
-        using input_span_t = SpanContiguous<const f32, 3, i32>;
-        using interpolator_t = nx::Interpolator<2, nx::Interp::LINEAR, noa::Border::ZERO, input_span_t>;
         noa::iwise(input.shape(), aligned_stack.device(), ShiftAlignAndMask{
-            .input = interpolator_t(input, shape_2d),
+            .input = input,
             .output = aligned_stack.span_contiguous().as<f32, 3, i32>(),
             .xforms = m_shift_matrices.span_1d().as_index<i32>(),
-            .ellipse = nx::Ellipse{.center = center, .radius = center / 2, .smoothness = min(center / 2)}.draw<f32>(),
+            .ellipse = nx::Ellipse{.center = center, .radius = center / 2, .smoothness = min(center / 2)}.get<f32>(),
         });
 
         // Compute the sum of the spectra and save the power spectrum of that sum.
-        nf::r2c(aligned_stack, aligned_stack_rfft); // inplace
-        const auto image_shape = aligned_stack.shape().set<0>(1);
+        nf::rfft2(aligned_stack, aligned_stack_rfft); // inplace
+        const auto image_shape = aligned_stack.shape().pop_front();
         const auto image_shape_rfft = image_shape.rfft();
-        const auto spectral_sum_power = m_buffer_rfft.view().reinterpret_as<f32>() // get contiguous buffer
+        const auto spectral_sum_power = m_buffer_rfft.view().as<f32>() // get contiguous buffer
             .subregion(Offset{n_images}) // offset to unused region
             .flat(0).subregion(Slice{0, image_shape_rfft.n_elements()}) // select slice
-            .reshape(image_shape_rfft);
-        noa::reduce_axes_ewise(aligned_stack_rfft, c32{}, spectral_sum_power, PowerSum{}); // (n,1,h,w/2+1)->(1,1,h,w/2+1)
+            .reshape(image_shape_rfft.push_front(1));
+        noa::reduce_axes_ewise(aligned_stack_rfft, c32{}, spectral_sum_power, PowerSum{}); // (n,h,w/2+1)->(1,h,w/2+1)
 
         // Compute the lines.
-        const auto line_size = image_shape_rfft[3];
+        const auto line_size = image_shape_rfft[1];
         const auto line_pitch = noa::next_multiple_of(line_size, 256);
-        const auto lines =  m_buffer_rfft.view().reinterpret_as<f32>() // get contiguous buffer
+        const auto lines =  m_buffer_rfft.view().as<f32>() // get contiguous buffer
             .flat(0).subregion(Slice{0, n_lines * line_pitch}) // keep lines well aligned
-            .reshape({1, 1, n_lines, line_pitch})
-            .subregion(Ellipsis{}, Slice{0, line_size});
-        nx::spectrum2polar<"h2fc">(spectral_sum_power, image_shape, lines, {
-            .phi_range = noa::Linspace{
-                .start = noa::deg2rad(angle_start),
-                .stop = noa::deg2rad(angle_end),
-                .endpoint = true,
-            },
-            .interp = nx::Interp::LINEAR,
-        });
+            .reshape(Shape2{n_lines, line_pitch})
+            .subregion(Full{}, Slice{0, line_size});
+        nx::spectrum2polar<"h2fc", nx::CompileOptions{.interps = nx::InterpSet::none_but(nx::Interp::LINEAR)}>(
+            spectral_sum_power.filter(1, 2), image_shape, lines, {
+                .phi_range = noa::Linspace{
+                    .start = noa::deg2rad(angle_start),
+                    .stop = noa::deg2rad(angle_end),
+                    .endpoint = true,
+                },
+                .interp = nx::Interp::LINEAR,
+            });
 
         // Compute the sum of each line.
-        auto sums = Array<f32>(n_lines, {.device = lines.device(), .allocator = Allocator::MANAGED});
-        noa::reduce_axes_ewise(lines, f32{}, sums.flat(2), noa::ReduceSum{}); // (1,1,n,w/2+1)->(1,1,n,1)
+        auto sums = Array<f32, 1>(n_lines, {.device = lines.device(), .allocator = Allocator::MANAGED});
+        noa::reduce_axes_ewise(lines, f32{}, sums.reshape(Shape2{-1, 1}), noa::ReduceSum{}); // (n,w/2+1)->(n,1)
         sums = sums.reinterpret_as_cpu();
 
         // The common line should be the line with the highest sum.
@@ -568,7 +564,7 @@ namespace qn {
     }
 
     void Tilter::find_image_shifts(
-        const View<f32>& stack,
+        const ArrayView<f32, 3>& stack,
         Metadata::Stack& metadata,
         const FindImageShiftsOptions& options
     ) {
@@ -636,7 +632,7 @@ namespace qn {
     }
 
     void Tilter::find_specimen_level(
-        const View<f32>& stack,
+        const ArrayView<f32, 3>& stack,
         Metadata::Stack& metadata,
         Vec<f64, 3>& angle_offsets,
         const FindSpecimenLevelOptions& options
@@ -707,7 +703,7 @@ namespace qn {
     }
 
     auto Tilter::eval_(
-        const View<f32>& stack,
+        const ArrayView<f32, 3>& stack,
         const Metadata::Stack& metadata,
         bool fov_mask,
         f64 smooth_edge_percent,
@@ -721,7 +717,7 @@ namespace qn {
         const auto pivot = static_cast<i32>(metadata.find_lowest_tilt_index());
         const auto n_total_images = metadata.ssize();
         const auto n_targets = n_total_images - 1;
-        const auto image_shape = stack.shape().filter(2, 3);
+        const auto image_shape = stack.shape().pop_front();
         const auto image_center = (image_shape.vec / 2).as<f64>();
 
         // Whether to enforce the common FOV between all the images.
@@ -779,10 +775,9 @@ namespace qn {
         }
 
         // Compute the reference and (stretched-)target stacks.
-        using interp_t = CreateStacks::interpolator_type;
         auto iwise_shape = image_shape.push_front(n_targets).as<i32>();
         auto create_stacks = CreateStacks{
-            .input = interp_t(stack.span_contiguous<const f32, 3, i32>(), image_shape.as<i32>()),
+            .input = stack.span_contiguous<const f32, 3, i32>(),
             .references = buffer(0).span_contiguous<f32, 3, i32>(),
             .stretched_targets = buffer(1).span_contiguous<f32, 3, i32>(),
             .fov_masks = m_fov_masks.span_contiguous<ParallelogramMask, 1, i32>(),
@@ -795,7 +790,7 @@ namespace qn {
             // On top of computing the stacks, compute the stats for the ZNCC score.
             noa::reduce_axes_iwise( // (n,h,w)->(n,1,1)
                 iwise_shape, device, CreateStacks::reduce_type{},
-                m_peak_stats.view().flat(1), create_stacks
+                m_peak_stats.view().reshape(Shape3{-1, 1, 1}), create_stacks
             );
         } else {
             noa::iwise(iwise_shape, device, create_stacks);
@@ -811,12 +806,12 @@ namespace qn {
 
         // (Conventional) cross-correlation, returning a centered map.
         // Note that to compute a ZNCC between -1 and 1, the FFT normalization should be done on the xmap (BACKWARD).
-        nf::r2c(buffer(0, 2), buffer_rfft(0, 2), {.norm = nf::Norm::BACKWARD});
-        noa::iwise(buffer_rfft(0).shape().filter(0, 2, 3).as<i32>(), device, CrossCorrelate{
+        nf::rfft2(buffer(0, 2), buffer_rfft(0, 2), {.norm = nf::Norm::BACKWARD});
+        noa::iwise(buffer_rfft(0).shape().as<i32>(), device, CrossCorrelate{
             .references = buffer_rfft(0).span_contiguous<const c32, 3, i32>(),
             .stretched_targets = buffer_rfft(1).span_contiguous<c32, 3, i32>(), // output
         });
-        nf::c2r(buffer_rfft(1), buffer(0), {.norm = nf::Norm::BACKWARD}); // centered xmap
+        nf::irfft2(buffer_rfft(1), buffer(0), {.norm = nf::Norm::BACKWARD}); // centered xmap
 
         // if (not Logger::s_debug_path.empty()) {
         //     auto filename = Logger::s_debug_path / "xmap.mrc";

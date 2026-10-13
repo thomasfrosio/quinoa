@@ -9,9 +9,6 @@ namespace {
 
     struct RampFilter {
     private:
-        static constexpr f32 ALPHA = 0.00195f;
-        static constexpr f32 MATCH_ADD = 0.3f;
-
         // Ramp.
         Vec<f32, 2> m_normal_to_tilt_axis;
         bool m_ramp_filter;
@@ -42,7 +39,7 @@ namespace {
             return fftfreq_x; // simple linear ramp
         }
 
-        NOA_HD auto operator()(const Vec<f32, 2>& fftfreq_2d, isize) const -> f32 {
+        NOA_HD auto operator()(const Vec<f32, 2>& fftfreq_2d) const -> f32 {
             f32 filter{1};
             if (m_ramp_filter)
                 filter *= ramp_filter_(fftfreq_2d);
@@ -147,22 +144,22 @@ namespace qn {
             ramp_filter, fake_sirt_iterations
         );
 
-        const auto image_shape = loader.slice_shape().push_front<2>(1);
-        const auto images_shape = image_shape.set<0>(metadata.ssize());
+        const auto image_shape = loader.slice_shape();
+        const auto images_shape = image_shape.push_front(metadata.ssize());
         const auto options = ArrayOption{.device = loader.compute_device(), .allocator = Allocator::ASYNC};
 
         const auto b0 = Allocator::bytes_currently_allocated(options.device);
         const auto t0 = Logger::trace_scope_time("StackFilter preprocessing");
 
-        m_images_filtered = Array<f32>(images_shape, options);
+        m_images_filtered = Array<f32, 3>(images_shape, options);
         const bool filtering = ramp_filter or fake_sirt_iterations;
-        const auto image_rfft = filtering ? Array<c32>(image_shape.rfft(), options) : Array<c32>{};
+        const auto image_rfft = filtering ? Array<c32, 2>(image_shape.rfft(), options) : Array<c32, 2>{};
 
-        const auto center = (loader.slice_shape().vec / 2).as<f64>();
-        const auto buffer = use_aligned_stack ? Array<f32>(image_shape, options) : Array<f32>{};
+        const auto center = (image_shape.vec / 2).as<f64>();
+        const auto buffer = use_aligned_stack ? Array<f32, 2>(image_shape, options) : Array<f32, 2>{};
 
         for (i32 i{}; auto& m: metadata) {
-            auto image = m_images_filtered.view().subregion(i);
+            auto image = m_images_filtered.view()[i];
 
             if (use_aligned_stack) {
                 loader.read_slice(buffer.view(), m.index_file);
@@ -173,10 +170,11 @@ namespace qn {
                     nx::translate(-center - m.shifts)
                 ).inverse().as<f32>();
 
-                nx::transform_2d(buffer.view(), image, inverse_transform, {
-                    .interp = aligned_stack_interpolation,
-                    .border = noa::Border::ZERO,
-                });
+                nx::transform_2d<nx::CompileOptions{.interps = INTERPS, .borders = BORDERS}>(
+                    buffer.view(), image, inverse_transform, {
+                        .interp = aligned_stack_interpolation,
+                        .border = noa::Border::ZERO,
+                    });
 
                 // Images are aligned from now.
                 m.shifts = 0.;
@@ -189,12 +187,12 @@ namespace qn {
             m.index = i++;
 
             if (filtering) {
-                nf::r2c(image, image_rfft);
+                nf::rfft2(image, image_rfft);
                 const auto normal_to_tilt_axis = nx::rotate(noa::deg2rad(-m.angles[0]))[1].as<f32>();
                 ns::filter_spectrum_2d<"h">(image_rfft, image_rfft, image.shape(), RampFilter(
                     ramp_filter, normal_to_tilt_axis, fake_sirt_iterations
                 ));
-                nf::c2r(image_rfft, image);
+                nf::irfft2(image_rfft, image);
             }
         }
 
@@ -324,9 +322,9 @@ namespace qn {
         bool keep_spectra_on_device,
         isize chunk_size
     ) {
-        const auto images_shape = image_shape.push_front(Vec{metadata.ssize(), isize{1}});
-        const auto images_padded_shape = image_padded_shape.push_front(Vec{metadata.ssize(), isize{1}});
-        const auto image_padded_strips_shape = image_padded_shape.push_front(Vec{chunk_size, isize{1}});
+        const auto images_shape = image_shape.push_front(metadata.ssize());
+        const auto images_padded_shape = image_padded_shape.push_front(metadata.ssize());
+        const auto image_padded_strips_shape = image_padded_shape.push_front(chunk_size);
         const auto options = ArrayOption{.device = loader.compute_device(), .allocator = Allocator::MANAGED};
 
         const auto b0 = Allocator::bytes_currently_allocated(options.device);
@@ -339,16 +337,14 @@ namespace qn {
 
         // To reduce memory requirements on the device,
         // process images one by one and store everything on the host.
-        Array<f32> resize_buffer;
-        Array<c32> resize_buffer_rfft;
-        if (not keep_spectra_on_device) {
-            noa::tie(resize_buffer, resize_buffer_rfft) =
-                nf::empty<f32>(image_padded_shape.push_front<2>(1), options);
-        }
+        Array<f32, 2> resize_buffer;
+        Array<c32, 2> resize_buffer_rfft;
+        if (not keep_spectra_on_device)
+            noa::tie(resize_buffer, resize_buffer_rfft) = nf::empty<f32>(image_padded_shape, options);
 
         const auto center = (loader.slice_shape().vec / 2).as<f64>();
-        const auto io_buffer = Array<f32>(image_shape.push_front<2>(1), options);
-        const auto xform_buffer = use_aligned_stack ? noa::like(io_buffer) : Array<f32>{};
+        const auto io_buffer = Array<f32, 2>(image_shape, options);
+        const auto xform_buffer = use_aligned_stack ? noa::empty_like(io_buffer) : Array<f32, 2>{};
 
         for (i32 i{}; auto& slice: metadata) {
             if (use_aligned_stack) {
@@ -359,10 +355,11 @@ namespace qn {
                     nx::translate(-center - slice.shifts)
                 ).inverse().as<f32>();
 
-                nx::transform_2d(xform_buffer.view(), io_buffer.view(), inverse_transform, {
-                    .interp = aligned_stack_interpolation,
-                    .border = noa::Border::ZERO,
-                });
+                nx::transform_2d<nx::CompileOptions{.interps = INTERPS, .borders = BORDERS}>(
+                    xform_buffer.view(), io_buffer.view(), inverse_transform, {
+                        .interp = aligned_stack_interpolation,
+                        .border = noa::Border::ZERO,
+                    });
                 slice.shifts = 0.;
                 slice.angles[0] = 0.;
             } else {
@@ -370,17 +367,17 @@ namespace qn {
             }
 
             if (keep_spectra_on_device) {
-                noa::resize(io_buffer, m_images_padded.subregion(i));
+                noa::resize(io_buffer, m_images_padded[i]);
             } else {
                 noa::resize(io_buffer, resize_buffer);
-                nf::r2c(resize_buffer, resize_buffer_rfft, {.norm = nf::Norm::FORWARD});
+                nf::rfft2(resize_buffer, resize_buffer_rfft, {.norm = nf::Norm::FORWARD});
                 if (ramp_filter) {
                     const auto normal_to_tilt_axis = nx::rotate(noa::deg2rad(-slice.angles[0]))[1].as<f32>();
                     ns::filter_spectrum_2d<"h">(resize_buffer_rfft, resize_buffer_rfft, resize_buffer.shape(),
                         RampFilter(ramp_filter, normal_to_tilt_axis, fake_sirt_iterations)
                     );
                 }
-                resize_buffer_rfft.to(m_images_padded_rfft.subregion(i));
+                resize_buffer_rfft.to(m_images_padded_rfft[i]);
             }
 
             // Images are loaded as sorted in the stack.
@@ -390,7 +387,7 @@ namespace qn {
         loader = StackLoader{};
 
         if (keep_spectra_on_device) {
-            nf::r2c(m_images_padded, m_images_padded_rfft, {.norm = nf::Norm::FORWARD, .cache_plan = false});
+            nf::rfft2(m_images_padded, m_images_padded_rfft, {.norm = nf::Norm::FORWARD, .cache_plan = false});
             if (ramp_filter) {
                 check(metadata.has_single_rotation(), "TODO Varying rotation. Add per-image ramp filter.");
                 const auto normal_to_tilt_axis = nx::rotate(noa::deg2rad(-metadata[0].angles[0]))[1].as<f32>();
@@ -401,10 +398,10 @@ namespace qn {
         }
 
         // Allocate remaining buffers.
-        m_images_filtered = Array<f32>(images_shape, options);
+        m_images_filtered = Array<f32, 3>(images_shape, options);
         noa::tie(m_strips_padded, m_strips_padded_rfft) = nf::empty<f32>(image_padded_strips_shape, options);
         if (not keep_spectra_on_device)
-            m_image_padded_rfft = Array<c32>(image_padded_shape.rfft().push_front<2>(1), options);
+            m_image_padded_rfft = Array<c32, 2>(image_padded_shape.rfft(), options);
 
         const auto b1 = Allocator::bytes_currently_allocated(options.device);
         Logger::trace(
@@ -477,8 +474,8 @@ namespace qn {
         //     decreases the overall memory needed (host and device). The runtime overhead is minimal.
         //  2. If this is still not enough, keep spectra on the host.
         //  3. If this is still not enough, divide in more chunks.
-        const auto images_shape = image_shape.push_front(Vec{n_images, isize{1}});
-        const auto images_padded_shape = image_padded_shape.push_front(Vec{n_images, isize{1}});
+        const auto images_shape = image_shape.push_front(n_images);
+        const auto images_padded_shape = image_padded_shape.push_front(n_images);
         const auto images_bytes = static_cast<usize>(images_shape.n_elements()) * sizeof(f32);
         const auto images_padded_bytes = static_cast<usize>(images_padded_shape.rfft().n_elements()) * sizeof(c32);
 
@@ -531,7 +528,7 @@ namespace qn {
         const auto slice = Slice{0, index * group_size};
 
         // Prepare for this transform, asking to share the workspace.
-        nf::c2r(m_strips_padded_rfft.view().subregion(slice), m_strips_padded.view().subregion(slice), {
+        nf::irfft2(m_strips_padded_rfft.view().subregion(slice), m_strips_padded.view().subregion(slice), {
             .norm = noa::fft::Norm::FORWARD,
             .record_and_share_workspace = record,
         });
@@ -560,14 +557,14 @@ namespace qn {
         }
     }
 
-    [[nodiscard]] auto StackFilterer::compute_filtered_stack(isize z) const -> Array<f32> {
+    [[nodiscard]] auto StackFilterer::compute_filtered_stack(isize z) const -> Array<f32, 3> {
         if (m_z_step_nm <= 0) // no ctf
             return m_images_filtered;
 
         const auto device = m_images_filtered.device();
         const auto spacing_nm = m_ctf->pixel_size() * 1e-1;
-        const auto image_shape = m_images_filtered.shape().filter(2, 3);
-        const auto image_padded_shape = m_images_padded.shape().filter(2, 3);
+        const auto image_shape = m_images_filtered.shape().pop_front();
+        const auto image_padded_shape = m_images_padded.shape().pop_front();
         const auto left_padding = image_padded_shape.vec / 2 - image_shape.vec / 2;
         const auto fftfreq_norm = 1. / image_padded_shape.vec.as<f64>();
 
@@ -597,7 +594,7 @@ namespace qn {
             const auto plane_normal = (plane_rotation * Vec{1., 0., 0.}).as<f32>();
 
             // Make the input spectrum available on the device.
-            auto image_padded_rfft = m_images_padded_rfft.view().subregion(image.index);
+            auto image_padded_rfft = m_images_padded_rfft.view()[image.index];
             if (image_padded_rfft.device() != device)
                 image_padded_rfft = image_padded_rfft.to(m_image_padded_rfft.view());
 
@@ -608,8 +605,8 @@ namespace qn {
                 const auto ichunk = Slice{0, ichunk_size};
 
                 noa::iwise(image_padded_shape.rfft().push_front(ichunk_size), device, CTFPhaseFlip{
-                    .image_padded_rfft = image_padded_rfft.span().filter(2, 3).as_contiguous(),
-                    .strips_padded_rfft = m_strips_padded_rfft.span().subregion(ichunk).filter(0, 2, 3).as_contiguous(),
+                    .image_padded_rfft = image_padded_rfft.span_contiguous(),
+                    .strips_padded_rfft = m_strips_padded_rfft.span_contiguous().subregion(ichunk),
                     .ctf = ictf.as<f32>(),
                     .fftfreq_norm = fftfreq_norm.as<f32>(),
                     .phase_flip_strength = m_phase_flip_strength,
@@ -620,9 +617,9 @@ namespace qn {
 
                 compute_irffts(ichunk_size);
 
-                const auto image_filtered = m_images_filtered.span().subregion(image.index).filter(2, 3).as_contiguous();
+                const auto image_filtered = m_images_filtered.span_contiguous()[image.index];
                 noa::iwise(image_filtered.shape(), device, RecomposeFilteredImage{
-                    .strips_padded = m_strips_padded.span().subregion(ichunk).filter(0, 2, 3).as_contiguous(),
+                    .strips_padded = m_strips_padded.span_contiguous().subregion(ichunk),
                     .image = image_filtered,
                     .image_center = image_shape.vec / 2,
                     .left_padding = left_padding,
@@ -639,7 +636,7 @@ namespace qn {
         return m_images_filtered;
     }
 
-    [[nodiscard]] auto StackFilterer::compute_filtered_stack() const -> Array<f32> {
+    [[nodiscard]] auto StackFilterer::compute_filtered_stack() const -> Array<f32, 3> {
         if (m_z_step_nm <= 0) // no ctf
             return m_images_filtered;
 
@@ -652,7 +649,7 @@ namespace qn {
         StackLoader&& stack,
         Metadata& metadata,
         const FilterStackSettings& settings
-    ) -> Array<f32> {
+    ) -> Array<f32, 3> {
         const auto timer = Logger::info_scope_time("Filtering stack");
 
         const auto spacing = mean(stack.stack_spacing());

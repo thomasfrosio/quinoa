@@ -4,10 +4,10 @@ namespace qn::details {
     auto has_plot_file_uuid(const Path& path) -> bool {
         bool has_uuid{};
         auto path_expanded = path;
-        noa::io::expand_user(path_expanded);
+        ni::expand_user(path_expanded);
         if (fs::is_regular_file(path_expanded)) {
             std::string buffer;
-            auto file = noa::io::InputTextFile(std::move(path_expanded), {.read = true});
+            auto file = ni::InputTextFile(std::move(path_expanded), {.read = true});
             while (file.next_line_or_throw(buffer)) {
                 const auto line = std::string_view(buffer);
                 const size_t index = line.find('=');
@@ -34,7 +34,7 @@ namespace qn {
     ) {
         const bool has_uuid = details::has_plot_file_uuid(path);
         const bool append = options.append and has_uuid;
-        auto text_file = noa::io::OutputTextFile(path, noa::io::Open{
+        auto text_file = ni::OutputTextFile(path, ni::Open{
             .write = true,
             .append = append,
             .backup = not append,
@@ -52,7 +52,7 @@ namespace qn {
         text_file.write(fmt::format("linspace={},{},{},{}\n",
             fftfreq_range.start, fftfreq_range.stop, w, fftfreq_range.endpoint));
 
-        auto buffer = Array<f32>(w);
+        auto buffer = Array<f32, 1>(w);
         auto simulate_ctf = [&](ns::CTFIsotropic<f32> ctf, auto thickness_modulation) {
             ctf.set_bfactor(-50);
             auto span = buffer.span_1d();
@@ -87,7 +87,7 @@ namespace qn {
     ) {
         const bool has_uuid = details::has_plot_file_uuid(path);
         const bool append = options.append and has_uuid;
-        auto text_file = noa::io::OutputTextFile(path, noa::io::Open{
+        auto text_file = ni::OutputTextFile(path, ni::Open{
             .write = true,
             .append = append,
             .backup = not append,

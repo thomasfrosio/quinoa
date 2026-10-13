@@ -9,7 +9,7 @@
 #   pragma warning(push, 0)
 #endif
 
-#include <nlopt.hpp>
+#include <nlopt.h>
 
 #if defined(NOA_COMPILER_GCC) || defined(NOA_COMPILER_CLANG)
 #   pragma GCC diagnostic pop
@@ -183,7 +183,7 @@ namespace qn {
         Memoizer(isize n_parameters, isize resolution) {
             if (n_parameters > 0 and resolution > 0) {
                 // Allocate everything upfront.
-                m_cache_input = noa::zeros<f64>({resolution, 1, 2, n_parameters});
+                m_cache_input = noa::zeros<f64, 3>({resolution, 2, n_parameters});
                 m_cache_lines = std::vector<Key>(static_cast<size_t>(resolution), {0, false, false});
             }
         }
@@ -195,7 +195,7 @@ namespace qn {
             if (m_cache_lines.empty())
                 return std::nullopt;
 
-            const auto cache = m_cache_input.view().subregion(Full{}, 0, 0, Full{});
+            const auto cache = m_cache_input.view().subregion(Full{}, 0, Full{});
 
             // If the caller passes the gradients, we need a record with the gradients too.
             const bool requires_gradients = gradients != nullptr;
@@ -237,7 +237,7 @@ namespace qn {
             // We have a match. Set the recorded gradients and return recorded value.
             if (gradients) {
                 const auto cache_line_gradient = m_cache_input.view()
-                    .subregion(successful_line, 0, 1, Full{})
+                    .subregion(successful_line, 1, Full{})
                     .span_1d();
                 for (isize i = 0; i < cache_line_gradient.ssize(); ++i)
                     gradients[i] = cache_line_gradient[i];
@@ -254,14 +254,14 @@ namespace qn {
             m_circular_index = (m_circular_index + 1) % resolution();
 
             const Span cache_line_input = m_cache_input.view()
-                .subregion(m_circular_index, 0, 0, Full{})
+                .subregion(m_circular_index, 0, Full{})
                 .span_1d();
             for (isize i = 0; i < cache_line_input.ssize(); ++i)
                 cache_line_input[i] = inputs[i];
 
             if (gradients) {
                 const Span cache_line_gradient = m_cache_input.view()
-                    .subregion(m_circular_index, 0, 1, Full{})
+                    .subregion(m_circular_index, 1, Full{})
                     .span_1d();
                 for (isize i = 0; i < cache_line_gradient.ssize(); ++i)
                     cache_line_gradient[i] = gradients[i];
@@ -271,7 +271,7 @@ namespace qn {
         }
 
         [[nodiscard]] auto resolution() const noexcept -> isize { return m_cache_input.shape()[0]; }
-        [[nodiscard]] auto n_parameters() const noexcept -> isize { return m_cache_input.shape()[3]; }
+        [[nodiscard]] auto n_parameters() const noexcept -> isize { return m_cache_input.shape()[2]; }
 
         void reset_cache() {
             for (auto& line: m_cache_lines)
@@ -279,7 +279,7 @@ namespace qn {
         }
 
     private:
-        Array<f64> m_cache_input;
+        Array<f64, 3> m_cache_input;
         std::vector<Key> m_cache_lines;
         isize m_circular_index{};
     };

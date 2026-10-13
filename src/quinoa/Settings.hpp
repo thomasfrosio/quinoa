@@ -22,11 +22,11 @@ namespace qn {
             return stem;
         }
 
-        auto stem() const -> Path {
+        [[nodiscard]] auto stem() const -> Path {
             return stem(mdoc_file);
         }
 
-        auto info() const -> std::string {
+        [[nodiscard]] auto info() const -> std::string {
             return fmt::format(
                 "{}:\n"
                 "  mdoc={}\n"
@@ -40,7 +40,6 @@ namespace qn {
         }
     };
 
-    // Settings
     class Settings {
     public:
         Settings() = default;

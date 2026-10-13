@@ -47,4 +47,11 @@ namespace qn {
             };
         }
     };
+
+    static constexpr auto INTERPS = nx::InterpSet::all_but(
+        nx::Interp::NEAREST, nx::Interp::LINEAR,
+        nx::Interp::CUBIC, nx::Interp::CUBIC_BSPLINE,
+        nx::Interp::LANCZOS6);
+
+    static constexpr auto BORDERS = noa::BorderSet::all_but(noa::Border::ZERO);
 }

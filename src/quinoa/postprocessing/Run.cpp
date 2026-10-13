@@ -9,14 +9,14 @@ namespace {
     struct FakeSIRT {
         f32 exponent;
 
-        NOA_HD auto operator()(const Vec<f32, 2>& fftfreq_2d, isize) const -> f32 {
+        NOA_HD auto operator()(const Vec<f32, 2>& fftfreq_2d) const -> f32 {
             const auto fftfreq = noa::sqrt(noa::dot(fftfreq_2d, fftfreq_2d));
             return fake_sirt_filter(fftfreq, exponent);
         }
     };
 
     template<typename T>
-    void reconstruct_z_section(const T& reconstructor, const View<const f32>& stack, const View<f32>& z_section, isize z) {
+    void reconstruct_z_section(const T& reconstructor, const ArrayView<const f32, 3>& stack, const ArrayView<f32, 3>& z_section, isize z) {
         const auto [sy, sx] = reconstructor.subvolume_shape.filter(1, 2);
         const auto [ny, nx] = reconstructor.grid_shape.filter(1, 2);
 
@@ -29,11 +29,11 @@ namespace {
             parallel_for(reconstructor.n_threads, Shape{ny, nx}, [&](isize tid, isize y, isize x) {
                 const auto subvolume = reconstructor.reconstruct_subvolume(stack, z, y, x, tid);
                 auto dst = z_section.subregion(
-                    Ellipsis{},
+                    Full{},
                     Slice{y * sy, y * sy + sy},
                     Slice{x * sx, x * sx + sx}
                 );
-                auto src = subvolume.subregion(Ellipsis{}, Slice{0, dst.shape()[2]}, Slice{0, dst.shape()[3]});
+                auto src = subvolume.subregion(Full{}, Slice{0, dst.shape()[1]}, Slice{0, dst.shape()[2]});
                 src.to(dst);
             });
             stream.set_thread_limit(n_threads);
@@ -45,11 +45,11 @@ namespace {
                     const auto subvolume = reconstructor.reconstruct_subvolume(stack, z, y, x);
                     const auto dst = reconstructor.subvolume_row.view().subregion(Ellipsis{}, Slice{x * sx, x * sx + sx});
 
-                    auto src = subvolume.subregion(Ellipsis{}, Slice{0, dst.shape()[2]}, Slice{0, dst.shape()[3]});
+                    auto src = subvolume.subregion(Full{}, Slice{0, dst.shape()[1]}, Slice{0, dst.shape()[2]});
                     src.to(dst);
                 }
-                auto dst = z_section.subregion(Ellipsis{}, Slice{y * sy, y * sy + sy}, Full{});
-                reconstructor.subvolume_row.view().subregion(Ellipsis{}, Slice{0, dst.shape()[2]}, Full{}).to(dst);
+                auto dst = z_section.subregion(Full{}, Slice{y * sy, y * sy + sy}, Full{});
+                reconstructor.subvolume_row.view().subregion(Full{}, Slice{0, dst.shape()[1]}, Full{}).to(dst);
             }
         }
     }
@@ -67,16 +67,15 @@ namespace qn {
 
         // Output buffer.
         const auto center = (stack.slice_shape().vec / 2).as<f64>();
-        const auto output = Array<f32>(stack.slice_shape().push_front(Vec<isize, 2>{2, 1}), {
+        const auto output = Array<f32, 3>(stack.slice_shape().push_front(2), {
             .device = stack.compute_device(),
             .allocator = Allocator::MANAGED
         });
-        const auto buffer_io = output.view().subregion(0);
-        const auto buffer_xform = output.view().subregion(1);
+        const auto buffer_io = output.view()[0];
+        const auto buffer_xform = output.view()[1];
         const auto buffer_rfft =
             settings.fake_sirt_iterations ?
-            Array<c32>(stack.slice_shape().push_front<2>(1).rfft(), output.options()) : Array<c32>{};
-
+            Array<c32, 2>(stack.slice_shape().rfft(), output.options()) : Array<c32, 2>{};
 
         // Set up the output file.
         auto output_file = noa::io::ImageFile(filename, {.write = true}, {
@@ -96,22 +95,23 @@ namespace qn {
             ).inverse().as<f32>();
 
             stack.read_slice(buffer_io, image.index_file, cache_loader);
-            nx::transform_2d(buffer_io, buffer_xform, inverse_transform, {
+            nx::transform_2d<nx::CompileOptions{.interps = INTERPS, .borders = BORDERS}>(
+                buffer_io, buffer_xform, inverse_transform, {
                 .interp = settings.interpolation,
                 .border = noa::Border::ZERO,
             });
 
             if (settings.fake_sirt_iterations) {
-                nf::r2c(buffer_xform, buffer_rfft);
+                nf::rfft2(buffer_xform, buffer_rfft);
                 ns::filter_spectrum_2d<"h">(
                     buffer_rfft, buffer_rfft, buffer_xform.shape(),
                     FakeSIRT{.exponent = fake_sirt_exponent(settings.fake_sirt_iterations)}
                 );
-                nf::c2r(buffer_rfft, buffer_xform);
+                nf::irfft2(buffer_rfft, buffer_xform);
             }
 
             output_file.write_slice(
-                buffer_xform.reinterpret_as_cpu().span<const f32>(),
+                buffer_xform.reinterpret_as_cpu().span<const f32, 4>(),
                 {.bd_offset = {i++, 0}}
             );
         }
@@ -122,7 +122,7 @@ namespace qn {
         StackLoader&& stack,
         Metadata& metadata,
         const Settings::PostProcessing::Tomogram& settings
-    ) -> Array<f32> {
+    ) -> Array<f32, 3> {
         auto timer = Logger::info_scope_time("Reconstructing tomogram");
 
         auto run = [&]<typename T>() {
@@ -218,7 +218,7 @@ namespace qn {
             Logger::trace("FFT workspace allocated: {}={:.2f}GB", device, static_cast<f64>(b1 - b0) * 1e-9);
 
             // Reconstruct the (possibly CTF-corrected) tomogram.
-            auto tomogram = Array<f32>(volume_shape.push_front(1));
+            auto tomogram = Array<f32, 3>(volume_shape);
             const auto sz = reconstructor.subvolume_shape[0];
             const auto nz = reconstructor.grid_shape[0];
 
@@ -228,7 +228,7 @@ namespace qn {
             for (isize z{}; z < nz; ++z) {
                 Logger::trace("z={:02}/{:02}", z + 1, nz);
                 const auto filtered_stack = stack_filterer.compute_filtered_stack(z);
-                const auto volume_z_section = tomogram.view().subregion(0, Slice{z * sz, z * sz + sz});
+                const auto volume_z_section = tomogram.view().subregion(Slice{z * sz, z * sz + sz});
                 reconstruct_z_section(reconstructor, filtered_stack.view(), volume_z_section, z);
             }
             Logger::trace("Average time per z-section: {}", t.elapsed() / nz);

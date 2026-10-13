@@ -49,17 +49,6 @@ namespace qn::ctf {
         Patches() = default;
         [[nodiscard]] auto array() const noexcept { return m_polar; }
         [[nodiscard]] auto view() const noexcept { return m_polar.view(); }
-        [[nodiscard]] auto patches(isize index) const noexcept {
-            return m_polar.view().subregion(index).permute({1, 0, 2, 3});
-        }
-
-        [[nodiscard]] auto view_batched() const noexcept {
-            return m_polar.view().reshape({n_patches_total(), 1, height(), width()});
-        }
-        [[nodiscard]] auto chunk(isize index) const noexcept {
-            const isize start = index * n_patches_per_image();
-            return Slice{start, start + n_patches_per_image()};
-        }
 
         [[nodiscard]] auto phi() const noexcept { return m_phi_range; }
         [[nodiscard]] auto rho() const noexcept { return m_rho_range; }
@@ -68,14 +57,14 @@ namespace qn::ctf {
         [[nodiscard]] auto phi_step() const noexcept -> f64 { return phi().for_size(height()).step; }
         [[nodiscard]] auto rho_step() const noexcept -> f64 { return rho().for_size(width()).step; }
 
-        [[nodiscard]] auto n_images() const noexcept -> isize { return m_polar.shape().batch(); }
-        [[nodiscard]] auto n_patches_per_image() const noexcept -> isize { return m_polar.shape().depth(); }
+        [[nodiscard]] auto n_images() const noexcept -> isize { return m_polar.shape()[0]; }
+        [[nodiscard]] auto n_patches_per_image() const noexcept -> isize { return m_polar.shape()[1]; }
         [[nodiscard]] auto n_patches_total() const noexcept -> isize { return n_images() * n_patches_per_image(); }
-        [[nodiscard]] auto height() const noexcept -> isize { return m_polar.shape().height(); }
-        [[nodiscard]] auto width() const noexcept -> isize { return m_polar.shape().width(); }
+        [[nodiscard]] auto height() const noexcept -> isize { return m_polar.shape()[2]; }
+        [[nodiscard]] auto width() const noexcept -> isize { return m_polar.shape()[3]; }
 
     private:
-        Array<value_type> m_polar{}; // (n,p,phi,rho)
+        Array<value_type, 4> m_polar{}; // (n,p,phi,rho)
         noa::Linspace<f64> m_phi_range{};
         noa::Linspace<f64> m_rho_range{};
     };

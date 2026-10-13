@@ -97,10 +97,10 @@ namespace {
 
     class Sampler {
     public:
-        using input_span_type = SpanContiguous<const c32, 3, i32>;
-        using input_interp_type = nx::InterpolatorSpectrum<2, nf::Layout::H2H, nx::Interp::LINEAR, input_span_type>;
+        using interpolator_spectrum_t = nx::InterpolatorSpectrum<nf::Layout::H2H, nx::Interp::LINEAR, 2, i32>;
 
-        input_interp_type reference_slices{};
+        interpolator_spectrum_t interpolator_spectrum{};
+        SpanContiguous<const c32, 3, i32> reference_slices{};
         SpanContiguous<c32, 2, i32> projected_slice{};
 
         SpanContiguous<const f32, 1, i32> w_windowed_sinc{};
@@ -128,7 +128,7 @@ namespace {
                         fftfreq_from_slice, insert_fftfreq_sinc, insert_fftfreq_blackman
                     );
                     const auto frequency_yx = fftfreq_3d_slice.pop_front() * f_shape;
-                    value += reference_slices.interpolate_spectrum_at(frequency_yx, reference_indices[i]) * sinc;
+                    value += interpolator_spectrum.get(reference_slices[reference_indices[i]], frequency_yx) * sinc;
                     weight += sinc;
                 }
             }
@@ -279,23 +279,23 @@ namespace {
         isize m_spectrum_size{};
         nx::WindowedSinc m_insertion_sinc{};
 
-        View<c32> m_buffer_padded_rfft; // [references, ..., reference, target, projected]
-        Array<f32> m_buffer_padded; // 2 padded images
-        Array<f32> m_buffer; // 2 images
-        Array<c32> m_buffer_rfft; // 2 slices
-        Array<f32> m_xmap_centered; // small xmap
+        ArrayView<c32, 3> m_buffer_padded_rfft; // [references, ..., reference, target, projected]
+        Array<f32, 3> m_buffer_padded; // 2 padded images
+        Array<f32, 3> m_buffer; // 2 images
+        Array<c32, 3> m_buffer_rfft; // 2 slices
+        Array<f32, 2> m_xmap_centered; // small xmap
 
         std::vector<Metadata::Image> m_references_metadata;
         std::vector<Mat<f64, 3, 3>> m_references_metadata_rotations;
 
         PrepareReferenceAndTarget m_prepare_reference_and_target;
 
-        Array<f32> m_windowed_sinc;
+        Array<f32, 1> m_windowed_sinc;
 
-        Array<u8> m_reference_indices;
-        Array<u8> m_reference_indices_device;
-        Array<nx::Quaternion<f32>> m_reference_rotations;
-        Array<nx::Quaternion<f32>> m_reference_rotations_device;
+        Array<u8, 1> m_reference_indices;
+        Array<u8, 1> m_reference_indices_device;
+        Array<nx::Quaternion<f32>, 1> m_reference_rotations;
+        Array<nx::Quaternion<f32>, 1> m_reference_rotations_device;
 
         Sampler m_sampler;
 
@@ -332,39 +332,38 @@ namespace {
         [[nodiscard]] auto shared_buffer_bytes() const -> isize {
             return Shape3{
                 m_shape[0] + 3, m_spectrum_size, m_spectrum_size // +target, +projected x2
-            }.rfft().n_elements() *
-                static_cast<isize>(sizeof(c32));
+            }.rfft().n_elements() * static_cast<isize>(sizeof(c32));
         }
 
-        void set_shared_buffer(const View<std::byte>& shared_buffer) {
-            const auto shape = Shape4{1, 1, m_shape[1], m_shape[2]};
-            const auto padded_shape = Shape4{m_shape[0] + 3, 1, m_spectrum_size, m_spectrum_size};
+        void set_shared_buffer(const ArrayView<std::byte, 1>& shared_buffer) {
+            const auto shape = Shape2{m_shape[1], m_shape[2]};
+            const auto padded_shape = Shape3{m_shape[0] + 3, m_spectrum_size, m_spectrum_size};
             const auto padded_shape_rfft = padded_shape.rfft();
 
             m_buffer_padded_rfft = shared_buffer
-                .reinterpret_as<c32>()
-                .subregion(Ellipsis{}, Slice{0, padded_shape_rfft.n_elements()})
+                .as<c32>()
+                .subregion(Slice{0, padded_shape_rfft.n_elements()})
                 .reshape(padded_shape_rfft);
             const auto device = m_buffer_padded_rfft.device();
             const auto options = m_buffer_padded_rfft.options();
 
-            m_buffer_padded = Array<f32>(padded_shape.set<0>(2), options);
-            m_buffer = Array<f32>(shape.set<0>(2), options);
-            m_buffer_rfft = Array<c32>(shape.rfft().set<0>(2), options);
+            m_buffer_padded = Array<f32, 3>(padded_shape.set<0>(2), options);
+            m_buffer = Array<f32, 3>(shape.push_front(2), options);
+            m_buffer_rfft = Array<c32, 3>(shape.rfft().push_front(2), options);
 
             // Small xmap centered on the peak, needs to be dereferenceable.
-            m_xmap_centered = Array<f32>({1, 1, 64, 64}, {.device = device, .allocator = Allocator::MANAGED});
+            m_xmap_centered = Array<f32, 2>({64, 64}, {.device = device, .allocator = Allocator::MANAGED});
 
             if (device.is_gpu()) {
                 // All the FFTs.
                 constexpr auto FFT_OPTIONS = nf::FFTOptions{.record_and_share_workspace = true};
-                nf::r2c(m_buffer_padded.view(), m_buffer_padded_rfft.subregion(Slice{0, 2}), FFT_OPTIONS);
-                nf::c2r(m_buffer_padded_rfft.subregion(Slice{0, 2}), m_buffer_padded.view(), FFT_OPTIONS);
-                nf::r2c(m_buffer.view(), m_buffer_rfft.view(), FFT_OPTIONS);
-                nf::c2r(m_buffer_rfft.view().subregion(0), m_buffer.view().subregion(0), FFT_OPTIONS);
+                nf::rfft2(m_buffer_padded.view(), m_buffer_padded_rfft.subregion(Slice{0, 2}), FFT_OPTIONS);
+                nf::irfft2(m_buffer_padded_rfft.subregion(Slice{0, 2}), m_buffer_padded.view(), FFT_OPTIONS);
+                nf::rfft2(m_buffer.view(), m_buffer_rfft.view(), FFT_OPTIONS);
+                nf::irfft2(m_buffer_rfft.view().subregion(0), m_buffer.view().subregion(0), FFT_OPTIONS);
 
                 if (const isize n_bytes = nf::workspace_left_to_allocate(device)) {
-                    auto workspace = Array<std::byte>(n_bytes, options);
+                    auto workspace = Array<std::byte, 1>(n_bytes, options);
                     const auto n_plans_set = nf::set_workspace(device, std::move(workspace));
                     const auto left = nf::workspace_left_to_allocate(device);
                     if (n_plans_set == 0 or left > 0) {
@@ -376,7 +375,7 @@ namespace {
             }
         }
 
-        void initialize(const View<const f32>& stack, f64 spacing_nm, f64 specimen_thickness_nm) {
+        void initialize(const ArrayView<const f32, 3>& stack, f64 spacing_nm, f64 specimen_thickness_nm) {
             // Reset.
             m_references_metadata.clear();
             m_references_metadata_rotations.clear();
@@ -386,11 +385,11 @@ namespace {
             const auto device = m_buffer.device();
             const auto options = ArrayOption{.device = device, .allocator = Allocator::ASYNC};
 
-            m_reference_indices = Array<u8>(max_n_slices);
-            m_reference_rotations = Array<nx::Quaternion<f32>>(max_n_slices);
+            m_reference_indices = Array<u8, 1>(max_n_slices);
+            m_reference_rotations = Array<nx::Quaternion<f32>, 1>(max_n_slices);
             if (device.is_gpu()) {
-                m_reference_indices_device = Array<u8>(max_n_slices, options);
-                m_reference_rotations_device = Array<nx::Quaternion<f32>>(max_n_slices, options);
+                m_reference_indices_device = Array<u8, 1>(max_n_slices, options);
+                m_reference_rotations_device = Array<nx::Quaternion<f32>, 1>(max_n_slices, options);
             } else {
                 m_reference_indices_device = m_reference_indices;
                 m_reference_rotations_device = m_reference_rotations;
@@ -400,7 +399,7 @@ namespace {
             auto extraction_sinc = [&] {
                 // Set up the central-slice extraction.
                 constexpr auto EXTRACT_SINC_OSCILLATIONS = 4;
-                const f64 virtual_volume_size = static_cast<f64>(m_buffer_padded.shape().height()); // TODO -10%?
+                const f64 virtual_volume_size = static_cast<f64>(m_buffer_padded.shape()[1]); // TODO -10%?
                 const f64 thickness_estimate_pixels = specimen_thickness_nm / spacing_nm;
                 const f64 fftfreq_z_sinc = 1 / thickness_estimate_pixels;
                 const f64 fftfreq_z_blackman = EXTRACT_SINC_OSCILLATIONS * fftfreq_z_sinc;
@@ -414,12 +413,12 @@ namespace {
                 return nx::WindowedSinc{fftfreq_z_sinc, fftfreq_z_blackman};
             }();
 
-            const auto shape_padded = m_buffer_padded.shape().pop_front<2>();
+            const auto shape_padded = m_buffer_padded.shape().pop_front();
             const auto volume_z = static_cast<f64>(shape_padded[0]);
             const auto [extract_blackman_size, extract_window_total_weight] = w_window_spec<i32>(
                 extraction_sinc.fftfreq_sinc, extraction_sinc.fftfreq_blackman, volume_z);
 
-            m_windowed_sinc = Array<f32>(extract_blackman_size);
+            m_windowed_sinc = Array<f32, 1>(extract_blackman_size);
             for (i32 i{}; auto& e: m_windowed_sinc.span_1d()) {
                 const auto fftfreq_z_offset = w_index_to_fftfreq_offset(i++, extract_blackman_size, volume_z);
                 const auto convolution_weight = windowed_sinc_at(
@@ -429,15 +428,15 @@ namespace {
             m_windowed_sinc = std::move(m_windowed_sinc).to(options);
 
             // Initialize operators.
-            const auto shape = m_buffer.shape().vec.pop_front<2>().as<i32>();
+            const auto shape = m_buffer.shape().vec.pop_front().as<i32>();
             m_prepare_reference_and_target = PrepareReferenceAndTarget{
                 .stack = stack.span_contiguous<const f32, 3, i32>(),
                 .right_edge = shape,
             };
 
-            const auto references = m_buffer_padded_rfft.span_contiguous<const c32, 3, i32>();
             m_sampler = Sampler{
-                .reference_slices = Sampler::input_interp_type(references, shape_padded.as<i32>()),
+                .interpolator_spectrum = Sampler::interpolator_spectrum_t(shape_padded.as<i32>()),
+                .reference_slices = m_buffer_padded_rfft.span_contiguous<const c32, 3, i32>(),
                 .w_windowed_sinc = m_windowed_sinc.span_1d<const f32, i32>(),
                 .f_shape = shape_padded.vec.as<f32>(),
                 .volume_z = static_cast<f32>(volume_z),
@@ -479,9 +478,8 @@ namespace {
             m_prepare_reference_and_target.target_index = target_metadata.index;
 
             const auto device = m_buffer.device();
-            const auto shape_padded_2d = reference_and_target_padded.shape().filter(2, 3).as<i32>();
-            const auto shape_padded = shape_padded_2d.as<isize>().push_front<2>(1);
-            noa::iwise(shape_padded_2d, device, m_prepare_reference_and_target);
+            const auto shape_padded_2d = reference_and_target_padded.shape().pop_front();
+            noa::iwise(shape_padded_2d.as<i32>(), device, m_prepare_reference_and_target);
 
             // Register the new central-slice.
             const auto insertion_angles = noa::deg2rad(reference_metadata.angles);
@@ -495,13 +493,13 @@ namespace {
             // Compute the central-slice of the new reference (centered onto the origin) and the target.
             // The buffer is organized as [references..., reference, target, projected].
             const auto n_references = std::ssize(m_references_metadata);
-            const auto reference_padded_rfft = m_buffer_padded_rfft.subregion(n_references - 1);
+            const auto reference_padded_rfft = m_buffer_padded_rfft[n_references - 1];
             const auto reference_and_target_padded_rfft = m_buffer_padded_rfft.subregion(Slice{n_references - 1, n_references + 1});
-            const auto shape_2d = m_buffer.shape().filter(2, 3).as<i32>();
+            const auto shape_2d = m_buffer.shape().pop_front().as<i32>();
             const auto original_center = (shape_2d.vec / 2).as<f64>();
-            nf::r2c(reference_and_target_padded, reference_and_target_padded_rfft);
+            nf::rfft2(reference_and_target_padded, reference_and_target_padded_rfft);
             ns::phase_shift_2d<"h">(
-                reference_padded_rfft, reference_padded_rfft, shape_padded,
+                reference_padded_rfft, reference_padded_rfft, shape_padded_2d,
                 (-original_center - reference_metadata.shifts).as<f32>()
             );
 
@@ -509,7 +507,7 @@ namespace {
             // This makes the quaternions contiguous in memory and removes the need to 'continue' the per-slice loop
             // when sampling. Without this, the kernel performance significantly drops as more slices are added,
             // even when using a per-slice bitmask stored directly in the operator.
-            usize count{};
+            isize count{};
             const auto reference_indices = m_reference_indices.span_1d();
             const auto reference_rotations = m_reference_rotations.span_1d();
             for (usize i{}; i < m_references_metadata.size(); ++i) {
@@ -537,7 +535,7 @@ namespace {
             // Sample the central-slice from the virtual volume.
             // This is the most expensive step of this function, especially for thin samples.
             auto target_and_projected_padded_rfft = m_buffer_padded_rfft.subregion(Slice{n_references, n_references + 2});
-            auto projected_padded_rfft = target_and_projected_padded_rfft.subregion(1);
+            auto projected_padded_rfft = target_and_projected_padded_rfft[1];
             const auto extraction_angles = noa::deg2rad(target_metadata.angles);
             m_sampler.projected_slice = projected_padded_rfft.span_contiguous<c32, 2, i32>();
             m_sampler.target_rotation = (
@@ -545,16 +543,16 @@ namespace {
                  nx::rotate_y(+extraction_angles[1]) *
                  nx::rotate_z(-extraction_angles[0])
              ).as<f32>();
-            noa::iwise(shape_padded_2d.rfft(), device, m_sampler);
+            noa::iwise(shape_padded_2d.as<i32>().rfft(), device, m_sampler);
 
             // Keep a copy of the projected central-slice for the ZNCC.
-            auto projected_padded_rfft_copy = m_buffer_padded_rfft.subregion(n_references + 2);
+            auto projected_padded_rfft_copy = m_buffer_padded_rfft[n_references + 2];
             if (compute_score)
                 projected_padded_rfft.to(projected_padded_rfft_copy);
 
             // Center the projected slice onto the target.
             ns::phase_shift_2d<"h">(
-                projected_padded_rfft, projected_padded_rfft, shape_padded,
+                projected_padded_rfft, projected_padded_rfft, shape_padded_2d,
                 (original_center + target_metadata.shifts).as<f32>(), 0.5
             );
 
@@ -579,16 +577,16 @@ namespace {
             // Note that using the conventional CC isn't as good; the peaks are less sharp
             // up to the point that, for some samples, high tilts failed to pick reliably.
             const auto target_and_projected_rfft = m_buffer_rfft.view();
-            nf::r2c(target_and_projected, target_and_projected_rfft, {.norm = nf::Norm::NONE});
+            nf::rfft2(target_and_projected, target_and_projected_rfft, {.norm = nf::Norm::NONE});
             noa::iwise(shape_2d.rfft(), device, CrossCorrelate{
-                .projected_rfft = target_and_projected_rfft.subregion(1).span_contiguous<const c32, 2, i32>(),
-                .target_rfft = target_and_projected_rfft.subregion(0).span_contiguous<c32, 2, i32>(), // save xmap
+                .projected_rfft = target_and_projected_rfft[1].span_contiguous<const c32, 2, i32>(),
+                .target_rfft = target_and_projected_rfft[0].span_contiguous<c32, 2, i32>(), // save xmap
             });
 
             // Find the best CC peak. The resulting shift should be added to the target.
-            const auto centered_xmap_rfft = target_and_projected_rfft.subregion(0);
-            const auto centered_xmap = target_and_projected.subregion(0);
-            nf::c2r(centered_xmap_rfft, centered_xmap, {.norm = nf::Norm::ORTHO}); // nice scale
+            const auto centered_xmap_rfft = target_and_projected_rfft[0];
+            const auto centered_xmap = target_and_projected[0];
+            nf::irfft2(centered_xmap_rfft, centered_xmap, {.norm = nf::Norm::ORTHO}); // nice scale
             const auto shift = find_peak<"fc">(centered_xmap, m_xmap_centered.view(), {
                 .distortion_angle_deg = target_metadata.angles[0],
                 .max_shift_percent = 0.15,
@@ -613,13 +611,13 @@ namespace {
 
                 // Move the projection to its newly found center.
                 ns::phase_shift_2d<"h">(
-                    projected_padded_rfft_copy, projected_padded_rfft_copy, shape_padded,
+                    projected_padded_rfft_copy, projected_padded_rfft_copy, shape_padded_2d,
                     (original_center + final_metadata.shifts).as<f32>(), 0.5
                 );
 
                 // Remove the padding and mask again to remove small projection/weighting artifacts.
                 // The target_padded is still valid from the previous CC.
-                nf::c2r(projected_padded_rfft_copy, target_and_projected_padded.subregion(1));
+                nf::irfft2(projected_padded_rfft_copy, target_and_projected_padded[1]);
                 noa::iwise(shape_2d, device, PrepareTargetAndProjected{
                     .target_and_projected_padded = target_and_projected_padded.span_contiguous<const f32, 3, i32>(),
                     .target_and_projected = target_and_projected.span_contiguous<f32, 3, i32>(),
@@ -661,17 +659,16 @@ namespace qn {
         return projector.shared_buffer_bytes();
     }
 
-    void ProjectionMatcher::set_shared_buffer(const View<std::byte>& shared_buffer) {
+    void ProjectionMatcher::set_shared_buffer(const ArrayView<std::byte, 1>& shared_buffer) {
         projector.set_shared_buffer(shared_buffer);
     }
 
     auto ProjectionMatcher::update_shifts(
-        const View<f32>& stack,
+        const ArrayView<f32, 3>& stack,
         Metadata& metadata,
         const ProjectionMatchingParameters& settings
     ) const -> f64 {
         auto t = Logger::info_scope_time("ProjectionMatcher::update_shifts");
-        // Logger::s_debug_path = "/dls/ebic/data/staff-scratch/thomas2/datasets/kyprianos/quinoa"; // FIXME
 
         const f64 spacing_nm = mean(metadata.spacing) * 1e-1;
         const f64 specimen_thickness_nm = metadata.sample.thickness;
@@ -688,7 +685,7 @@ namespace qn {
         projection_metadata.sort("absolute_tilt");
 
         f64 zncc{};
-        const auto common_fov = CommonFOV(stack.shape().filter(2, 3), projection_metadata);
+        const auto common_fov = CommonFOV(stack.shape().pop_front(), projection_metadata);
         for (isize target_index = 1; target_index < projection_metadata.ssize(); ++target_index) {
             const auto& new_reference_slice = projection_metadata[target_index - 1];
             auto& target_slice = projection_metadata[target_index];

@@ -19,10 +19,9 @@ namespace {
     using namespace qn;
 
     struct CenterCrossCorrelationMap {
-        using span_t = SpanContiguous<const f32, 3, i32>;
-        using interp_t = nx::Interpolator<2, nx::Interp::LINEAR, noa::Border::ZERO, span_t>;
+        using interp_t = nx::Interpolator<nx::Interp::LINEAR, noa::Border::ZERO, 2, i32, Empty, true>;
 
-        interp_t input{};
+        SpanContiguous<const f32, 3, i32> input{};
         SpanContiguous<f32, 3, i32> output{};
         SpanContiguous<const Vec<f32, 2>, 1, i32> peak_indices{};
 
@@ -39,7 +38,7 @@ namespace {
             coordinates = rotation * coordinates;
             coordinates += input_center;
 
-            output(i, y, x) = input.interpolate_at(coordinates, i);
+            output(i, y, x) = interp_t{}.get(input[i], coordinates);
         }
     };
 }
@@ -190,19 +189,19 @@ namespace qn {
 #ifndef QN_INCLUDE_CPU_ONLY
     template<nf::Layout REMAP> requires (REMAP.is_fc2xx())
     void find_peaks(
-        const View<f32>& xmap,
-        const View<f32>& xmap_centered,
-        const View<Vec<f32, 2>>& peak_shifts,
-        const View<f32>& peak_values,
+        const ArrayView<f32, 3>& xmap,
+        const ArrayView<f32, 3>& xmap_centered,
+        const ArrayView<Vec<f32, 2>, 1>& peak_shifts,
+        const ArrayView<f32, 1>& peak_values,
         const FindBestPeakOptions& options = {}
     ) {
-        const auto xmap_shape_2d = xmap.shape().filter(2, 3);
+        const auto xmap_shape_2d = xmap.shape().pop_front();
         const auto xmap_center = (xmap_shape_2d.vec / 2).as<f64>();
-        const auto xmap_centered_center = (xmap_centered.shape().filter(2, 3).vec / 2).as<f32>();
+        const auto xmap_centered_center = (xmap_centered.shape().pop_front().vec / 2).as<f32>();
         const auto distortion_angle = noa::deg2rad(options.distortion_angle_deg);
 
         // Get the highest peaks within the allowed lag.
-        ns::cross_correlation_peak_2d<"fc2fc">(xmap, peak_shifts, {}, {
+        ns::cross_correlation_peaks_2d<"fc2fc">(xmap, peak_shifts, {}, {
             .registration_radius = Vec{0, 0}, // turn off the registration
             .maximum_lag = Vec<f64, 2>::from_value(noa::min(xmap_center) * options.max_shift_percent),
         });
@@ -210,9 +209,8 @@ namespace qn {
         // Due to the difference in tilt, the cross-correlation map can be distorted orthogonal to the tilt-axis.
         // To improve the accuracy of the subpixel registration, correct the tilt-axis to have the distortion along x.
         // Since the actual peak is close to argmax, focus on (and only render) a small subregion around argmax.
-        using interp_t = CenterCrossCorrelationMap::interp_t;
-        noa::iwise(xmap_centered.shape().filter(0, 2, 3).as<i32>(), xmap.device(), CenterCrossCorrelationMap{
-            .input = interp_t(xmap.span_contiguous<const f32, 3, i32>(), xmap_shape_2d.as<i32>()),
+        noa::iwise(xmap_centered.shape().as<i32>(), xmap.device(), CenterCrossCorrelationMap{
+            .input = xmap.span_contiguous<const f32, 3, i32>(),
             .output = xmap_centered.span_contiguous<f32, 3, i32>(),
             .peak_indices = peak_shifts.span_contiguous<const Vec<f32, 2>, 1, i32>(),
             .rotation = nx::rotate(distortion_angle).as<f32>(),
@@ -222,8 +220,8 @@ namespace qn {
 
         const auto span = xmap_centered.reinterpret_as_cpu().span_contiguous<const f32, 3>();
         const auto has_values = not peak_values.is_empty();
-        const auto span_peak_values = has_values ? peak_values.span_1d() : SpanContiguous<f32>{};
-        for (i64 i{}; auto& peak_shift: peak_shifts.span_1d()) {
+        const auto span_peak_values = has_values ? peak_values.span() : SpanContiguous<f32>{};
+        for (i64 i{}; auto& peak_shift: peak_shifts.span()) {
             const auto [peak_offset_rotated, peak_value] = find_best_peak(span[i]);
             const auto peak_offset = nx::rotate(distortion_angle) * peak_offset_rotated;
             const auto peak_coordinate = peak_shift.as<f64>() + peak_offset;
@@ -238,14 +236,13 @@ namespace qn {
 
     template<nf::Layout REMAP> requires (REMAP.is_fc2xx())
     auto find_peak(
-        const View<f32>& xmap,
-        const View<f32>& xmap_centered,
+        const ArrayView<f32, 2>& xmap,
+        const ArrayView<f32, 2>& xmap_centered,
         const FindBestPeakOptions& options = {}
     ) -> Pair<Vec<f64, 2>, f32> {
-        check(xmap.shape().batch() == 1 and xmap_centered.shape().batch() == 1);
-        const auto xmap_shape_2d = xmap.shape().filter(2, 3);
+        const auto xmap_shape_2d = xmap.shape();
         const auto xmap_center = (xmap_shape_2d.vec / 2).as<f64>();
-        const auto xmap_centered_center = (xmap_centered.shape().filter(2, 3).vec / 2).as<f64>();
+        const auto xmap_centered_center = (xmap_centered.shape().vec / 2).as<f64>();
         const auto distortion_angle = noa::deg2rad(options.distortion_angle_deg);
 
         // Get the highest peak within the allowed lag.
@@ -268,7 +265,8 @@ namespace qn {
             nx::rotate<true>(-distortion_angle) *
             nx::translate(-xmap_center)
         ).inverse();
-        nx::transform_2d(xmap, xmap_centered, rotate_and_center_peak, {.interp = nx::Interp::LINEAR});
+        nx::transform_2d<nx::CompileOptions{.interps = nx::InterpSet::all_but(nx::Interp::LINEAR), .borders = BORDERS}>(
+            xmap, xmap_centered, rotate_and_center_peak, {.interp = nx::Interp::LINEAR});
 
         // Get the peak and rotate back to the original xmap reference-frame.
         const auto [peak_offset, peak_value] = find_best_peak(
@@ -300,44 +298,6 @@ namespace qn {
 
         return patch_origin;
     }
-
-#ifndef QN_INCLUDE_CPU_ONLY
-    template<size_t N>
-    auto subdivide_axes(
-        const Shape<i64, N>& shape,
-        const Shape<i64, N>& subshape,
-        const Vec<i64, N>& step
-    ) {
-        std::array<std::vector<i64>, N> origins;
-        auto grid_shape = Shape<i64, N>::from_value(1);
-        for (i64 i = 0; i < N; ++i) {
-            origins[i] = subdivide_axis(shape[i], subshape[i], step[i]);
-            grid_shape[4 - N] = origins[i].size();
-        }
-
-        auto output = Array<Vec<i64, N>>(grid_shape);
-        if constexpr (N == 1) {
-            auto output_1d = output.span_1d();
-            for (size_t i{}; i < origins[0].size(); ++i)
-                output_1d(i) = origins[0][i];
-        } else if constexpr (N == 2) {
-            auto output_2d = output.span().filter(2, 3);
-            for (size_t i{}; i < origins[0].size(); ++i)
-                for (size_t j{}; j < origins[1].size(); ++j)
-                    output_2d(i, j) = {origins[0][i], origins[1][j]};
-        } else if constexpr (N == 3) {
-            auto output_3d = output.span().filter(1, 2, 3);
-            for (size_t i{}; i < origins[0].size(); ++i)
-                for (size_t j{}; j < origins[1].size(); ++j)
-                    for (size_t k{}; k < origins[1].size(); ++k)
-                        output_3d(i, j, k) = {origins[0][i], origins[1][j], origins[2][k]};
-        } else {
-            static_assert(nt::always_false<Vec<i64, N>>);
-        }
-
-        return output;
-    }
-#endif
 
     NOA_HD constexpr auto fake_sirt_exponent(i32 fake_sirt_iterations) {
         constexpr f32 MATCH_ADD = 0.3f;

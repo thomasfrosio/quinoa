@@ -221,62 +221,61 @@ namespace qn {
         }
 
         void apply_fovs(
-            const View<const f32>& input,
-            const View<f32>& output,
-            const View<ParallelogramMask>& parallelograms
+            const ArrayView<const f32, 3>& input,
+            const ArrayView<f32, 3>& output,
+            const ArrayView<ParallelogramMask, 3>& parallelograms
         ) const {
-            check(m_shape == input.shape().filter(2, 3) and
-                  m_shape == output.shape().filter(2, 3),
+            check(m_shape == input.shape().pop_front() and
+                  m_shape == output.shape().pop_front(),
                   "Shapes don't match");
 
-            noa::iwise(output.shape().filter(0, 2, 3), output.device(), MaskFOVs{
-                .input_images = input.span().filter(0, 2, 3).as_contiguous(),
-                .output_images = output.span().filter(0, 2, 3).as_contiguous(),
+            noa::iwise(output.shape(), output.device(), MaskFOVs{
+                .input_images = input.span_contiguous(),
+                .output_images = output.span_contiguous(),
                 .parallelograms = parallelograms.span_1d(),
             });
         }
 
         void apply_fov(
-            const View<const f32>& input,
-            const View<f32>& output,
+            const ArrayView<const f32, 2>& input,
+            const ArrayView<f32, 2>& output,
             const ParallelogramMask& parallelogram
         ) const {
-            check(m_shape == input.shape().filter(2, 3) and
-                  m_shape == output.shape().filter(2, 3),
+            check(m_shape == input.shape() and
+                  m_shape == output.shape(),
                   "Shapes don't match");
 
-            noa::iwise(output.shape().filter(2, 3), output.device(), MaskFOV{
-                .input_image = input.span().filter(2, 3).as_contiguous(),
-                .output_image = output.span().filter(2, 3).as_contiguous(),
+            noa::iwise(output.shape(), output.device(), MaskFOV{
+                .input_image = input.span_contiguous(),
+                .output_image = output.span_contiguous(),
                 .parallelogram = parallelogram,
             });
         }
 
         void apply_fovs(
-            const View<const f32>& input,
-            const View<f32>& output,
+            const ArrayView<const f32, 3>& input,
+            const ArrayView<f32, 3>& output,
             const Metadata::Stack& metadata,
             const FOVMaskOptions& options = {}
         ) const {
-            check(m_shape == input.shape().filter(2, 3) and
-                  m_shape == output.shape().filter(2, 3),
+            check(m_shape == input.shape().pop_front() and
+                  m_shape == output.shape().pop_front(),
                   "Shapes don't match");
 
-            auto parallelograms = Array<ParallelogramMask>(metadata.ssize());
+            auto parallelograms = Array<ParallelogramMask, 1>(metadata.ssize());
             set_fovs(metadata, parallelograms.span_1d(), options);
             parallelograms = parallelograms.to({.device = output.device(), .allocator = Allocator::ASYNC});
-            const auto span = parallelograms.span_1d();
 
-            noa::iwise(output.shape().filter(0, 2, 3), output.device(), MaskFOVs{
-                .input_images = input.span().filter(0, 2, 3).as_contiguous(),
-                .output_images = output.span().filter(0, 2, 3).as_contiguous(),
-                .parallelograms = span,
+            noa::iwise(output.shape(), output.device(), MaskFOVs{
+                .input_images = input.span_contiguous(),
+                .output_images = output.span_contiguous(),
+                .parallelograms = parallelograms.span_1d(),
             }, std::move(parallelograms));
         }
 
         void apply_fov(
-            const View<const f32>& input,
-            const View<f32>& output,
+            const ArrayView<const f32, 2>& input,
+            const ArrayView<f32, 2>& output,
             const Metadata::Image& metadata,
             const FOVMaskOptions& options = {}
         ) const {
@@ -284,7 +283,7 @@ namespace qn {
         }
 
         void apply_fov(
-            const View<f32>& image,
+            const ArrayView<f32, 2>& image,
             const Metadata::Image& metadata,
             const FOVMaskOptions& options = {}
         ) const {

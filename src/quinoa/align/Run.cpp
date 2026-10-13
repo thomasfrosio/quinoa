@@ -17,7 +17,7 @@ namespace {
             const auto rough_estimate = static_cast<usize>(n_bytes) + static_cast<usize>(n_bytes / 10);
             return available >= rough_estimate;
         }();
-        return Array<std::byte>(noa::next_multiple_of(n_bytes, 16), {
+        return Array<std::byte, 1>(noa::next_multiple_of(n_bytes, 16), {
             .device = device,
             .allocator = has_enough_space ? Allocator::ASYNC : Allocator::MANAGED,
         });
@@ -290,7 +290,7 @@ namespace qn {
 
         // Prepare for the projection matching.
         const auto n_images = metadata.stack.ssize();
-        const auto image_shape = tilt_series.shape().filter(2, 3);
+        const auto image_shape = tilt_series.shape().pop_front();
         auto projection_matcher = ProjectionMatcher(n_images, image_shape, settings.max_tilt_difference);
 
         // Reduce memory usage by sharing a write buffer between the different steps.

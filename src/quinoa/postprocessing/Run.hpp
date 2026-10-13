@@ -15,7 +15,7 @@ namespace qn {
         StackLoader&& stack,
         Metadata& metadata,
         const Settings::PostProcessing::Tomogram& settings
-    ) -> Array<f32>;
+    ) -> Array<f32, 3>;
 
     void postprocess(
         const Path& input_stack,

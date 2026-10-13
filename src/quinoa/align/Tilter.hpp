@@ -42,7 +42,7 @@ namespace qn {
     class Tilter {
     public:
         static void find_accurate_image_rotation(
-            const View<const f32>& stack,
+            const ArrayView<const f32, 3>& stack,
             Metadata::Stack& metadata,
             Vec<f64, 3>& angle_offsets,
             const FindAccurateImageRotationOptions& parameters
@@ -50,26 +50,26 @@ namespace qn {
 
     public:
         Tilter() = default;
-        Tilter(const Shape4& shape);
+        Tilter(const Shape3& shape);
 
         [[nodiscard]] auto shared_buffer_bytes() const -> isize;
-        void set_shared_buffer(const Array<std::byte>& shared_buffer);
+        void set_shared_buffer(const Array<std::byte, 1>& shared_buffer);
 
         void find_image_rotation(
-            const View<f32>& stack,
+            const ArrayView<f32, 3>& stack,
             Metadata::Stack& metadata,
             Vec<f64, 3>& angle_offsets,
             const FindImageRotationOptions& options
         ) const;
 
         void find_image_shifts(
-            const View<f32>& stack,
+            const ArrayView<f32, 3>& stack,
             Metadata::Stack& metadata,
             const FindImageShiftsOptions& options
         );
 
         void find_specimen_level(
-            const View<f32>& stack,
+            const ArrayView<f32, 3>& stack,
             Metadata::Stack& metadata,
             Vec<f64, 3>& angle_offsets,
             const FindSpecimenLevelOptions& options
@@ -77,7 +77,7 @@ namespace qn {
 
     private:
         [[nodiscard]] auto eval_(
-            const View<f32>& stack,
+            const ArrayView<f32, 3>& stack,
             const Metadata::Stack& metadata,
             bool fov_mask,
             f64 smooth_edge_percent,
@@ -102,21 +102,21 @@ namespace qn {
         }
 
     private:
-        Shape4 m_buffer_shape;
+        Shape3 m_buffer_shape;
         isize m_n_total_images;
 
-        View<c32> m_buffer_rfft;
-        View<f32> m_buffer;
+        ArrayView<c32, 3> m_buffer_rfft;
+        ArrayView<f32, 3> m_buffer;
 
-        Array<Vec<f32, 4>> m_plane_coefficients;
-        Array<Mat<f32, 2, 4>> m_projection_matrices;
-        Array<ParallelogramMask> m_fov_masks;
-        Array<Mat<f32, 2, 3>> m_shift_matrices;
+        Array<Vec<f32, 4>, 1> m_plane_coefficients;
+        Array<Mat<f32, 2, 4>, 1> m_projection_matrices;
+        Array<ParallelogramMask, 1> m_fov_masks;
+        Array<Mat<f32, 2, 3>, 1> m_shift_matrices;
 
-        Array<f32> m_xmap_centered;
-        Array<Vec<f32, 2>> m_peak_shifts;
-        Array<f32> m_peak_values;
-        Array<Vec<f32, 5>> m_peak_stats;
+        Array<f32, 3> m_xmap_centered;
+        Array<Vec<f32, 2>, 1> m_peak_shifts;
+        Array<f32, 1> m_peak_values;
+        Array<Vec<f32, 5>, 1> m_peak_stats;
 
         std::vector<Vec<f64, 2>> m_relative_shifts;
         std::vector<Vec<f64, 2>> m_global_shifts;

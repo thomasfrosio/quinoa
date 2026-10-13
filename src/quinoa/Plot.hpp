@@ -11,24 +11,6 @@ namespace qn::details {
 }
 
 namespace qn {
-    template<typename Real>
-    void save_vector_to_text(View<Real> x, const Path& filename) {
-        check(noa::is_contiguous_vector_batched_strided(x));
-
-        // Make sure it is dereferenceable and ready to read.
-        Array<std::remove_const_t<Real>> x_cpu;
-        if (not x.is_dereferenceable()) {
-            x_cpu = x.to_cpu();
-            x = x_cpu.view();
-        }
-        x.eval();
-
-        std::string format;
-        for (auto i : noa::irange(x.shape().batch()))
-            format += fmt::format("{}\n", fmt::join(x.subregion(i).span_1d(), ","));
-        noa::write_text(format, filename);
-    }
-
     struct SavePlotXYOptions {
         /// Name of the plot and axes.
         /// Leaving them empty is also valid.
@@ -48,8 +30,8 @@ namespace qn {
     };
 
     /// Saves x-y values for plotting.
-    /// \param x        x-values. Arange, Linspace, or a 1d range (e.g. std::span).
-    /// \param y        y-values. A 1d range (e.g. std::span) or a batched range (e.g. View, Array, or Span).
+    /// \param x        x-values. Arange, Linspace, or a 1D range (fmt::join-able).
+    /// \param y        y-values. A ((B..)W) range as a Span or Array.
     /// \param path     File path where to store the values.
     /// \param options  Plot options.
     template<typename T = noa::Arange<f64>, typename U>
@@ -74,13 +56,8 @@ namespace qn {
         }
 
         auto print_span = []<typename S>(const S& span) -> std::string {
-            if constexpr (nt::varray<S> or nt::span_nd<S, 4, 3, 2>) {
-                // Convert to a contiguous 2d span.
-                constexpr size_t N = S::SIZE;
-                auto new_shape = Shape<isize, N>::from_value(1);
-                new_shape[0] = span.shape()[0];
-                new_shape[N - 1] = -1;
-                auto spand_2d = span.span().reshape(new_shape).as_strided().filter(0, N - 1).as_contiguous();
+            if constexpr (nt::array<S> or nt::span_nd<S, 4, 3, 2>) {
+                const auto spand_2d = span.span().reshape(Shape2{-1, span.shape().back()}).as_contiguous();
 
                 std::string fmt{};
                 for (auto i: noa::irange(spand_2d.shape()[0]))

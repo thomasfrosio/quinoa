@@ -33,10 +33,10 @@ namespace qn::ctf {
             m_metadata{metadata},
             m_grid{grid},
             m_patches{patches},
-            m_phase_shift{Array<f64>(initial_phase_shift_resolution)},
-            m_astigmatism_value{Array<f64>(initial_astigmatism_resolution)},
-            m_astigmatism_angle{Array<f64>(initial_astigmatism_resolution)},
-            m_fitting_ranges{Array<Vec<f64, 2>>(patches.n_images())},
+            m_phase_shift{Array<f64, 1>(initial_phase_shift_resolution)},
+            m_astigmatism_value{Array<f64, 1>(initial_astigmatism_resolution)},
+            m_astigmatism_angle{Array<f64, 1>(initial_astigmatism_resolution)},
+            m_fitting_ranges{Array<Vec<f64, 2>, 1>(patches.n_images())},
             m_angle_offsets{Vec<f64, 3>{}}
         {
             // TODO Look at metadata if it's already estimated?
@@ -65,10 +65,10 @@ namespace qn::ctf {
         const Grid& m_grid;
         const Patches& m_patches;
 
-        Array<f64> m_phase_shift{};
-        Array<f64> m_astigmatism_value{};
-        Array<f64> m_astigmatism_angle{};
-        Array<Vec<f64, 2>> m_fitting_ranges{};
+        Array<f64, 1> m_phase_shift{};
+        Array<f64, 1> m_astigmatism_value{};
+        Array<f64, 1> m_astigmatism_angle{};
+        Array<Vec<f64, 2>, 1> m_fitting_ranges{};
         Vec<f64, 3> m_angle_offsets{};
     };
 }

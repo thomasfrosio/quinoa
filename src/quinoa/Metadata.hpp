@@ -168,16 +168,16 @@ namespace qn {
                     const auto angles = noa::deg2rad(image.angles);
 
                     const auto plane_rotation =
-                            nx::rotate_z(angles[0]) *
-                            nx::rotate_y(angles[1]) *
-                            nx::rotate_x(angles[2]);
+                        nx::rotate_z(angles[0]) *
+                        nx::rotate_y(angles[1]) *
+                        nx::rotate_x(angles[2]);
                     const auto [c, b, a] = plane_rotation * Vec{1., 0., 0.}; // plane normal
                     const auto z = -(a * image.shifts[1] + b * image.shifts[0]) / c;
 
                     const auto image2volume =
-                            nx::rotate_x(-angles[2]) *
-                            nx::rotate_y(-angles[1]) *
-                            nx::rotate_z(-angles[0]);
+                        nx::rotate_x(-angles[2]) *
+                        nx::rotate_y(-angles[1]) *
+                        nx::rotate_z(-angles[0]);
                     const auto volume_shift = image2volume * image.shifts.push_front(z);
 
                     mean += volume_shift.pop_front(); // z should be zero
@@ -202,13 +202,13 @@ namespace qn {
 
             /// Returns a view of the image at "idx", as currently sorted in this instance (see sort()).
             [[nodiscard]] constexpr auto operator[](std::integral auto index) noexcept -> Image& {
-                noa::bounds_check<true>(ssize(), index);
+                noa::bounds_check_always(ssize(), index);
                 return images[static_cast<usize>(index)];
             }
 
             /// Returns a view of the image at "idx", as currently sorted in this instance (see sort()).
             [[nodiscard]] constexpr auto operator[](std::integral auto index) const noexcept -> const Image& {
-                noa::bounds_check<true>(ssize(), index);
+                noa::bounds_check_always(ssize(), index);
                 return images[static_cast<usize>(index)];
             }
 

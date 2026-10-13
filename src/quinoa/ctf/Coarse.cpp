@@ -27,9 +27,9 @@ namespace {
         }
     };
 
-    // Reduce the height/phi dimension to get the rotational average.
-    auto compute_rotational_averages_(const Patches& patches) -> Array<f32> {
-        auto spectra = Array<f32>(patches.view().shape().set<2>(1), {
+    // Reduce the height/phi dimension to get the rotational average. (n,p,h,w)->(n,p,1,w)
+    auto compute_rotational_averages_(const Patches& patches) -> Array<f32, 3> {
+        auto spectra = Array<f32, 4>(patches.view().shape().set<2>(1), {
             .device = patches.view().device(),
             .allocator = Allocator::PITCHED_MANAGED,
         });
@@ -39,23 +39,23 @@ namespace {
             const f32 n_patches_per_image = static_cast<f32>(patches.height());
             noa::reduce_axes_ewise(patches.view(), f32{0}, spectra, noa::ReduceMean{.size=n_patches_per_image});
         }
-        return spectra;
+        return spectra.filter(0, 1, 3); // (n,p,w)
     }
 
     // For each slice, collect the tiles near the tilt-axis, then average them.
     auto compute_spectra_near_tilt_axis_(
         const Grid& grid,
-        const View<const f32>& spectra, // (n,p,1,w)
+        const ArrayView<const f32, 3>& spectra, // (n,p,w)
         f64 rotation_offset,
         f64 fraction
-    ) -> Array<f32> { // (n,1,1,w)
+    ) -> Array<f32, 2> { // (n,w)
         const auto device = spectra.device();
 
         // Get the patches that are near the tilt-axis.
         // 1. We assume the rotation is the same for all slices.
         // 2. The tilt angles and shifts are not used.
         // As such, we select the same patches for every slice in the stack.
-        Array<i32> indices = [&] {
+        Array<i32, 1> indices = [&] {
             const auto image_rotation = nx::rotate(noa::deg2rad(-rotation_offset));
             const auto image_shape = grid.slice_shape().vec;
             const auto image_center = (image_shape / 2).as<f64>();
@@ -79,7 +79,7 @@ namespace {
                 "  n_selected={}",
                 rotation_offset, maximum_distance, image_size, tmp.size()
             );
-            return View(std::data(tmp), std::ssize(tmp))
+            return Array(std::data(tmp), std::ssize(tmp))
                    .to({.device = device, .allocator = Allocator::ASYNC})
                    .eval();
         }();
@@ -87,20 +87,20 @@ namespace {
         // Reduce: (n,p,w) -> (n,1,w).
         const isize n = spectra.shape()[0];
         const isize p = indices.ssize();
-        const isize w = spectra.shape()[3];
+        const isize w = spectra.shape()[2];
 
         // For every slice, average the 1d spectra that are near the tilt-axis.
-        auto spectra_average = Array<f32>({n, 1, 1, w}, {.device = device, .allocator = Allocator::MANAGED});
+        auto spectra_average = Array<f32, 3>({n, 1, w}, {.device = device, .allocator = Allocator::MANAGED});
         noa::reduce_axes_iwise(
             Shape{n, p, w}.as<i32>(), device,
-            f32{0}, spectra_average.permute({2, 0, 1, 3}), AverageSpectrum{
-                .input = spectra.span().filter(0, 1, 3).as_contiguous(),
+            f32{0}, spectra_average.view(), AverageSpectrum{
+                .input = spectra.span_contiguous(),
                 .indices = indices.span_1d(),
                 .norm = 1 / static_cast<f32>(std::ssize(indices)),
             });
 
         // The rest of the fitting is on the CPU, so sync and prefetch.
-        return spectra_average.reinterpret_as_cpu();
+        return spectra_average.reinterpret_as_cpu().filter(0, 2);
     }
 
     template<nt::almost_any_of<Baseline, Empty> B = Empty>
@@ -213,7 +213,7 @@ namespace {
         bool fit_phase_shift,
         const Path& baseline_plot_filename
     ) -> Vec<f64, 2> {
-        auto spectrum_bs = Array<f32>(spectrum.shape().width());
+        auto spectrum_bs = Array<f32, 1>(spectrum.n_elements());
 
         // Fit and subtract the baseline within an initial fitting range.
         auto fitting_range = Vec{fftfreq_range[0], fftfreq_range[0] + (fftfreq_range[1] - fftfreq_range[0]) * 0.8};
@@ -373,20 +373,20 @@ namespace {
         Metadata::Stack& metadata,
         const CTFIsotropic64& average_ctf,
         const Grid& grid,
-        const View<const f32>& spectra, // (n,p,1,w)
+        const ArrayView<const f32, 3>& spectra, // (n,p,w)
         const Vec<f64, 2>& fftfreq_range,
         const Path& output_directory
     ) {
         auto timer = Logger::info_scope_time<false>("Rotation check");
-        const auto [n, p, w] = spectra.shape().filter(0, 1, 3);
+        const auto [n, p, w] = spectra.shape();
         const auto fftfreq_linspace = noa::Linspace<f64>::from_vec(fftfreq_range);
         const auto spacing = Vec<f64, 2>::from_value(average_ctf.pixel_size());
         const auto options_managed = ArrayOption{.device = spectra.device(), .allocator = Allocator::MANAGED};
 
         auto run = [&](f64 rotation) {
-            const auto buffer = Array<f32>({n + 2, 1, 1, w}, options_managed);
-            const auto ctfs_per_patch = Array<CTFIsotropic64>(p, options_managed);
-            const auto ctfs_per_image = Array<CTFIsotropic64>(n);
+            const auto buffer = Array<f32, 2>({n + 2, w}, options_managed);
+            const auto ctfs_per_patch = Array<CTFIsotropic64, 1>(p, options_managed);
+            const auto ctfs_per_image = Array<CTFIsotropic64, 1>(n);
 
             auto spectrum = buffer.view().subregion(0); // unused
             auto spectrum_weights = buffer.view().subregion(1);
@@ -411,11 +411,11 @@ namespace {
                 // Note that we do not want to tune the frequency range and exclude tuned out frequencies from
                 // the average. For a fair comparison, we simply want to scale the spectrum to the same (expected)
                 // phase and average them together.
-                const auto image_spectra = spectra.subregion(image.index).permute({1, 0, 2, 3}); // (n,p,1,w) -> (p,1,1,w)
-                const auto image_spectra_pw = image_spectra.span_contiguous<const f32, 2>();
+                const auto image_spectra = spectra[image.index]; // (p,w)
+                const auto image_spectra_pw = image_spectra.span_contiguous();
                 const auto image_spectrum = spectra_n.subregion(image.index);
                 const auto image_spectrum_w = image_spectrum.span_1d();
-                nx::fuse_spectra( // (p,1,1,w) -> (1,1,1,w)
+                nx::equiphase_rescale_and_average_1d( // (p,w) -> (1,w)
                     image_spectra, fftfreq_linspace, ctfs_per_patch,
                     image_spectrum, fftfreq_linspace, ictf, spectrum_weights
                 );
@@ -462,7 +462,7 @@ namespace {
             spectra_n = buffer_cpu.view().subregion(Offset(2));
 
             // Fuse the baseline-subtracted spectrum of every image into a single spectrum.
-            nx::fuse_spectra( // (n,1,1,w) -> (1,1,1,w)
+            nx::equiphase_rescale_and_average_1d( // (n,w) -> (1,w)
                 spectra_n, fftfreq_linspace, ctfs_per_image,
                 spectrum, fftfreq_linspace, average_ctf,
                 spectrum_weights
@@ -532,12 +532,12 @@ namespace qn::ctf {
         );
 
         // Get the average spectrum.
-        const auto average_spectrum = noa::zeros<f32>(spectra_per_image.shape().width());
+        const auto average_spectrum = noa::zeros<f32>(spectra_per_image.shape()[1]);
         const auto average_spectrum_w = average_spectrum.span_1d();
-        const auto spectra_per_image_bw = spectra_per_image.span().filter(0, 3).as_contiguous();
+        const auto spectra_per_image_nw = spectra_per_image.span_contiguous();
         const auto norm = 1 / static_cast<f32>(options.n_slices_to_average);
         for (isize i{}; i < options.n_slices_to_average; ++i) {
-            for (isize j{}; f32 e: spectra_per_image_bw[i])
+            for (isize j{}; f32 e: spectra_per_image_nw[i])
                 average_spectrum_w[j++] += e * norm;
         }
 
@@ -573,7 +573,7 @@ namespace qn::ctf {
         const auto tilt_axis = metadata.stack[0].angles[0];
         const auto spectra_per_patch = compute_rotational_averages_(patches);
         const auto spectra_per_image = compute_spectra_near_tilt_axis_(grid, spectra_per_patch.view(), tilt_axis, 0.2);
-        const auto spectra = spectra_per_image.span().filter(0, 3).as_contiguous();
+        const auto spectra = spectra_per_image.span_contiguous();
         save_plot_xy(patches.rho(), spectra, options.output_directory / "coarse_spectra.txt", {
             .title = "Per-image coarse spectra (sorted by collection order)",
             .x_name = "fftfreq",

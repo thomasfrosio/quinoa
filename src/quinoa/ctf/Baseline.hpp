@@ -95,7 +95,7 @@ namespace qn::ctf {
             const Vec<f64, 2>& fftfreq_range
         ) const;
         void sample(
-            const View<f32>& spectrum,
+            const ArrayView<f32, 1>& spectrum,
             const Vec<f64, 2>& fftfreq_range
         ) const;
 
@@ -106,8 +106,8 @@ namespace qn::ctf {
             const Vec<f64, 2>& fftfreq_range
         ) const;
         void subtract(
-            const View<const f32>& input,
-            const View<f32>& output,
+            const ArrayView<const f32, 2>& input,
+            const ArrayView<f32, 2>& output,
             const Vec<f64, 2>& fftfreq_range
         ) const;
 

@@ -32,10 +32,10 @@ namespace {
         }
         auto midpoint = (maxima + minima) / 2;
 
-        // Revert if midpoint is past 25% of the start.
+        // Fallback if midpoint is past 25% of the start.
         const auto limit = sn / 4;
         if (midpoint > limit)
-            midpoint = 0;
+            minima = sn / 8; // small left edge trim
 
         start += minima;
         return start;
@@ -158,7 +158,7 @@ namespace {
         f64 stddev
     ) {
         const auto filter = ns::window_gaussian<f32>(kernel_size, stddev, {.normalize = true});
-        ns::convolve(View(spectrum), View(spectrum_smooth), filter.view(), {.border = noa::Border::REFLECT});
+        ns::convolve(ArrayView<const f32, 1>(spectrum), ArrayView<f64, 1>(spectrum_smooth), filter.view(), {.border = noa::Border::REFLECT});
     }
 
     void fit_spline_(
@@ -195,7 +195,7 @@ namespace qn::ctf {
         const Vec<f64, 2>& fitting_range
     ) -> Vec<f64, 2> {
         // Allocate temporary buffers.
-        const auto buffer = Array<f64>({3, 1, 1, spectrum.ssize()});
+        const auto buffer = Array<f64, 2>({3, spectrum.ssize()});
 
         // Adjust the spectrum window to only include the fitting range.
         auto start = nearest_integer_fftfreq(spectrum.ssize(), fftfreq_range, fitting_range[0], true).first;
@@ -246,7 +246,7 @@ namespace qn::ctf {
 
         // Allocate temporary buffers.
         const auto sn = spectrum.ssize();
-        const auto buffer = Array<f64>({3, 1, 1, sn});
+        const auto buffer = Array<f64, 2>({3, sn});
 
         // Get the fftfreq of the first zero.
         f64 fftfreq_start{};
@@ -402,8 +402,8 @@ namespace qn::ctf {
 
         i32 n_recoveries{};
         i32 n_consecutive_bad_peaks{};
-        size_t last_zero{};
-        for (auto i = static_cast<size_t>(options.keep_first_nth_peaks); i < zeros.size() - 1; ++i) {
+        usize last_zero{};
+        for (auto i = static_cast<usize>(options.keep_first_nth_peaks); i < zeros.size() - 1; ++i) {
             auto peak_range = Vec{zeros[i], zeros[i + 1]};
             if (thickness_modulation.is_fftfreq_range_containing_node(peak_range))
                 continue;
@@ -417,7 +417,7 @@ namespace qn::ctf {
                 // end of the last good peak and break.
                 if (n_recoveries >= options.n_recoveries_allowed or
                     n_consecutive_bad_peaks >= options.maximum_n_consecutive_bad_peaks) {
-                    last_zero = i - static_cast<size_t>(n_consecutive_bad_peaks);
+                    last_zero = i - static_cast<usize>(n_consecutive_bad_peaks);
                     break;
                 }
 
@@ -436,7 +436,7 @@ namespace qn::ctf {
         // Clamp the end of the fitting range with the cutoff used for the baseline.
         // This cutoff guards against big variations of the spectrum where the baseline correction
         // will be subpar at best. When adding extra peaks "blindly", this guard can be useful.
-        last_zero += static_cast<size_t>(options.n_extra_peaks_to_append);
+        last_zero += static_cast<usize>(options.n_extra_peaks_to_append);
         const auto m_fftfreq_stop = spline.x()[spline.x().size() - 1];
         fitting_range[1] = std::min(m_fftfreq_stop, zeros[std::min(last_zero, zeros.size() - 1)]);
         return fitting_range;
@@ -454,11 +454,9 @@ namespace qn::ctf {
     }
 
     void Baseline::sample(
-        const View<f32>& spectrum,
+        const ArrayView<f32, 1>& spectrum,
         const Vec<f64, 2>& fftfreq_range
     ) const {
-        auto [b, d, h, w] = spectrum.shape();
-        check(b == 1 and d == 1 and h == 1);
         sample(spectrum.reinterpret_as_cpu().span_1d(), fftfreq_range);
     }
 
@@ -476,17 +474,14 @@ namespace qn::ctf {
     }
 
     void Baseline::subtract(
-        const View<const f32>& input,
-        const View<f32>& output,
+        const ArrayView<const f32, 2>& input,
+        const ArrayView<f32, 2>& output,
         const Vec<f64, 2>& fftfreq_range
     ) const {
-        auto [b, d, h, w] = output.shape();
-        check(input.shape() == output.shape());
-        check(d == 1 and h == 1);
-
-        const auto input_2d = input.reinterpret_as_cpu().span().filter(0, 3).as_contiguous();
-        const auto output_2d = output.reinterpret_as_cpu().span().filter(0, 3).as_contiguous();
-        for (isize i{}; i < b; ++i)
+        check(input.shape()[0] == output.shape()[0]);
+        const auto input_2d = input.reinterpret_as_cpu().span_contiguous();
+        const auto output_2d = output.reinterpret_as_cpu().span_contiguous();
+        for (isize i{}; i < output.shape()[0]; ++i)
             subtract(input_2d[i], output_2d[i], fftfreq_range);
     }
 }

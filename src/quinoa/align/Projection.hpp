@@ -21,10 +21,10 @@ namespace qn {
         ProjectionMatcher(isize n_slices, const Shape2& shape, f64 max_tilt_difference);
 
         [[nodiscard]] auto shared_buffer_bytes() const -> isize;
-        void set_shared_buffer(const View<std::byte>& shared_buffer);
+        void set_shared_buffer(const ArrayView<std::byte, 1>& shared_buffer);
 
         auto update_shifts(
-            const View<f32>& stack,
+            const ArrayView<f32, 3>& stack,
             Metadata& metadata,
             const ProjectionMatchingParameters& parameters
         ) const -> f64;

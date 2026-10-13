@@ -49,22 +49,13 @@ namespace qn::ctf {
         }
 
         /// Converts the patch origins to the subregion origins, used for extraction.
-        template<nt::sinteger I = i32, size_t N = 4>
+        template<nt::sinteger I = i32>
         [[nodiscard]] auto compute_subregion_origins(
-            isize batch_index = 0,
             const Vec<isize, 2>& origin_offset = {}
-        ) const -> Array<Vec<I, N>> {
-            check(N == 4 or batch_index == 0);
-            auto subregion_origins = Array<Vec<I, N>>(std::ssize(m_origins));
-            for (auto&& [origin, subregion_origin]: noa::zip(m_origins, subregion_origins.span_1d_contiguous())) {
-                auto iorigin = (origin_offset + origin).template as<I>();
-                if constexpr (N == 4)
-                    subregion_origin = Vec<I, N>::from_values(batch_index, 0, iorigin[0], iorigin[1]);
-                else if constexpr (N == 2)
-                    subregion_origin = iorigin;
-                else
-                    static_assert(nt::always_false<I>);
-            }
+        ) const -> Array<Vec<I, 2>, 1> {
+            auto subregion_origins = Array<Vec<I, 2>, 1>(std::ssize(m_origins));
+            for (auto&& [origin, subregion_origin]: noa::zip(m_origins, subregion_origins.span_1d()))
+                subregion_origin = (origin_offset + origin).template as<I>();
             return subregion_origins;
         }
 

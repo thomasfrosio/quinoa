@@ -53,12 +53,12 @@ namespace qn {
         /// Loads and preprocess the slice.
         /// \note If an image exists in the cache at the given file_slice_index, it is used regardless of the given
         ///       exposure. In other words, when caching images, the exposure is assumed to be unchanged (or ignored).
-        void read_slice(const View<f32>& output_slice, isize file_slice_index, bool cache = false, f64 exposure = 0);
+        void read_slice(const ArrayView<f32, 2>& output_slice, isize file_slice_index, bool cache = false, f64 exposure = 0);
 
         /// Loads the slices in "stack" in the same order as the order of the slices in "metadata".
         /// The .index field of the slices in "metadata" are reset to the [0..n) range.
-        void read_stack(Metadata::Stack& metadata, const View<f32>& stack);
-        auto read_stack(Metadata::Stack& metadata) -> Array<f32>;
+        void read_stack(Metadata::Stack& metadata, const ArrayView<f32, 3>& stack);
+        auto read_stack(Metadata::Stack& metadata) -> Array<f32, 3>;
 
         [[nodiscard]] auto compute_device() const noexcept -> Device { return m_parameters.compute_device; }
         [[nodiscard]] auto allocator() const noexcept -> Allocator { return m_parameters.allocator; }
@@ -73,13 +73,13 @@ namespace qn {
 
     private:
         void init_();
-        auto input_slice_() const -> Pair<View<f32>, View<c32>>;
-        auto padded_slice_() const -> Pair<View<f32>, View<c32>>;
-        auto cropped_slice_() const -> Pair<View<f32>, View<c32>>;
-        auto bandpass_slice_() const -> Pair<View<f32>, View<c32>>;
+        auto input_slice_() const -> Pair<ArrayView<f32, 2>, ArrayView<c32, 2>>;
+        auto padded_slice_() const -> Pair<ArrayView<f32, 2>, ArrayView<c32, 2>>;
+        auto cropped_slice_() const -> Pair<ArrayView<f32, 2>, ArrayView<c32, 2>>;
+        auto bandpass_slice_() const -> Pair<ArrayView<f32, 2>, ArrayView<c32, 2>>;
 
     private:
-        static thread_local Array<std::byte> s_input_stack; // register the input stack
+        static thread_local Array<std::byte, 4> s_input_stack; // register the input stack
         static thread_local Path s_input_stack_path;
         static thread_local noa::io::DataType s_input_stack_dtype;
 
@@ -102,16 +102,16 @@ namespace qn {
         Vec<f64, 2> m_output_spacing{};
         Vec<f64, 2> m_rescale_shift{};
 
-        Array<f32> m_io_slice{};
-        Array<c32> m_input_slice_rfft{};
-        Array<c32> m_padded_slice_rfft{};
-        Array<c32> m_cropped_slice_rfft{};
-        Array<c32> m_bandpass_slice_rfft{};
-        std::vector<std::pair<isize, Array<f32>>> m_cache{}; // cache the pre-processed slices
+        Array<f32, 4> m_io_slice{};
+        Array<c32, 2> m_input_slice_rfft{};
+        Array<c32, 2> m_padded_slice_rfft{};
+        Array<c32, 2> m_cropped_slice_rfft{};
+        Array<c32, 2> m_bandpass_slice_rfft{};
+        std::vector<std::pair<isize, Array<f32, 2>>> m_cache{}; // cache the pre-processed slices
     };
 
     struct LoadStackOutputs {
-        Array<f32> stack;
+        Array<f32, 3> stack;
         Vec<f64, 2> stack_spacing;
         Vec<f64, 2> file_spacing;
         Shape2 file_slice_shape;
@@ -133,7 +133,7 @@ namespace qn {
         const Path& tilt_series_path,
         Metadata& tilt_series_metadata,
         const LoadStackParameters& parameters
-    ) -> Array<f32> {
+    ) -> Array<f32, 3> {
         auto stack_loader = StackLoader(tilt_series_path, parameters);
         auto stack = stack_loader.read_stack(tilt_series_metadata.stack);
         tilt_series_metadata.set_spacing(stack_loader.stack_spacing());
