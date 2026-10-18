@@ -220,8 +220,8 @@ namespace qn {
 
         const auto span = xmap_centered.reinterpret_as_cpu().span_contiguous<const f32, 3>();
         const auto has_values = not peak_values.is_empty();
-        const auto span_peak_values = has_values ? peak_values.span() : SpanContiguous<f32>{};
-        for (i64 i{}; auto& peak_shift: peak_shifts.span()) {
+        const auto span_peak_values = has_values ? peak_values.span_1d() : SpanContiguous<f32>{};
+        for (i64 i{}; auto& peak_shift: peak_shifts.span_1d()) {
             const auto [peak_offset_rotated, peak_value] = find_best_peak(span[i]);
             const auto peak_offset = nx::rotate(distortion_angle) * peak_offset_rotated;
             const auto peak_coordinate = peak_shift.as<f64>() + peak_offset;
@@ -265,8 +265,15 @@ namespace qn {
             nx::rotate<true>(-distortion_angle) *
             nx::translate(-xmap_center)
         ).inverse();
-        nx::transform_2d<nx::CompileOptions{.interps = nx::InterpSet::all_but(nx::Interp::LINEAR), .borders = BORDERS}>(
-            xmap, xmap_centered, rotate_and_center_peak, {.interp = nx::Interp::LINEAR});
+        constexpr auto OPTIONS = nx::CompileOptions{
+            .interps = nx::InterpSet::all_but(nx::Interp::LINEAR),
+            .borders = noa::BorderSet::none_but(noa::Border::ZERO),
+        };
+        nx::transform_2d<OPTIONS>(
+            xmap, xmap_centered, rotate_and_center_peak, {
+                .interp = nx::Interp::LINEAR,
+                .border = noa::Border::ZERO,
+            });
 
         // Get the peak and rotate back to the original xmap reference-frame.
         const auto [peak_offset, peak_value] = find_best_peak(
