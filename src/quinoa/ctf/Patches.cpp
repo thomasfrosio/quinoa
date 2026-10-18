@@ -208,7 +208,7 @@ namespace {
             if (n_wedges == 1) {
                 // No astigmatism is to be fitted, so compute and save the rotational averages.
                 wedges_phi_range = noa::Linspace{0., noa::Constant<f64>::PI, false};
-                patches_polar = Array<f32>({n_patches, 1, target_phi_size, polar_width}, options);
+                patches_polar = Array<f32, 4>({n_patches, 1, target_phi_size, polar_width}, options);
                 patches_polar_bin = patches_polar.view();
             } else {
                 // We want to divide the [0,180) range into n wedges of equal size. Before converting to polar space,

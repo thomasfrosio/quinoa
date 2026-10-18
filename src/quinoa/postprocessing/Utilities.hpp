@@ -11,10 +11,10 @@ namespace qn {
         bool correct_rotation,
         const Shape2& image_shape,
         const Shape3& volume_shape
-    ) -> Array<Mat<f64, 2, 4>> {
+    ) -> Array<Mat<f64, 2, 4>, 1> {
         const auto image_center = (image_shape.vec / 2).as<f64>();
         const auto volume_center = (volume_shape.vec / 2).as<f64>();
-        const auto volume2image_matrices = Array<Mat<f64, 2, 4>>(metadata.ssize());
+        const auto volume2image_matrices = Array<Mat<f64, 2, 4>, 1>(metadata.ssize());
         for (auto&& [image, volume2image]: noa::zip(metadata, volume2image_matrices.span_1d())) {
             const auto angles = noa::deg2rad(image.angles);
             const auto final_rotation = correct_rotation ? 0. : angles[0];

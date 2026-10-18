@@ -558,7 +558,7 @@ namespace {
 
             // Back to real-space.
             const auto target_and_projected_padded = m_buffer_padded.view();
-            nf::c2r(target_and_projected_padded_rfft, target_and_projected_padded);
+            nf::irfft2(target_and_projected_padded_rfft, target_and_projected_padded);
 
             // Remove the padding and mask again to remove small projection/weighting artifacts.
             const auto target_and_projected = m_buffer.view();

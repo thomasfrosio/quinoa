@@ -272,7 +272,7 @@ namespace qn {
         auto image_padded_shape = Shape{(image_shape.vec.as<f64>() * PADDING_FACTOR).as<isize>()};
         image_padded_shape = noa::max(image_padded_shape, image_shape + minimum_padding);
         image_padded_shape = noa::max(image_padded_shape, aliasing_free_size);
-        image_padded_shape = nf::next_fast_shape(image_padded_shape);
+        image_padded_shape = nf::next_fast_shape(image_padded_shape, 2);
 
         // Allocating and processing all strips at once can require a lot of memory for high-resolution and
         // high-tilt images. To decrease the memory requirement, process the strips in chunks so that we only
@@ -553,7 +553,7 @@ namespace qn {
         const auto workspace_bytes = nf::workspace_left_to_allocate(device);
         if (workspace_bytes > 0) {
             const auto options = ArrayOption{.device = device, .allocator = Allocator::ASYNC};
-            nf::set_workspace(device, Array<std::byte>(workspace_bytes, options));
+            nf::set_workspace(device, Array<std::byte, 1>(workspace_bytes, options));
         }
     }
 

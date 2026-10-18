@@ -198,7 +198,7 @@ namespace {
 }
 
 namespace qn {
-    thread_local Array<std::byte> StackLoader::s_input_stack{};
+    thread_local Array<std::byte, 4> StackLoader::s_input_stack{};
     thread_local Path StackLoader::s_input_stack_path{};
     thread_local noa::io::DataType StackLoader::s_input_stack_dtype{};
 
@@ -242,7 +242,7 @@ namespace qn {
         const auto type_erased_shape = file_shape.set<3>(file_shape[3] * s_input_stack_dtype.n_bytes(1));
         const auto n_bytes = type_erased_shape.n_elements();
         if (s_input_stack.shape().n_elements() < n_bytes)
-            s_input_stack = Array<std::byte>(n_bytes);
+            s_input_stack = Array<std::byte, 4>(n_bytes);
 
         auto input_stack = s_input_stack.view().subregion(Ellipsis{}, Slice{0, n_bytes}).reshape(type_erased_shape);
         file.read_all(input_stack.span_1d(), s_input_stack_dtype, {.n_threads = n_threads});
@@ -266,13 +266,13 @@ namespace qn {
         if (m_has_cropping or (m_has_filter and not needs_mirror_pad)) {
             const auto [padded_slice, padded_slice_rfft] = padded_slice_();
             const auto [cropped_slice, cropped_slice_rfft] = cropped_slice_();
-            nf::r2c(padded_slice, padded_slice_rfft, {.record_and_share_workspace = true});
-            nf::c2r(cropped_slice_rfft, cropped_slice, {.record_and_share_workspace = true});
+            nf::rfft2(padded_slice, padded_slice_rfft, {.record_and_share_workspace = true});
+            nf::irfft2(cropped_slice_rfft, cropped_slice, {.record_and_share_workspace = true});
         }
         if (m_has_filter and needs_mirror_pad) {
             const auto [bandpass_slice, bandpass_slice_rfft] = bandpass_slice_();
-            nf::r2c(bandpass_slice, bandpass_slice_rfft, {.record_and_share_workspace = true});
-            nf::c2r(bandpass_slice_rfft, bandpass_slice, {.record_and_share_workspace = true});
+            nf::rfft2(bandpass_slice, bandpass_slice_rfft, {.record_and_share_workspace = true});
+            nf::irfft2(bandpass_slice_rfft, bandpass_slice, {.record_and_share_workspace = true});
         }
     }
 
@@ -343,7 +343,6 @@ namespace qn {
         }
 
         // If no preprocessing, we can copy directly to the output slice and return;
-        m_io_slice.view().reshape(m_io_slice.shape().pop_front<2>()).to(has_preprocessing ? input_slice : output_slice);
         m_io_slice.view().filter(2, 3).to(has_preprocessing ? input_slice : output_slice);
 
         // Optional padding of the input slice for accurate Fourier cropping cutoff.
@@ -493,7 +492,7 @@ namespace qn {
         if (m_has_filter and m_parameters.bandpass_mirror_padding_factor > 0) {
             const auto padding = m_bandpass_slice_shape.vec.as<f64>() * m_parameters.bandpass_mirror_padding_factor;
             m_bandpass_slice_shape += Shape{noa::round(padding).as<isize>()};
-            m_bandpass_slice_shape = nf::next_fast_shape(m_bandpass_slice_shape);
+            m_bandpass_slice_shape = nf::next_fast_shape(m_bandpass_slice_shape, 2);
             m_bandpass_slice_rfft = Array<c32, 2>(m_bandpass_slice_shape.rfft(), options);
         }
 
@@ -510,7 +509,7 @@ namespace qn {
         if (m_parameters.allocate_fft_workspace and options.device.is_gpu()) {
             record_fft();
             if (const auto workspace_size = nf::workspace_left_to_allocate(options.device)) {
-                const auto n_plans_set = nf::set_workspace(options.device, Array<std::byte>(workspace_size, options));
+                const auto n_plans_set = nf::set_workspace(options.device, Array<std::byte, 1>(workspace_size, options));
                 if (n_plans_set == 0)
                     Logger::warn("FFT workspace couldn't be set, please report this");
             }

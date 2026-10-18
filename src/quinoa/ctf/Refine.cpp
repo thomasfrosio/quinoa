@@ -695,8 +695,8 @@ namespace {
         ReduceHeight<f32, i32> m_reduce_height;
         ScorePatch1D<f32, i32> m_score_patch_1d;
         ScorePatch2D<f32, i32> m_score_patch_2d;
-        Array<f32> m_reduced_cnpw;
-        Array<f32> m_reduced_cnp1;
+        Array<f32, 4> m_reduced_cnpw;
+        Array<f32, 4> m_reduced_cnp1;
         bool m_is_reduce_height_done{};
 
         // Thickness-aware CTF.
@@ -805,8 +805,8 @@ namespace {
             });
 
             // Reduction operators and buffers for the scoring functions.
-            m_reduced_cnpw = Array<f32>({m_n_channels, n, p, w}, options_pitched);
-            m_reduced_cnp1 = Array<f32>({m_n_channels, n, p, 1}, options_managed);
+            m_reduced_cnpw = Array<f32, 4>({m_n_channels, n, p, w}, options_pitched);
+            m_reduced_cnp1 = Array<f32, 4>({m_n_channels, n, p, 1}, options_managed);
             m_reduce_height = ReduceHeight<f32, i32>{
                 .polar = m_patches.view().span_contiguous().as_index<i32>(), // (n,p,h,w)
                 .packed = m_anisotropic_ctf_patches.span_1d().as_index<i32>(), // (cnp)
@@ -1171,7 +1171,7 @@ namespace {
             const auto spectrum_nw = spectrum.span_contiguous(); // (n,w)
 
             // Compute the per-image CTFs.
-            const auto ctf_images_buffer = Array<CTFIsotropic64>(m_patches.n_images());
+            const auto ctf_images_buffer = Array<CTFIsotropic64, 1>(m_patches.n_images());
             const auto ctf_images = ctf_images_buffer.span_1d();
             for (auto&& [ctf, packed]: noa::zip(ctf_images, m_isotropic_ctf_images.span_1d())) {
                 ctf = m_ctf;

@@ -152,7 +152,7 @@ namespace {
             .generate_cpu = false,
             .gpu_block_shape = {1, 512}, // 1d block
             .gpu_optimize_block_shape = false, // enforce the block shape
-            .gpu_number_of_indices_per_threads = {1, 16}, // increase the value of the per-block histogram by working on it more
+            .gpu_number_of_indices_per_thread = {1, 16}, // increase the value of the per-block histogram by working on it more
             .gpu_scratch_size = N_BINS * sizeof(i32), // per block histogram
         };
 

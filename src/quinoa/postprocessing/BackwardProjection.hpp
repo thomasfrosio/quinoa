@@ -120,7 +120,7 @@ namespace qn {
             const auto subvolume_large_center = (subvolume_large_shape.vec / 2).as<f64>();
             tile_large_center = static_cast<f64>(tile_large_size / 2);
             tile_large_origins = Array<Vec<i32, 2>, 4>(grid_shape);
-            tile_large_padded_matrices = Array<Mat<f32, 2, 4>>(grid_shape);
+            tile_large_padded_matrices = Array<Mat<f32, 2, 4>, 4>(grid_shape);
 
             const auto volume2image = volume2image_matrices(metadata, correct_rotation, image_shape, volume_shape);
             const auto volume2image_1d = volume2image.span_1d();
@@ -175,11 +175,11 @@ namespace qn {
             const auto tile_large_padded_shape = Shape{tile_large_padded_size, tile_large_padded_size};
             const auto options = ArrayOption{.device = device, .allocator = Allocator::MANAGED};
 
-            tiles_large_buffer = Array<c32>(tile_large_shape.rfft().push_front(bd), options);
-            subvolume_large_buffer = Array<c32>(subvolume_large_shape.rfft().push_front(n_threads), options);
+            tiles_large_buffer = Array<c32, 4>(tile_large_shape.rfft().push_front(bd), options);
+            subvolume_large_buffer = Array<c32, 4>(subvolume_large_shape.rfft().push_front(n_threads), options);
             if (actual_oversampling_factor > 1) {
-                tiles_large_padded_buffer = Array<c32>(tile_large_padded_shape.rfft().push_front(bd), options);
-                subvolume_large_padded_buffer = Array<c32>(subvolume_large_padded_shape.rfft().push_front(n_threads), options);
+                tiles_large_padded_buffer = Array<c32, 4>(tile_large_padded_shape.rfft().push_front(bd), options);
+                subvolume_large_padded_buffer = Array<c32, 4>(subvolume_large_padded_shape.rfft().push_front(n_threads), options);
             }
             if (device.is_gpu())
                 subvolume_row = Array<f32, 3>(subvolume_shape.set<2>(volume_shape[2]), options);
