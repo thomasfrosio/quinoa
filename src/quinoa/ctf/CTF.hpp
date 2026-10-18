@@ -28,8 +28,8 @@ namespace qn::ctf {
             const auto fraction = spectrum_frequency - floored_f64;
 
             // Lerp.
-            const auto index_0 = noa::index_at<noa::Border::REFLECT>(floored_i64 + 0, spectrum.ssize());
-            const auto index_1 = noa::index_at<noa::Border::REFLECT>(floored_i64 + 1, spectrum.ssize());
+            const auto index_0 = noa::index_at<noa::Border::REFLECT>(spectrum.ssize(), floored_i64 + 0);
+            const auto index_1 = noa::index_at<noa::Border::REFLECT>(spectrum.ssize(), floored_i64 + 1);
             const auto interpolated =
                 static_cast<f64>(spectrum[index_0]) * (1 - fraction) +
                 static_cast<f64>(spectrum[index_1]) * fraction;

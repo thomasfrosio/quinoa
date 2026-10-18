@@ -214,7 +214,7 @@ namespace qn {
         //             f32 base{};
         //             for (isize x{-1}; x <= 1; ++x) {
         //                 auto position = peak_position + Vec{y * direction, x};
-        //                 position = noa::index_at<noa::Border::REFLECT>(position, data.shape());
+        //                 position = noa::index_at<noa::Border::REFLECT>(data.shape(), position);
         //                 base += data(position);
         //             }
         //             base /= 3;
@@ -240,7 +240,7 @@ namespace qn {
                 Vec<f64, 3> buffer{};
                 for (isize j{}; j < 3; ++j) {
                     auto indices = peak_position;
-                    indices[i] = noa::index_at<noa::Border::REFLECT>(peak_position[i] + j - 1, data.shape()[i]);
+                    indices[i] = noa::index_at<noa::Border::REFLECT>(data.shape()[i], peak_position[i] + j - 1);
                     buffer[j] = static_cast<f64>(data(indices));
                 }
                 noa::tie(peak_offset[i], peak_value[i]) = ns::details::lstsq_fit_quadratic_vertex_3points(

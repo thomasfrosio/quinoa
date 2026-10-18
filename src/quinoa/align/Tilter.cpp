@@ -798,9 +798,9 @@ namespace qn {
 
         // if (not Logger::s_debug_path.empty()) {
         //     auto filename = Logger::s_debug_path / "stretched_targets.mrc";
-        //     noa::write_image(buffer(1), filename, {.dtype = "f32"});
+        //     noa::write_image(buffer(1), filename, {.rank = 2, .dtype = "f32"});
         //     filename = Logger::s_debug_path / "references.mrc";
-        //     noa::write_image(buffer(0), filename, {.dtype = "f32"});
+        //     noa::write_image(buffer(0), filename, {.rank = 2, .dtype = "f32"});
         //     Logger::debug("{} saved", filename);
         // }
 
@@ -815,7 +815,7 @@ namespace qn {
 
         // if (not Logger::s_debug_path.empty()) {
         //     auto filename = Logger::s_debug_path / "xmap.mrc";
-        //     noa::write_image(buffer(0), filename, {.dtype = "f32"});
+        //     noa::write_image(buffer(0), filename, {.rank = 2, .dtype = "f32"});
         //     Logger::debug("{} saved", filename);
         // }
 
