@@ -285,7 +285,8 @@ namespace qn {
             // Apply real-space deconvolution correction before cropping
             // TODO Lanczos6 is not supported. With the x3 zero padding, the correction is not necessary anyway.
             if (interp == nx::Interp::LINEAR)
-                nx::fourier_interpolation_correction(subvolume_large_padded, subvolume_large_padded, {.interp = nx::Interp::LINEAR});
+                nx::fourier_interpolation_correction_3d(
+                    subvolume_large_padded, subvolume_large_padded, {.interp = nx::Interp::LINEAR});
 
             // Return a view of the subvolume.
             auto subvolume = subvolume_large_padded.view().subregion(Slices{.end = subvolume_shape.vec});

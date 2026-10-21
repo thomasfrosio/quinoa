@@ -266,7 +266,7 @@ namespace qn {
             nx::translate(-xmap_center)
         ).inverse();
         constexpr auto OPTIONS = nx::CompileOptions{
-            .interps = nx::InterpSet::all_but(nx::Interp::LINEAR),
+            .interps = nx::InterpSet::none_but(nx::Interp::LINEAR),
             .borders = noa::BorderSet::none_but(noa::Border::ZERO),
         };
         nx::transform_2d<OPTIONS>(

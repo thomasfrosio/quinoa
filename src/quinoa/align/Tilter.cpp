@@ -524,7 +524,8 @@ namespace qn {
             .flat(0).subregion(Slice{0, n_lines * line_pitch}) // keep lines well aligned
             .reshape(Shape2{n_lines, line_pitch})
             .subregion(Full{}, Slice{0, line_size});
-        nx::spectrum2polar<"h2fc", nx::CompileOptions{.interps = nx::InterpSet::none_but(nx::Interp::LINEAR)}>(
+        constexpr auto COMPILE_OPTIONS = nx::CompileOptions{.interps = nx::InterpSet::none_but(nx::Interp::LINEAR)};
+        nx::spectrum2polar<"h2fc", COMPILE_OPTIONS>(
             spectral_sum_power.filter(1, 2), image_shape, lines, {
                 .phi_range = noa::Linspace{
                     .start = noa::deg2rad(angle_start),

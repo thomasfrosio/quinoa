@@ -267,7 +267,10 @@ namespace {
             if (polar_interp == nx::Interp::CUBIC_BSPLINE)
                 nx::cubic_bspline_prefilter_2d(patches_padded_rfft_ps, patches_padded_rfft_ps);
 
-            nx::spectrum2polar<"h2fc", nx::CompileOptions{.interps = nx::InterpSet::none_but(nx::Interp::LINEAR)}>(
+            constexpr auto COMPILE_OPTIONS =  nx::CompileOptions{
+                .interps = nx::InterpSet::none_but(nx::Interp::LINEAR, nx::Interp::CUBIC_BSPLINE)
+            };
+            nx::spectrum2polar<"h2fc", COMPILE_OPTIONS>(
                 patches_padded_rfft_ps, patches_padded_shape, patches_polar.view().as_nd<3>(), {
                     .spectrum_fftfreq = noa::Linspace{0., fftfreq_range[1], true},
                     .rho_range = patches.rho(),

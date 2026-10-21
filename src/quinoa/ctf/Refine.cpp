@@ -32,8 +32,8 @@ namespace {
         using value_type = T;
         using index_type = I;
 
-        SpanContiguous<const Patches::value_type, 4, index_type> polar{}; // (n,p,h,w)
-        SpanContiguous<const CTFAnisotropicPacked, 1, index_type> packed{}; // (c*n*p)
+        noa::AccessorContiguous<const Patches::value_type, 4, index_type> polar{}; // (n,p,h,w)
+        noa::AccessorContiguous<const CTFAnisotropicPacked, 3, index_type> packed{}; // (c,n,p)
 
         ns::CTFIsotropic<value_type> isotropic_ctf;
         ns::CTFAnisotropic<value_type> anisotropic_ctf;
@@ -43,6 +43,7 @@ namespace {
         value_type rho_start{};
         value_type rho_step{};
         value_type rho_range{};
+        index_type width{};
 
         NOA_HD void operator()(
             index_type c, index_type n, index_type p, index_type h, index_type w,
@@ -52,9 +53,7 @@ namespace {
             const auto rho = static_cast<value_type>(w) * rho_step + rho_start; // fftfreq
 
             // Get the target phase.
-            const auto& n_images = polar.shape()[0];
-            const auto& n_patches = polar.shape()[1];
-            const auto& [defocus, astigmatism, angle, phase_shift] = packed[(c * n_images + n) * n_patches + p];
+            const auto& [defocus, astigmatism, angle, phase_shift] = packed(c, n, p);
             isotropic_ctf.set_defocus(defocus);
             isotropic_ctf.set_phase_shift(phase_shift);
             const auto phase = isotropic_ctf.phase_at(rho);
@@ -67,7 +66,6 @@ namespace {
                 return;
 
             // Scale back to unnormalized frequency.
-            const auto width = polar.shape().back();
             const auto frequency = static_cast<value_type>(width - 1) * (*fftfreq - rho_start) / rho_range;
 
             // Lerp the polar array at this frequency.
@@ -76,7 +74,7 @@ namespace {
             const auto index = static_cast<index_type>(floored);
 
             value_type v0{}, w0{}, v1{}, w1{};
-            const auto polar_w = polar[n][p][h];
+            const auto polar_w = polar[Vec{n, p, h}];
             if (index >= 0 and index < width) {
                 v0 = static_cast<value_type>(polar_w[index]);
                 w0 = 1;
@@ -143,10 +141,10 @@ namespace {
         using reduce_type = ScorePatch<T>::reduce_type;
         using index_type = I;
 
-        SpanContiguous<const value_type, 4, index_type> patch_spectra{}; // (c,n,p,w)
-        SpanContiguous<const CTFIsotropicPacked, 3, index_type> patch_ctfs{}; // (c,n,p)
-        SpanContiguous<const value_type, 2, index_type> image_baseline{}; // (n,w)
-        SpanContiguous<const value_type, 3, index_type> image_thickness_modulation{}; // (c,n,w)
+        noa::AccessorContiguous<const value_type, 4, index_type> patch_spectra{}; // (c,n,p,w)
+        noa::AccessorContiguous<const CTFIsotropicPacked, 3, index_type> patch_ctfs{}; // (c,n,p)
+        noa::AccessorContiguous<const value_type, 2, index_type> image_baseline{}; // (n,w)
+        noa::AccessorContiguous<const value_type, 3, index_type> image_thickness_modulation{}; // (c,n,w)
 
         ns::CTFIsotropic<value_type> isotropic_ctf;
 
@@ -154,6 +152,7 @@ namespace {
         value_type phi_step{};
         value_type rho_start{};
         value_type rho_step{};
+        index_type width{};
 
         NOA_HD void operator()(index_type c, index_type n, index_type p, index_type w, reduce_type& reduced) {
             auto rho = static_cast<value_type>(w) * rho_step + rho_start; // fftfreq
@@ -184,7 +183,7 @@ namespace {
 
         using remove_default_post = bool;
         NOA_HD void post(const reduce_type& joined, value_type& zncc) {
-            zncc = joined.zncc(image_baseline.shape().back());
+            zncc = joined.zncc(width);
         }
     };
 
@@ -194,10 +193,10 @@ namespace {
         using reduce_type = ScorePatch<T>::reduce_type;
         using index_type = I;
 
-        SpanContiguous<const Patches::value_type, 4, index_type> patch_spectra{}; // (n,p,h,w)
-        SpanContiguous<const CTFAnisotropicPacked, 3, index_type> patch_ctfs{}; // (c,n,p)
-        SpanContiguous<const value_type, 2, index_type> image_baseline{}; // (n,w)
-        SpanContiguous<const value_type, 3, index_type> image_thickness_modulation{}; // (c,n,w)
+        noa::AccessorContiguous<const Patches::value_type, 4, index_type> patch_spectra{}; // (n,p,h,w)
+        noa::AccessorContiguous<const CTFAnisotropicPacked, 3, index_type> patch_ctfs{}; // (c,n,p)
+        noa::AccessorContiguous<const value_type, 2, index_type> image_baseline{}; // (n,w)
+        noa::AccessorContiguous<const value_type, 3, index_type> image_thickness_modulation{}; // (c,n,w)
 
         ns::CTFAnisotropic<value_type> anisotropic_ctf;
         ns::CTFIsotropic<value_type> isotropic_ctf;
@@ -206,9 +205,11 @@ namespace {
         value_type phi_step{};
         value_type rho_start{};
         value_type rho_step{};
+        index_type height{};
+        index_type width{};
 
         NOA_HD void operator()(index_type c, index_type n, index_type p, index_type hw, reduce_type& reduced) {
-            const auto [h, w] = noa::offset2index(hw, patch_spectra.shape().back());
+            const auto [h, w] = noa::offset2index(hw, width);
             auto phi = static_cast<value_type>(h) * phi_step + phi_start; // radians
             auto rho = static_cast<value_type>(w) * rho_step + rho_start; // fftfreq
 
@@ -240,7 +241,7 @@ namespace {
 
         using remove_default_post = bool;
         NOA_HD void post(const reduce_type& joined, value_type& zncc) {
-            zncc = joined.zncc(patch_spectra.shape()[2] * patch_spectra.shape()[3]);
+            zncc = joined.zncc(height * width);
         }
     };
 
@@ -249,9 +250,9 @@ namespace {
         using value_type = T;
         using index_type = I;
 
-        SpanContiguous<const value_type, 3, index_type> patch_spectra{}; // (n,p,w)
-        SpanContiguous<const f32, 2, index_type> patch_defoci{}; // (n,p)
-        SpanContiguous<const CTFIsotropicPacked, 1, index_type> image_defoci{}; // (n)
+        noa::AccessorContiguous<const value_type, 3, index_type> patch_spectra{}; // (n,p,w)
+        noa::AccessorContiguous<const f32, 2, index_type> patch_defoci{}; // (n,p)
+        noa::AccessorContiguous<const CTFIsotropicPacked, 1, index_type> image_defoci{}; // (n)
 
         ns::CTFIsotropic<value_type> isotropic_ctf;
 
@@ -260,6 +261,7 @@ namespace {
         value_type rho_start{};
         value_type rho_step{};
         value_type rho_range{};
+        index_type width{};
 
         NOA_HD void operator()(index_type n, index_type p, index_type w, value_type& r0, value_type& r1) {
             const auto rho = static_cast<value_type>(w) * rho_step + rho_start; // fftfreq
@@ -279,7 +281,6 @@ namespace {
                 return;
 
             // Scale back to unnormalized frequency.
-            const auto width = patch_spectra.shape().back();
             const auto frequency = static_cast<value_type>(width - 1) * (*fftfreq - rho_start) / rho_range;
 
             // Lerp the polar array at this frequency.
@@ -288,7 +289,7 @@ namespace {
             const auto index = static_cast<index_type>(floored);
 
             value_type v0{}, w0{}, v1{}, w1{};
-            const auto patch_spectra_w = patch_spectra[n][p];
+            const auto patch_spectra_w = patch_spectra[Vec{n, p}];
             if (index >= 0 and index < width) {
                 v0 = static_cast<value_type>(patch_spectra_w[index]);
                 w0 = 1;
@@ -317,9 +318,9 @@ namespace {
         using value_type = T;
         using index_type = I;
 
-        SpanContiguous<const Patches::value_type, 4, index_type> polar{}; // (n,p,h,w)
-        SpanContiguous<const CTFAnisotropicPacked, 1, index_type> ctf_images_packed{}; // (n)
-        SpanContiguous<const value_type, 1, index_type> defocus_patches{}; // (n*p)
+        noa::AccessorContiguous<const Patches::value_type, 4, index_type> polar{}; // (n,p,h,w)
+        noa::AccessorContiguous<const CTFAnisotropicPacked, 1, index_type> ctf_images_packed{}; // (n)
+        noa::AccessorContiguous<const value_type, 2, index_type> defocus_patches{}; // (n, p)
 
         ns::CTFIsotropic<value_type> isotropic_ctf;
         ns::CTFAnisotropic<value_type> anisotropic_ctf;
@@ -329,6 +330,7 @@ namespace {
         value_type rho_start{};
         value_type rho_step{};
         value_type rho_range{};
+        index_type width{};
 
         NOA_HD void operator()(
             index_type n, index_type p, index_type h, index_type w,
@@ -337,10 +339,8 @@ namespace {
             auto phi = static_cast<value_type>(h) * phi_step + phi_start; // radians
             auto rho = static_cast<value_type>(w) * rho_step + rho_start; // fftfreq
 
-            const auto& n_patches = polar.shape()[1];
-            const auto& width = polar.shape()[3];
             const auto& image = ctf_images_packed[n];
-            const auto& patch_defocus = defocus_patches[n * n_patches + p];
+            const auto& patch_defocus = defocus_patches(n, p);
 
             // Get the target phase.
             anisotropic_ctf.set_defocus({image.defocus, image.astigmatism, image.angle});
@@ -364,7 +364,7 @@ namespace {
             const auto index = static_cast<index_type>(floored);
 
             value_type v0{}, w0{}, v1{}, w1{};
-            const auto polar_w = polar[n][p][h];
+            const auto polar_w = polar[Vec{n, p, h}];
             if (index >= 0 and index < width) {
                 v0 = static_cast<value_type>(polar_w[index]);
                 w0 = 1;
@@ -389,9 +389,9 @@ namespace {
     };
 
     struct SimulateCTF2 {
-        SpanContiguous<f32, 3, i32> output; // (n,h,w)
-        SpanContiguous<const CTFAnisotropicPacked, 1, i32> ctfs; // (n)
-        SpanContiguous<const f32, 2, i32> thickness_modulation; // (n,w)
+        noa::AccessorContiguous<f32, 3, i32> output; // (n,h,w)
+        noa::AccessorContiguous<const CTFAnisotropicPacked, 1, i32> ctfs; // (n)
+        noa::AccessorContiguous<const f32, 2, i32> thickness_modulation; // (n,w)
         ns::CTFAnisotropic<f32> ctf;
 
         f32 phi_start{};
@@ -808,8 +808,8 @@ namespace {
             m_reduced_cnpw = Array<f32, 4>({m_n_channels, n, p, w}, options_pitched);
             m_reduced_cnp1 = Array<f32, 4>({m_n_channels, n, p, 1}, options_managed);
             m_reduce_height = ReduceHeight<f32, i32>{
-                .polar = m_patches.view().span_contiguous().as_index<i32>(), // (n,p,h,w)
-                .packed = m_anisotropic_ctf_patches.span_1d().as_index<i32>(), // (cnp)
+                .polar = m_patches.view().span_contiguous().as_index<i32>().accessor(), // (n,p,h,w)
+                .packed = m_anisotropic_ctf_patches.span_contiguous().as_index<i32>().accessor(), // (c,n,p)
                 .isotropic_ctf = m_ctf.as<f32>(),
                 .anisotropic_ctf = ns::CTFAnisotropic(m_ctf).as<f32>(),
                 .phi_start = static_cast<f32>(m_patches.phi().start),
@@ -817,29 +817,33 @@ namespace {
                 .rho_start = static_cast<f32>(m_patches.rho().start),
                 .rho_step = static_cast<f32>(m_patches.rho_step()),
                 .rho_range = static_cast<f32>(m_patches.rho().stop - m_patches.rho().start), // assumes endpoint=true
+                .width = static_cast<i32>(m_patches.width()),
             };
             m_score_patch_1d = ScorePatch1D<f32, i32>{
-                .patch_spectra = m_reduced_cnpw.span_contiguous().as_index<i32>(), // (c,n,p,w)
-                .patch_ctfs = m_isotropic_ctf_patches.span_contiguous().as_index<i32>(), // (c,n,p)
-                .image_baseline = m_baselines_sampled.span_contiguous().as_index<i32>(), // (n,w)
-                .image_thickness_modulation = m_thickness_modulations.span_contiguous().as_index<i32>(), // (c,n,w)
+                .patch_spectra = m_reduced_cnpw.span_contiguous().as_index<i32>().accessor(), // (c,n,p,w)
+                .patch_ctfs = m_isotropic_ctf_patches.span_contiguous().as_index<i32>().accessor(), // (c,n,p)
+                .image_baseline = m_baselines_sampled.span_contiguous().as_index<i32>().accessor(), // (n,w)
+                .image_thickness_modulation = m_thickness_modulations.span_contiguous().as_index<i32>().accessor(), // (c,n,w)
                 .isotropic_ctf = m_reduce_height.isotropic_ctf,
                 .phi_start = m_reduce_height.phi_start,
                 .phi_step = m_reduce_height.phi_step,
                 .rho_start = m_reduce_height.rho_start,
                 .rho_step = m_reduce_height.rho_step,
+                .width = m_reduce_height.width,
             };
             m_score_patch_2d = ScorePatch2D<f32, i32>{
-                .patch_spectra = m_patches.view().span_contiguous().as_index<i32>(), // (n,p,h,w)
-                .patch_ctfs = m_anisotropic_ctf_patches.span_contiguous().as_index<i32>(), // (c,n,p)
-                .image_baseline = m_baselines_sampled.span_contiguous().as_index<i32>(), // (n,w)
-                .image_thickness_modulation = m_thickness_modulations.span_contiguous().as_index<i32>(), // (c,n,w)
+                .patch_spectra = m_patches.view().span_contiguous().as_index<i32>().accessor(), // (n,p,h,w)
+                .patch_ctfs = m_anisotropic_ctf_patches.span_contiguous().as_index<i32>().accessor(), // (c,n,p)
+                .image_baseline = m_baselines_sampled.span_contiguous().as_index<i32>().accessor(), // (n,w)
+                .image_thickness_modulation = m_thickness_modulations.span_contiguous().as_index<i32>().accessor(), // (c,n,w)
                 .anisotropic_ctf = m_reduce_height.anisotropic_ctf,
                 .isotropic_ctf = m_reduce_height.isotropic_ctf,
                 .phi_start = m_reduce_height.phi_start,
                 .phi_step = m_reduce_height.phi_step,
                 .rho_start = m_reduce_height.rho_start,
                 .rho_step = m_reduce_height.rho_step,
+                .height = static_cast<i32>(m_patches.height()),
+                .width = m_reduce_height.width,
             };
         }
 
@@ -1142,15 +1146,16 @@ namespace {
 
             // Equiphase average per-patches to per-image.
             auto reduce_isotropic_depth = ReducePatchToImage<f32, i32>{
-                .patch_spectra = reduced_npw.span_contiguous().as_index<i32>(), // (n,p,w)
-                .patch_defoci = m_defocus_patches.span_contiguous()[0].as_index<i32>(), // (n,p)
-                .image_defoci =  m_isotropic_ctf_images.span_contiguous()[0].as_index<i32>(), // (n)
+                .patch_spectra = reduced_npw.span_contiguous().as_index<i32>().accessor(), // (n,p,w)
+                .patch_defoci = m_defocus_patches.span_contiguous()[0].as_index<i32>().accessor(), // (n,p)
+                .image_defoci =  m_isotropic_ctf_images.span_contiguous()[0].as_index<i32>().accessor(), // (n)
                 .isotropic_ctf = m_reduce_height.isotropic_ctf,
                 .phi_start = m_reduce_height.phi_start,
                 .phi_step = m_reduce_height.phi_step,
                 .rho_start = m_reduce_height.rho_start,
                 .rho_step = m_reduce_height.rho_step,
                 .rho_range = m_reduce_height.rho_range,
+                .width = m_reduce_height.width,
             };
             noa::reduce_axes_iwise( // (n,p,w)->(n,1,w)
                 patches_shape.as<i32>(), device, noa::wrap(f32{0}, f32{0}),
@@ -1167,7 +1172,7 @@ namespace {
 
             // Compute the per-image spectra.
             update_ctfs(0);
-            const auto spectrum = compute_image_spectra().eval();
+            const auto spectrum = compute_image_spectra().reinterpret_as_cpu().eval();
             const auto spectrum_nw = spectrum.span_contiguous(); // (n,w)
 
             // Compute the per-image CTFs.
@@ -1246,9 +1251,9 @@ namespace {
             noa::reduce_axes_iwise( // (n,p,h,w)->(n,1,h,w)
                 Shape4{n, p, h, w}.as<i32>(), device, noa::wrap(f32{0}, f32{0}),
                 first_two_quadrants, ReducePolarPatchToImage<f32, i32>{
-                    .polar = m_patches.view().span_contiguous().as_index<i32>(), // (n,p,h,w)
-                    .ctf_images_packed = m_anisotropic_ctf_images.span_contiguous()[0].as_index<i32>(), // (n)
-                    .defocus_patches = m_defocus_patches.span_contiguous().as_1d().as_index<i32>(), // (n*p)
+                    .polar = m_patches.view().span_contiguous().as_index<i32>().accessor(), // (n,p,h,w)
+                    .ctf_images_packed = m_anisotropic_ctf_images.span_contiguous()[0].as_index<i32>().accessor(), // (n)
+                    .defocus_patches = m_defocus_patches.span_contiguous()[0].as_index<i32>().accessor(), // (n,p)
                     .isotropic_ctf = m_reduce_height.isotropic_ctf,
                     .anisotropic_ctf = m_reduce_height.anisotropic_ctf,
                     .phi_start = m_reduce_height.phi_start,
@@ -1256,14 +1261,15 @@ namespace {
                     .rho_start = m_reduce_height.rho_start,
                     .rho_step = m_reduce_height.rho_step,
                     .rho_range = m_reduce_height.rho_range,
+                    .width = m_reduce_height.width,
                 });
 
             // Simulate the CTF2 in the third quadrant.
             const auto third_quadrant = synthetic_polar_spectra.view().subregion(Ellipsis{}, Offset{h}, Full{});
             noa::iwise(Shape3{n, h / 2, w}.as<i32>(), device, SimulateCTF2{
-                .output = third_quadrant.span().filter(0, 2, 3).as_contiguous().as_index<i32>(), // (n,h,w)
-                .ctfs = m_anisotropic_ctf_images.span_contiguous()[0].as_index<i32>(), // (n)
-                .thickness_modulation = m_thickness_modulations.span_contiguous()[0].as<const f32, 2, i32>(), // (n,w)
+                .output = third_quadrant.span().filter(0, 2, 3).as_contiguous().as_index<i32>().accessor(), // (n,h,w)
+                .ctfs = m_anisotropic_ctf_images.span_contiguous()[0].as_index<i32>().accessor(), // (n)
+                .thickness_modulation = m_thickness_modulations.span_contiguous()[0].as<const f32, 2, i32>().accessor(), // (n,w)
                 .ctf = CTFAnisotropic64(m_ctf).as<f32>(),
                 .phi_start = m_reduce_height.phi_start + m_reduce_height.phi_step * static_cast<f32>(h),
                 .phi_step = m_reduce_height.phi_step,
@@ -1318,7 +1324,10 @@ namespace {
             for (isize i{}; i < m_patches.n_images(); ++i) {
                 // Rescale to the target CTF.
                 const auto ctf_i = ctf_n[i];
-                nx::equiphase_rescale_1d<nx::CompileOptions{.interps = nx::InterpSet::all_but(nx::Interp::LINEAR)}>(
+                constexpr auto COMPILE_OPTIONS = nx::CompileOptions{
+                    .interps = nx::InterpSet::none_but(nx::Interp::LINEAR)
+                };
+                nx::equiphase_rescale_1d<COMPILE_OPTIONS>(
                     spectrum_bs_n[i], m_patches.rho(), ctf_i,
                     ArrayView<f32, 1>(spectrum_rescaled), m_patches.rho(), average_ctf
                 );

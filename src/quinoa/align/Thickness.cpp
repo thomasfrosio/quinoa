@@ -148,35 +148,37 @@ namespace {
                 }
             }
         };
-        constexpr auto OPTIONS = noa::ReduceIwiseOptions{
+        constexpr auto COMPILE_OPTIONS = noa::ReduceIwiseCompileOptions{
             .generate_cpu = false,
             .gpu_block_shape = {1, 512}, // 1d block
             .gpu_optimize_block_shape = false, // enforce the block shape
             .gpu_number_of_indices_per_thread = {1, 16}, // increase the value of the per-block histogram by working on it more
+        };
+        constexpr auto RUNTIME_OPTIONS = noa::ReduceIwiseOptions{
             .gpu_scratch_size = N_BINS * sizeof(i32), // per block histogram
         };
 
         // Compute the median for each Z slice.
         noa::normalize(tomogram, tomogram, {.mode = noa::Norm::MIN_MAX});
         noa::fill(histograms, 0);
-        noa::reduce_axes_iwise<OPTIONS>(shape_dw, device, {}, ReduceAxes<2>::none_but(1), Histogram{
+        noa::reduce_axes_iwise<COMPILE_OPTIONS>(shape_dw, device, {}, ReduceAxes<2>::none_but(1), Histogram{
             .inputs = tomogram_1d.template span_contiguous<const T, 2, i32>(),
             .histograms = histograms.span_contiguous<i32, 2, i32>(),
-        });
+        }, RUNTIME_OPTIONS);
         get_medians_from_histograms();
 
         // Compute the absolute deviations from the medians.
-        noa::ewise(medians, tomogram_1d, []NOA_HD(f32 median, T& value) {
+        noa::ewise(medians.reshape(Shape2{-1, 1}), tomogram_1d, []NOA_HD(f32 median, T& value) {
             value = static_cast<T>(noa::abs(static_cast<f32>(value) - median));
         });
 
         // Compute the MAD for each Z slice.
         noa::normalize(tomogram, tomogram, {.mode = noa::Norm::MIN_MAX});
         noa::fill(histograms, 0);
-        noa::reduce_axes_iwise<OPTIONS>(shape_dw, device, {}, ReduceAxes<2>::none_but(1), Histogram{
+        noa::reduce_axes_iwise<COMPILE_OPTIONS>(shape_dw, device, {}, ReduceAxes<2>::none_but(1), Histogram{
             .inputs = tomogram_1d.template span_contiguous<const T, 2, i32>(),
             .histograms = histograms.span_contiguous<i32, 2, i32>(),
-        });
+        }, RUNTIME_OPTIONS);
         get_medians_from_histograms();
         medians = medians.reinterpret_as_cpu();
         for (auto& median: medians.span_1d())

@@ -270,7 +270,7 @@ namespace qn {
                 .input_images = input.span_contiguous(),
                 .output_images = output.span_contiguous(),
                 .parallelograms = parallelograms.span_1d(),
-            }, std::move(parallelograms));
+            }, {}, std::move(parallelograms));
         }
 
         void apply_fov(

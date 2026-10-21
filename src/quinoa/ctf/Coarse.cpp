@@ -336,7 +336,7 @@ namespace {
         f64 phase_shift{};
         if (fit_phase_shift) {
             constexpr auto GRID_SEARCH = GridSearch<f64>({.start = 0., .end = 130., .step = 10.});
-            constexpr auto OPTIONS = noa::IwiseOptions{.generate_gpu = false, .cpu_launch_n_threads = 4};
+            constexpr auto OPTIONS = noa::IwiseCompileOptions{.generate_gpu = false, .cpu_launch_n_threads = 4};
 
             // Compute the per-stack score for all phase-shifts.
             auto results = std::vector<Vec<f64, 2>>(GRID_SEARCH.size());
@@ -363,7 +363,7 @@ namespace {
         fitter.start_ctf.set_phase_shift(noa::deg2rad(phase_shift));
         fitter.fit_pivot(true);
 
-        constexpr auto OPTIONS = noa::IwiseOptions{.generate_gpu = false, .cpu_launch_n_threads = 2};
+        constexpr auto OPTIONS = noa::IwiseCompileOptions{.generate_gpu = false, .cpu_launch_n_threads = 2};
         noa::iwise<OPTIONS>(Shape{2}, {}, [&, fitter](i32 i) mutable {
             i ? fitter.fit_positive_side(true) : fitter.fit_negative_side(true);
         });
@@ -494,7 +494,7 @@ namespace {
         };
         auto image_nccs = Vec{0., 0.};
         auto patch_nccs = Vec{0., 0.};
-        constexpr auto OPTIONS = noa::IwiseOptions{.generate_gpu = false, .cpu_launch_n_threads = 1};
+        constexpr auto OPTIONS = noa::IwiseCompileOptions{.generate_gpu = false, .cpu_launch_n_threads = 1};
         noa::iwise<OPTIONS>(Shape{2}, {}, [&](i32 i) mutable {
             noa::tie(image_nccs[i], patch_nccs[i]) = run(rotations[i]);
         });
