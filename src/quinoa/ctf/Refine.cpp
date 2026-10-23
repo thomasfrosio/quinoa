@@ -1200,8 +1200,13 @@ namespace {
             return Pair{spectrum_1n1w.permute({1, 0, 2, 3}), ctf_images_buffer};
         }
 
-        auto fit(nlopt_algorithm algorithm, i32 max_number_of_evaluations) -> f64 {
+        void initialize_fit() {
+            // Keep this in a separate function for logging the fitting range used for the fit.
             setup_fitting_ranges_and_baselines_();
+        }
+
+        auto fit(nlopt_algorithm algorithm, i32 max_number_of_evaluations) -> f64 {
+            // NOTE: setup_fitting_ranges_and_baselines_ should have been called by this point.
 
             if (m_parameters.ssize() == 0)
                 return zncc();
@@ -1560,6 +1565,8 @@ namespace qn::ctf {
             relative_bounds
         );
 
+        fitter.initialize_fit(); // compute fitting ranges
+
         const auto n_images = m_fitting_ranges.span_1d().size();
         auto fitting_range_mean = Vec{0., 0.};
         auto fitting_range_min = 0.5;
@@ -1573,7 +1580,7 @@ namespace qn::ctf {
 
         Logger::trace(
             "Optimization:\n"
-            "  fitting_ranges=[mean={::.2f}, min={:.3f}, max={:.2f}]fftfreq\n"
+            "  fitting_ranges=[mean={::.3f}, min={:.3f}, max={:.3f}]fftfreq\n"
             "{}{}{}{}{}{}{}{}"
             "  n_parameters={}\n"
             "  max_number_of_evaluations={}\n"
