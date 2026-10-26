@@ -371,10 +371,15 @@ namespace qn {
     }
 
     auto Tilter::shared_buffer_bytes() const -> isize {
+        if (m_buffer_shape.is_empty())
+            return 1;
         return m_buffer_shape.n_elements() * static_cast<isize>(sizeof(c32));
     }
 
     void Tilter::set_shared_buffer(const Array<std::byte, 1>& shared_buffer) {
+        if (m_buffer_shape.is_empty())
+            return;
+
         auto shared_buffer_rfft = shared_buffer
             .as<c32>()
             .subregion(Slice{0, m_buffer_shape.rfft().n_elements()})

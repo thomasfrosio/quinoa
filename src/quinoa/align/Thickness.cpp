@@ -464,10 +464,15 @@ namespace qn {
     }
 
     auto SpecimenThickness::shared_buffer_bytes() const -> isize {
+        if (m_tilt_series.is_empty())
+            return 1;
         return m_volume_depth * m_tilt_series.shape()[1] * m_tilt_series.shape()[2] * static_cast<isize>(sizeof(value_type));
     }
 
     void SpecimenThickness::set_shared_buffer(const ArrayView<std::byte, 1>& shared_buffer) {
+        if (m_tilt_series.is_empty())
+            return;
+
         // Don't use managed memory, allocate and keep the tomogram close to the device.
         // We use f16 to reduce the memory requirement and since this is low-res it shouldn't be an issue.
         const auto shape = Shape3{m_volume_depth, m_tilt_series.shape()[1], m_tilt_series.shape()[2]};
@@ -481,6 +486,8 @@ namespace qn {
         Metadata& metadata, // updated: stack.shifts, sample.thickness
         const Path& output_directory
     ) const -> f64 {
+        check(not m_tilt_series.is_empty());
+
         // Rescale to our tilt-series and sort the images
         const auto original_spacing = metadata.spacing;
         metadata.set_spacing(m_spacing_nm * 10);
